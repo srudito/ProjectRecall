@@ -215,9 +215,6 @@ async def require_user(
 # Routes
 # ---------------------------------------------------------------------------
 
-# Backward-compatible / prefix that ingress expects.
-api_v1 = FastAPI()  # placeholder; we route via app.include_router below.
-
 from fastapi import APIRouter  # noqa: E402  (kept below to avoid confusion)
 
 root_router = APIRouter(prefix="/api")
