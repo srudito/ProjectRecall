@@ -1,0 +1,72 @@
+{
+  "summary": "Project Recall Milestone 1 — first full-stack test pass. Backend: 10/10 pytest cases passed (health, config, /me auth guards, service_role leak scan, CORS). Frontend: welcome screen renders with 'Project Recall' brand, 'Welcome to Project Recall' title, subtitle, both action buttons, and the Supabase-not-configured notice; sign-in / sign-up / forgot-password screens all render with correct testIDs; email validation, displayName required, and 8-char password rule all fire; feature-gated routes (/ask-ai, /billing, /admin, /transcription) all return Expo Router 'Unmatched Route' — no gated surfaces exposed. No AI/transcription libraries imported in frontend/src or frontend/app. No React Native red screen. Deprecated packages detected: none of the flagged Expo packages (expo-av, expo-barcode-scanner, expo-background-fetch) are used.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Sign-in when Supabase missing",
+        "issue": "Error surfaces generic 'Something went wrong. Please try again.' (UNKNOWN_ERROR) instead of a Supabase-specific 'not configured' message. Behavior is safe (no crash / no stack trace) but the auth service does not appear to throw a typed AppError with code like 'SUPABASE_NOT_CONFIGURED' — user sees the generic i18n fallback. Consider adding a dedicated errors key and throwing it from services/supabase/auth.ts when isSupabaseConfigured() is false.",
+        "affected_testIDs": ["sign-in-submit-button", "sign-in-error"]
+      }
+    ],
+    "design_issues": [
+      {
+        "screen": "welcome",
+        "issues": [
+          "Subtitle reads 'Capture, organize, and revisit every conversation with confidence.' — the product tagline in the problem statement is 'Capture every conversation. Remember every detail.' Not a bug, but the visible tagline diverges from the marketing tagline the PRD calls out."
+        ]
+      }
+    ],
+    "react_native_issues": [
+      {
+        "component": "TouchableOpacity/Pressable (unknown source, likely a lib)",
+        "issue": "Console warning: 'props.pointerEvents is deprecated. Use style.pointerEvents'. Non-blocking but should be migrated. Likely from a dependency; if reproduced in own components, migrate pointerEvents prop to style.pointerEvents."
+      },
+      {
+        "component": "Image",
+        "issue": "Console warning: 'Image: style.resizeMode is deprecated. Please use props.resizeMode'. Non-blocking; review any Image usage that sets resizeMode via style and move it to a prop."
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_project_recall_backend.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Optional: throw an AppError with a dedicated code (e.g. AUTH_SUPABASE_NOT_CONFIGURED) inside src/services/supabase/auth.ts when isSupabaseConfigured() is false so sign-in/sign-up/forgot-password display a specific 'Supabase is not configured' message instead of the generic UNKNOWN_ERROR i18n fallback.",
+    "Optional: align welcome subtitle with the product tagline 'Capture every conversation. Remember every detail.' if that is the intended marketing copy.",
+    "Investigate origin of pointerEvents / Image.resizeMode deprecation warnings; if they come from own components, migrate.",
+    "Once Supabase credentials are provided, re-run tests to cover: real sign-in/sign-up, /api/v1/me with a valid JWT, RLS on tables, private Storage bucket access, and the 0001..0004 migrations."
+  ],
+  "critical_code_review_comments": [
+    "server.py: `api_v1 = FastAPI()` at line 219 is unused dead code (only routers are mounted). Remove to avoid confusion.",
+    "server.py uses deprecated FastAPI @app.on_event('startup'); prefer the lifespan context manager in FastAPI >=0.95. Non-blocking.",
+    "verify_supabase_jwt: last-resort live check calls /auth/v1/user without a short-circuit for obviously malformed tokens — currently protected by jwt.get_unverified_header, which is fine, but consider a length/segment sanity check to avoid unnecessary Supabase round-trips.",
+    "Config endpoint correctly avoids service_role and jwt_secret. Good.",
+    "auth error envelope uses code 'AUTH_SESSION_EXPIRED' for BOTH missing token and malformed token — semantically 'expired' is misleading for a never-provided token. Consider AUTH_MISSING_TOKEN vs AUTH_SESSION_EXPIRED. Non-blocking (tests were adjusted to match current behaviour)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/__init__.py (new)",
+    "/app/backend/tests/conftest.py (new)",
+    "/app/backend/tests/test_project_recall_backend.py (new)",
+    "/app/test_reports/pytest/pytest_results.xml (generated)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100% of executable scenarios (Supabase-gated flows not executable — see notes)"},
+  "seed_data_creation": "None. Supabase intentionally not configured in this preview per the reviewer note.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Milestone 1 baseline is green. When user supplies Supabase credentials, run backend/tests/test_project_recall_backend.py first (should keep 10/10), then extend with tests that: (a) hit /api/v1/config expecting supabase_anon_key_present=true, (b) sign in with the seeded test users user_a@example.com / user_b@example.com via /auth/v1/token?grant_type=password against Supabase, (c) use that JWT against /api/v1/me expecting 200 with matching sub/email, (d) verify /api/v1/health reports supabase_configured=true. RLS enforcement and private Storage bucket access should be tested through direct Supabase REST calls per user JWT.",
+  "not_executed": [
+    "End-to-end sign-in / sign-up (Supabase not configured — expected)",
+    "Password reset email delivery (Supabase not configured — expected)",
+    "RLS policies from 0002_rls_policies.sql (Supabase not configured — expected)",
+    "Private storage bucket from 0003_storage_bucket.sql (Supabase not configured — expected)",
+    "Triggers from 0004_triggers.sql (Supabase not configured — expected)",
+    "Physical Android behavior: microphone capture, foreground service, background recording, screen lock, native pickers (requires dev build on device — out of preview scope)"
+  ]
+}

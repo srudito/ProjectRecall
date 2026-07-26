@@ -1,0 +1,25 @@
+{
+  "title": "Profile",
+  "sections": {
+    "account": "Account",
+    "preferences": "Preferences",
+    "storage": "Storage",
+    "about": "About"
+  },
+  "appearance": {
+    "title": "Appearance",
+    "light": "Light",
+    "dark": "Dark",
+    "system": "Follow system"
+  },
+  "appLanguage": "App language",
+  "spokenLanguage": "Default spoken language",
+  "wifiOnly": "Upload over Wi-Fi only",
+  "recordingConsent": "Recording consent information",
+  "permissions": "Permission status",
+  "support": "Support",
+  "privacyPolicy": "Privacy Policy",
+  "terms": "Terms of Service",
+  "signOut": "Sign out",
+  "version": "Version"
+}

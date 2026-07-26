@@ -1,0 +1,56 @@
+{
+  "app": {
+    "name": "Project Recall",
+    "tagline": "Rekam setiap percakapan. Ingat setiap detail."
+  },
+  "actions": {
+    "continue": "Lanjutkan",
+    "cancel": "Batal",
+    "confirm": "Konfirmasi",
+    "save": "Simpan",
+    "delete": "Hapus",
+    "edit": "Ubah",
+    "back": "Kembali",
+    "next": "Selanjutnya",
+    "done": "Selesai",
+    "retry": "Coba lagi",
+    "close": "Tutup",
+    "rename": "Ganti nama",
+    "select": "Pilih",
+    "search": "Cari",
+    "signOut": "Keluar",
+    "openSettings": "Buka pengaturan",
+    "dismiss": "Tutup"
+  },
+  "status": {
+    "loading": "Memuat…",
+    "empty": "Belum ada apa-apa di sini",
+    "offline": "Anda sedang offline",
+    "syncing": "Menyinkronkan",
+    "synchronized": "Tersinkronisasi",
+    "pending": "Menunggu",
+    "failed": "Gagal",
+    "localOnly": "Hanya lokal",
+    "cancelled": "Dibatalkan"
+  },
+  "time": {
+    "today": "Hari ini",
+    "yesterday": "Kemarin",
+    "justNow": "Baru saja"
+  },
+  "labels": {
+    "email": "Email",
+    "password": "Kata sandi",
+    "displayName": "Nama tampilan",
+    "language": "Bahasa",
+    "project": "Proyek",
+    "session": "Sesi",
+    "note": "Catatan",
+    "bookmark": "Penanda",
+    "photo": "Foto",
+    "video": "Video",
+    "document": "Dokumen",
+    "required": "Wajib",
+    "optional": "Opsional"
+  }
+}

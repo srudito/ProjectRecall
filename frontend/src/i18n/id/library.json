@@ -1,0 +1,37 @@
+{
+  "home": {
+    "greeting": "Selamat datang kembali",
+    "startRecording": "Mulai merekam",
+    "createProject": "Buat proyek",
+    "recentProjects": "Proyek terbaru",
+    "recentSessions": "Sesi terbaru",
+    "pending": "{{count}} menunggu sinkron",
+    "failed": "{{count}} sinkron gagal",
+    "offline": "Mode offline",
+    "storage": "Penyimpanan lokal: {{used}} digunakan"
+  },
+  "library": {
+    "title": "Pustaka",
+    "tabs": {
+      "projects": "Proyek",
+      "sessions": "Sesi"
+    },
+    "filters": {
+      "all": "Semua",
+      "localOnly": "Lokal",
+      "pending": "Menunggu",
+      "syncing": "Sinkron",
+      "synced": "Tersinkron",
+      "failed": "Gagal"
+    },
+    "search": "Cari",
+    "createProject": "Buat proyek",
+    "renameProject": "Ganti nama proyek",
+    "archiveProject": "Arsipkan proyek"
+  },
+  "empty": {
+    "sessions": "Belum ada sesi. Ketuk Rekam untuk memulai.",
+    "projects": "Buat proyek untuk mengatur sesi Anda.",
+    "search": "Tidak ada hasil"
+  }
+}

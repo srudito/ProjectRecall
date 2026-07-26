@@ -1,0 +1,53 @@
+{
+  "setup": {
+    "title": "Sesi baru",
+    "projectLabel": "Proyek",
+    "selectProject": "Pilih proyek",
+    "createProject": "Buat proyek baru",
+    "titleLabel": "Judul sesi",
+    "titlePlaceholder": "contoh: Rapat tim mingguan",
+    "languageSection": "Bahasa lisan yang diharapkan",
+    "startRecording": "Mulai merekam"
+  },
+  "active": {
+    "recording": "Merekam",
+    "paused": "Dijeda",
+    "elapsed": "Berjalan",
+    "pause": "Jeda",
+    "resume": "Lanjutkan",
+    "stop": "Berhenti",
+    "addEvidence": "Tambah bukti",
+    "addBookmark": "Tambah penanda",
+    "addNote": "Tambah catatan",
+    "lockControls": "Kunci kontrol",
+    "unlock": "Buka kunci",
+    "discard": "Buang sesi",
+    "discardConfirmTitle": "Buang sesi ini?",
+    "discardConfirmBody": "Rekaman dan semua bukti akan dihapus permanen.",
+    "confirmStop": "Berhenti dan tinjau?"
+  },
+  "evidenceSheet": {
+    "title": "Tambah bukti",
+    "takePhoto": "Ambil foto",
+    "selectPhoto": "Pilih foto",
+    "selectVideo": "Pilih video yang ada",
+    "selectDocument": "Pilih dokumen",
+    "addNote": "Tambah catatan teks",
+    "addBookmark": "Tambah penanda"
+  },
+  "note": {
+    "title": "Tambah catatan",
+    "placeholder": "Ketik catatan Anda di sini",
+    "save": "Simpan catatan"
+  },
+  "bookmark": {
+    "defaultLabel": "Penanda",
+    "renamePlaceholder": "Nama penanda"
+  },
+  "meterUnavailable": "Level audio nyata tidak tersedia di perangkat ini",
+  "recordingIndicator": "Mikrofon aktif",
+  "background": {
+    "notificationTitle": "Project Recall sedang merekam",
+    "notificationBody": "Ketuk untuk kembali ke sesi."
+  }
+}

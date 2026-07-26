@@ -1,0 +1,25 @@
+{
+  "title": "Profil",
+  "sections": {
+    "account": "Akun",
+    "preferences": "Preferensi",
+    "storage": "Penyimpanan",
+    "about": "Tentang"
+  },
+  "appearance": {
+    "title": "Tampilan",
+    "light": "Terang",
+    "dark": "Gelap",
+    "system": "Ikuti sistem"
+  },
+  "appLanguage": "Bahasa aplikasi",
+  "spokenLanguage": "Bahasa lisan default",
+  "wifiOnly": "Unggah hanya via Wi-Fi",
+  "recordingConsent": "Informasi persetujuan rekaman",
+  "permissions": "Status izin",
+  "support": "Dukungan",
+  "privacyPolicy": "Kebijakan Privasi",
+  "terms": "Ketentuan Layanan",
+  "signOut": "Keluar",
+  "version": "Versi"
+}

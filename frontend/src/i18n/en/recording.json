@@ -1,0 +1,53 @@
+{
+  "setup": {
+    "title": "New session",
+    "projectLabel": "Project",
+    "selectProject": "Select a project",
+    "createProject": "Create new project",
+    "titleLabel": "Session title",
+    "titlePlaceholder": "e.g. Weekly team sync",
+    "languageSection": "Expected spoken language",
+    "startRecording": "Start recording"
+  },
+  "active": {
+    "recording": "Recording",
+    "paused": "Paused",
+    "elapsed": "Elapsed",
+    "pause": "Pause",
+    "resume": "Resume",
+    "stop": "Stop",
+    "addEvidence": "Add evidence",
+    "addBookmark": "Add bookmark",
+    "addNote": "Add note",
+    "lockControls": "Lock controls",
+    "unlock": "Unlock",
+    "discard": "Discard session",
+    "discardConfirmTitle": "Discard this session?",
+    "discardConfirmBody": "The recording and all evidence will be permanently deleted.",
+    "confirmStop": "Stop and review?"
+  },
+  "evidenceSheet": {
+    "title": "Add evidence",
+    "takePhoto": "Take photo",
+    "selectPhoto": "Select photo",
+    "selectVideo": "Select existing video",
+    "selectDocument": "Select document",
+    "addNote": "Add text note",
+    "addBookmark": "Add bookmark"
+  },
+  "note": {
+    "title": "Add note",
+    "placeholder": "Type your note here",
+    "save": "Save note"
+  },
+  "bookmark": {
+    "defaultLabel": "Bookmark",
+    "renamePlaceholder": "Bookmark name"
+  },
+  "meterUnavailable": "Real audio level not available on this device",
+  "recordingIndicator": "Microphone active",
+  "background": {
+    "notificationTitle": "Project Recall is recording",
+    "notificationBody": "Tap to return to the session."
+  }
+}

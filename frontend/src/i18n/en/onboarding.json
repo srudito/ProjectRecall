@@ -1,0 +1,34 @@
+{
+  "appLanguage": {
+    "title": "Choose your language",
+    "subtitle": "You can change this later in Profile."
+  },
+  "spokenLanguage": {
+    "title": "Expected spoken language",
+    "subtitle": "Set the language you usually speak during recordings. You can override this per project or session.",
+    "modeAuto": "Auto detect",
+    "modeSingle": "One language",
+    "modeMultiple": "Multiple languages",
+    "modeAutoHelp": "Language will be detected in future transcription milestones.",
+    "modeSingleHelp": "Choose a single expected language.",
+    "modeMultipleHelp": "Choose two or more expected languages to support code-switching."
+  },
+  "consent": {
+    "title": "Recording responsibly",
+    "body": "Only record when you have permission. Local laws vary. Project Recall always shows an active recording indicator and a foreground notification while recording.",
+    "acknowledge": "I understand"
+  },
+  "privacy": {
+    "title": "Your data is yours",
+    "bulletStorage": "Files stay on this device until you sync.",
+    "bulletCloud": "Cloud copies are stored in a private, encrypted bucket only you can access.",
+    "bulletAi": "No AI processing runs in this milestone.",
+    "readMore": "Read the Privacy Policy"
+  },
+  "workspace": {
+    "title": "Create your workspace",
+    "subtitle": "This is your personal workspace. You can add teammates in a future release.",
+    "namePlaceholder": "e.g. My workspace",
+    "create": "Create workspace"
+  }
+}

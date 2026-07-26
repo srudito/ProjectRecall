@@ -1,0 +1,37 @@
+{
+  "home": {
+    "greeting": "Welcome back",
+    "startRecording": "Start recording",
+    "createProject": "Create project",
+    "recentProjects": "Recent projects",
+    "recentSessions": "Recent sessions",
+    "pending": "{{count}} pending sync",
+    "failed": "{{count}} failed sync",
+    "offline": "Offline mode",
+    "storage": "Local storage: {{used}} used"
+  },
+  "library": {
+    "title": "Library",
+    "tabs": {
+      "projects": "Projects",
+      "sessions": "Sessions"
+    },
+    "filters": {
+      "all": "All",
+      "localOnly": "Local",
+      "pending": "Pending",
+      "syncing": "Syncing",
+      "synced": "Synced",
+      "failed": "Failed"
+    },
+    "search": "Search",
+    "createProject": "Create project",
+    "renameProject": "Rename project",
+    "archiveProject": "Archive project"
+  },
+  "empty": {
+    "sessions": "No sessions yet. Tap Record to capture your first one.",
+    "projects": "Create a project to organize your sessions.",
+    "search": "No matches"
+  }
+}

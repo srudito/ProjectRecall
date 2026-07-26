@@ -1,0 +1,21 @@
+{
+  "microphone": {
+    "title": "Akses mikrofon",
+    "body": "Project Recall memerlukan akses mikrofon untuk merekam audio yang Anda mulai secara eksplisit.",
+    "denied": "Izin mikrofon ditolak. Aktifkan di Pengaturan untuk merekam."
+  },
+  "camera": {
+    "title": "Akses kamera",
+    "body": "Akses kamera memungkinkan Anda melampirkan foto ke rekaman saat ini.",
+    "denied": "Izin kamera ditolak. Aktifkan di Pengaturan untuk mengambil foto."
+  },
+  "photos": {
+    "title": "Foto & video",
+    "body": "Kami hanya mengakses item yang Anda pilih.",
+    "denied": "Akses foto ditolak. Aktifkan di Pengaturan untuk melampirkan media."
+  },
+  "notifications": {
+    "title": "Notifikasi rekaman",
+    "body": "Notifikasi persisten akan tampil saat merekam sehingga Anda selalu tahu mikrofon sedang aktif."
+  }
+}

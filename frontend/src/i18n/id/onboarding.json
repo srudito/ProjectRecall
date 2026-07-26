@@ -1,0 +1,34 @@
+{
+  "appLanguage": {
+    "title": "Pilih bahasa Anda",
+    "subtitle": "Anda dapat mengubahnya nanti di Profil."
+  },
+  "spokenLanguage": {
+    "title": "Bahasa lisan yang diharapkan",
+    "subtitle": "Atur bahasa yang biasanya Anda gunakan saat merekam. Anda dapat menimpanya per proyek atau sesi.",
+    "modeAuto": "Deteksi otomatis",
+    "modeSingle": "Satu bahasa",
+    "modeMultiple": "Beberapa bahasa",
+    "modeAutoHelp": "Bahasa akan dideteksi pada milestone transkripsi mendatang.",
+    "modeSingleHelp": "Pilih satu bahasa yang diharapkan.",
+    "modeMultipleHelp": "Pilih dua atau lebih bahasa untuk mendukung peralihan bahasa dalam satu rekaman."
+  },
+  "consent": {
+    "title": "Merekam dengan bertanggung jawab",
+    "body": "Hanya rekam saat Anda memiliki izin. Hukum setempat dapat berbeda. Project Recall selalu menampilkan indikator rekaman aktif dan notifikasi latar depan saat merekam.",
+    "acknowledge": "Saya mengerti"
+  },
+  "privacy": {
+    "title": "Data Anda adalah milik Anda",
+    "bulletStorage": "File tetap di perangkat ini sampai Anda menyinkronkan.",
+    "bulletCloud": "Salinan cloud disimpan di bucket pribadi terenkripsi yang hanya bisa Anda akses.",
+    "bulletAi": "Tidak ada pemrosesan AI pada milestone ini.",
+    "readMore": "Baca Kebijakan Privasi"
+  },
+  "workspace": {
+    "title": "Buat workspace Anda",
+    "subtitle": "Ini workspace pribadi Anda. Anda dapat menambahkan anggota tim di rilis mendatang.",
+    "namePlaceholder": "contoh: Workspace saya",
+    "create": "Buat workspace"
+  }
+}

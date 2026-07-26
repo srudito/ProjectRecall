@@ -1,0 +1,54 @@
+{
+  "overview": {
+    "title": "Session",
+    "project": "Project",
+    "date": "Date",
+    "duration": "Duration",
+    "spokenMode": "Spoken language mode",
+    "expectedLanguages": "Expected languages",
+    "counts": {
+      "photos": "Photos",
+      "videos": "Videos",
+      "documents": "Documents",
+      "notes": "Notes",
+      "bookmarks": "Bookmarks"
+    }
+  },
+  "tabs": {
+    "overview": "Overview",
+    "timeline": "Timeline",
+    "evidence": "Evidence"
+  },
+  "playback": {
+    "play": "Play",
+    "pause": "Pause",
+    "seek": "Seek"
+  },
+  "sync": {
+    "notSynced": "Not synced",
+    "syncNow": "Sync now",
+    "syncLater": "Sync later",
+    "retry": "Retry",
+    "details": "Sync details"
+  },
+  "actions": {
+    "rename": "Rename session",
+    "changeProject": "Change project",
+    "editLanguages": "Edit expected languages",
+    "delete": "Delete session",
+    "deleteConfirmTitle": "Delete this session?",
+    "deleteConfirmBody": "Recording, evidence, notes, bookmarks, timeline, and cloud copies will be removed."
+  },
+  "timeline": {
+    "recordingStarted": "Recording started",
+    "recordingPaused": "Recording paused",
+    "recordingResumed": "Recording resumed",
+    "recordingStopped": "Recording stopped",
+    "imageAdded": "Photo",
+    "videoAdded": "Video",
+    "documentAdded": "Document",
+    "noteAdded": "Note",
+    "bookmarkAdded": "Bookmark",
+    "empty": "Timeline is empty."
+  }
+}

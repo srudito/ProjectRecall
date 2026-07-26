@@ -1,0 +1,54 @@
+{
+  "overview": {
+    "title": "Sesi",
+    "project": "Proyek",
+    "date": "Tanggal",
+    "duration": "Durasi",
+    "spokenMode": "Mode bahasa lisan",
+    "expectedLanguages": "Bahasa yang diharapkan",
+    "counts": {
+      "photos": "Foto",
+      "videos": "Video",
+      "documents": "Dokumen",
+      "notes": "Catatan",
+      "bookmarks": "Penanda"
+    }
+  },
+  "tabs": {
+    "overview": "Ringkasan",
+    "timeline": "Linimasa",
+    "evidence": "Bukti"
+  },
+  "playback": {
+    "play": "Putar",
+    "pause": "Jeda",
+    "seek": "Geser"
+  },
+  "sync": {
+    "notSynced": "Belum tersinkron",
+    "syncNow": "Sinkron sekarang",
+    "syncLater": "Sinkron nanti",
+    "retry": "Coba lagi",
+    "details": "Detail sinkronisasi"
+  },
+  "actions": {
+    "rename": "Ganti nama sesi",
+    "changeProject": "Ubah proyek",
+    "editLanguages": "Ubah bahasa yang diharapkan",
+    "delete": "Hapus sesi",
+    "deleteConfirmTitle": "Hapus sesi ini?",
+    "deleteConfirmBody": "Rekaman, bukti, catatan, penanda, linimasa, dan salinan cloud akan dihapus."
+  },
+  "timeline": {
+    "recordingStarted": "Rekaman dimulai",
+    "recordingPaused": "Rekaman dijeda",
+    "recordingResumed": "Rekaman dilanjutkan",
+    "recordingStopped": "Rekaman dihentikan",
+    "imageAdded": "Foto",
+    "videoAdded": "Video",
+    "documentAdded": "Dokumen",
+    "noteAdded": "Catatan",
+    "bookmarkAdded": "Penanda",
+    "empty": "Linimasa masih kosong."
+  }
+}

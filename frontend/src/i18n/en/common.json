@@ -1,0 +1,56 @@
+{
+  "app": {
+    "name": "Project Recall",
+    "tagline": "Capture every conversation. Remember every detail."
+  },
+  "actions": {
+    "continue": "Continue",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "save": "Save",
+    "delete": "Delete",
+    "edit": "Edit",
+    "back": "Back",
+    "next": "Next",
+    "done": "Done",
+    "retry": "Retry",
+    "close": "Close",
+    "rename": "Rename",
+    "select": "Select",
+    "search": "Search",
+    "signOut": "Sign out",
+    "openSettings": "Open settings",
+    "dismiss": "Dismiss"
+  },
+  "status": {
+    "loading": "Loading…",
+    "empty": "Nothing here yet",
+    "offline": "You are offline",
+    "syncing": "Synchronizing",
+    "synchronized": "Synchronized",
+    "pending": "Pending",
+    "failed": "Failed",
+    "localOnly": "Local only",
+    "cancelled": "Cancelled"
+  },
+  "time": {
+    "today": "Today",
+    "yesterday": "Yesterday",
+    "justNow": "Just now"
+  },
+  "labels": {
+    "email": "Email",
+    "password": "Password",
+    "displayName": "Display name",
+    "language": "Language",
+    "project": "Project",
+    "session": "Session",
+    "note": "Note",
+    "bookmark": "Bookmark",
+    "photo": "Photo",
+    "video": "Video",
+    "document": "Document",
+    "required": "Required",
+    "optional": "Optional"
+  }
+}

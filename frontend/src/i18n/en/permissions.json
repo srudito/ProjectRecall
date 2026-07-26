@@ -1,0 +1,21 @@
+{
+  "microphone": {
+    "title": "Microphone access",
+    "body": "Project Recall needs microphone access to record audio you explicitly start.",
+    "denied": "Microphone permission was denied. Enable it in Settings to record."
+  },
+  "camera": {
+    "title": "Camera access",
+    "body": "Camera access lets you attach photos to the current recording.",
+    "denied": "Camera permission was denied. Enable it in Settings to take photos."
+  },
+  "photos": {
+    "title": "Photos & videos",
+    "body": "We only access items you explicitly pick.",
+    "denied": "Photo access was denied. Enable it in Settings to attach media."
+  },
+  "notifications": {
+    "title": "Recording notification",
+    "body": "A persistent notification shows while recording so you always know when the microphone is active."
+  }
+}
