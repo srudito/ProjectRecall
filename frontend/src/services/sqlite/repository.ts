@@ -149,48 +149,204 @@ export interface ProjectRecord {
   name: string;
   description: string | null;
   status: string;
+  default_spoken_language_mode: string | null;
+  default_expected_spoken_languages: string[] | null;
+  default_summary_output_language: string | null;
+  default_translation_target_language: string | null;
   created_by: string;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  local_sync_status: string;
+  cloud_sync_status: string;
+  last_sync_error_code: string | null;
+  last_sync_error_message: string | null;
+  last_synced_at: string | null;
 }
 
+interface LocalProjectRow {
+  id: string;
+  workspace_id: string;
+  name: string;
+  description: string | null;
+  status: string;
+  default_spoken_language_mode: string | null;
+  default_expected_spoken_languages: string | null; // JSON
+  default_summary_output_language: string | null;
+  default_translation_target_language: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+  local_sync_status: string;
+  cloud_sync_status: string;
+  last_sync_error_code: string | null;
+  last_sync_error_message: string | null;
+  last_synced_at: string | null;
+}
+
+const parseProjectRow = (row: LocalProjectRow): ProjectRecord => ({
+  id: row.id,
+  workspace_id: row.workspace_id,
+  name: row.name,
+  description: row.description,
+  status: row.status,
+  default_spoken_language_mode: row.default_spoken_language_mode,
+  default_expected_spoken_languages: (() => {
+    if (row.default_expected_spoken_languages == null) return null;
+    try {
+      const v = JSON.parse(row.default_expected_spoken_languages);
+      return Array.isArray(v) ? (v as string[]) : null;
+    } catch {
+      return null;
+    }
+  })(),
+  default_summary_output_language: row.default_summary_output_language,
+  default_translation_target_language: row.default_translation_target_language,
+  created_by: row.created_by,
+  created_at: row.created_at,
+  updated_at: row.updated_at,
+  deleted_at: row.deleted_at,
+  local_sync_status: row.local_sync_status,
+  cloud_sync_status: row.cloud_sync_status,
+  last_sync_error_code: row.last_sync_error_code,
+  last_sync_error_message: row.last_sync_error_message,
+  last_synced_at: row.last_synced_at,
+});
+
+const serializeLangArray = (v: string[] | null | undefined): string | null => {
+  if (v == null) return null;
+  return JSON.stringify(v);
+};
+
+/**
+ * Upsert a project into local_projects.
+ *
+ * IMPORTANT: this function does NOT rewrite `updated_at` to `now()`. Callers
+ * (both the create-project path and the cloud→local merge) supply the
+ * authoritative `updated_at` on the record and it is stored verbatim. This is
+ * the correct behaviour for cloud hydration — otherwise a merge would touch
+ * updated_at and produce a synchronisation loop.
+ */
 export const upsertProject = async (record: ProjectRecord): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
   await db.runAsync(
     `INSERT INTO local_projects
-      (id, workspace_id, name, description, status, created_by, created_at, updated_at, deleted_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, workspace_id, name, description, status,
+       default_spoken_language_mode, default_expected_spoken_languages,
+       default_summary_output_language, default_translation_target_language,
+       created_by, created_at, updated_at, deleted_at,
+       local_sync_status, cloud_sync_status,
+       last_sync_error_code, last_sync_error_message, last_synced_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        name=excluded.name,
        description=excluded.description,
        status=excluded.status,
+       default_spoken_language_mode=excluded.default_spoken_language_mode,
+       default_expected_spoken_languages=excluded.default_expected_spoken_languages,
+       default_summary_output_language=excluded.default_summary_output_language,
+       default_translation_target_language=excluded.default_translation_target_language,
        updated_at=excluded.updated_at,
-       deleted_at=excluded.deleted_at`,
+       deleted_at=excluded.deleted_at,
+       local_sync_status=excluded.local_sync_status,
+       cloud_sync_status=excluded.cloud_sync_status,
+       last_sync_error_code=excluded.last_sync_error_code,
+       last_sync_error_message=excluded.last_sync_error_message,
+       last_synced_at=excluded.last_synced_at`,
     [
       record.id,
       record.workspace_id,
       record.name,
       record.description,
       record.status,
+      record.default_spoken_language_mode,
+      serializeLangArray(record.default_expected_spoken_languages),
+      record.default_summary_output_language,
+      record.default_translation_target_language,
       record.created_by,
       record.created_at,
       record.updated_at,
       record.deleted_at,
+      record.local_sync_status,
+      record.cloud_sync_status,
+      record.last_sync_error_code,
+      record.last_sync_error_message,
+      record.last_synced_at,
     ],
   );
+};
+
+export const getProject = async (id: string): Promise<ProjectRecord | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+  const row = (await db.getFirstAsync(
+    `SELECT * FROM local_projects WHERE id = ?`,
+    [id],
+  )) as LocalProjectRow | null;
+  return row ? parseProjectRow(row) : null;
 };
 
 export const listProjects = async (workspaceId: string): Promise<ProjectRecord[]> => {
   const db = await openLocalDb();
   if (!db) return [];
   const rows = (await db.getAllAsync(
-    `SELECT * FROM local_projects WHERE workspace_id = ? AND deleted_at IS NULL AND status = 'active'
+    `SELECT * FROM local_projects
+     WHERE workspace_id = ? AND deleted_at IS NULL AND status = 'active'
      ORDER BY updated_at DESC`,
     [workspaceId],
-  )) as ProjectRecord[];
-  return rows;
+  )) as LocalProjectRow[];
+  return rows.map(parseProjectRow);
+};
+
+export interface ProjectSyncStatusUpdate {
+  local_sync_status?: string;
+  cloud_sync_status?: string;
+  last_sync_error_code?: string | null;
+  last_sync_error_message?: string | null;
+  last_synced_at?: string | null;
+}
+
+/**
+ * Update sync-status columns on a project WITHOUT touching entity `updated_at`.
+ * This is critical: rewriting updated_at from a sync path creates a sync loop
+ * because the cloud row would then always look older than the local one.
+ */
+export const updateProjectSyncStatus = async (
+  id: string,
+  patch: ProjectSyncStatusUpdate,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+
+  const allowedKeys: (keyof ProjectSyncStatusUpdate)[] = [
+    "local_sync_status",
+    "cloud_sync_status",
+    "last_sync_error_code",
+    "last_sync_error_message",
+    "last_synced_at",
+  ];
+
+  const entries = allowedKeys
+    .filter((key) => Object.prototype.hasOwnProperty.call(patch, key))
+    .map((key) => ({
+      key,
+      value: patch[key] ?? null,
+    }));
+
+  if (entries.length === 0) return;
+
+  const setSql = entries.map(({ key }) => `${key} = ?`).join(", ");
+
+  const values: (string | null)[] = entries.map(({ value }) => value);
+
+  await db.runAsync(
+    `UPDATE local_projects
+     SET ${setSql}
+     WHERE id = ?`,
+    [...values, id],
+  );
 };
 
 export interface NoteRecord {
@@ -506,3 +662,309 @@ export const getPreference = async <T>(key: string, fallback: T): Promise<T> => 
 };
 
 export type { SQLite };
+
+// ==========================================================================
+// Project metadata sync queue (introduced in local schema version 2).
+// ==========================================================================
+
+export type MetadataQueueOperation = "UPSERT" | "DELETE";
+export type MetadataQueueEntityType = "project"; // extensible later
+export type MetadataQueueStatus =
+  | "pending"
+  | "in_progress"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+export interface MetadataQueueRow {
+  id: string;
+  user_id: string;
+  workspace_id: string;
+  entity_type: MetadataQueueEntityType;
+  entity_id: string;
+  operation: MetadataQueueOperation;
+  parent_entity_type: string | null;
+  parent_entity_id: string | null;
+  priority: number;
+  queue_status: MetadataQueueStatus;
+  attempt_count: number;
+  next_retry_at: string | null;
+  last_error_code: string | null;
+  last_safe_error: string | null;
+  idempotency_key: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EnqueueMetadataInput {
+  id: string; // caller-supplied UUID for the queue row itself
+  user_id: string;
+  workspace_id: string;
+  entity_type: MetadataQueueEntityType;
+  entity_id: string;
+  operation: MetadataQueueOperation;
+  parent_entity_type?: string | null;
+  parent_entity_id?: string | null;
+  priority?: number;
+  idempotency_key: string;
+}
+
+/**
+ * Enqueue a metadata sync operation.
+ *
+ * Idempotency: `idempotency_key` is UNIQUE and callers should derive it
+ * deterministically (e.g. `upsert:project:<project_id>`). On conflict we
+ * COALESCE — the existing row is bumped back to `pending`, its
+ * `attempt_count` reset, and `next_retry_at` cleared so the worker picks it
+ * up again with the LATEST local entity state. This prevents:
+ *   • duplicate rows for the same unchanged project (INSERT is ignored)
+ *   • stale UPSERTs shadowing newer edits (INSERT OR IGNORE would do that)
+ */
+export const enqueueMetadataSync = async (input: EnqueueMetadataInput): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  const now = nowIso();
+  await db.runAsync(
+    `INSERT INTO local_metadata_sync_queue
+      (id, user_id, workspace_id, entity_type, entity_id, operation,
+       parent_entity_type, parent_entity_id, priority,
+       queue_status, attempt_count, next_retry_at,
+       last_error_code, last_safe_error, idempotency_key,
+       created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, NULL, NULL, NULL, ?, ?, ?)
+     ON CONFLICT(idempotency_key) DO UPDATE SET
+       queue_status = 'pending',
+       attempt_count = 0,
+       next_retry_at = NULL,
+       last_error_code = NULL,
+       last_safe_error = NULL,
+       updated_at = excluded.updated_at`,
+    [
+      input.id,
+      input.user_id,
+      input.workspace_id,
+      input.entity_type,
+      input.entity_id,
+      input.operation,
+      input.parent_entity_type ?? null,
+      input.parent_entity_id ?? null,
+      input.priority ?? 100,
+      input.idempotency_key,
+      now,
+      now,
+    ],
+  );
+};
+
+/**
+ * Return the next eligible pending operation whose next_retry_at is now or
+ * earlier. Ordered by priority ASC, then created_at ASC (FIFO within priority).
+ */
+export const getNextEligibleMetadataOperation = async (
+  now: string = nowIso(),
+): Promise<MetadataQueueRow | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+  const row = (await db.getFirstAsync(
+    `SELECT * FROM local_metadata_sync_queue
+     WHERE queue_status = 'pending'
+       AND (next_retry_at IS NULL OR next_retry_at <= ?)
+     ORDER BY priority ASC, created_at ASC
+     LIMIT 1`,
+    [now],
+  )) as MetadataQueueRow | null;
+  return row ?? null;
+};
+
+/**
+ * Atomically claim a metadata operation for processing.
+ * Only claims if it's still `pending`. Returns the claimed row or null.
+ */
+export const claimMetadataOperation = async (
+  id: string,
+): Promise<MetadataQueueRow | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+  const now = nowIso();
+  let claimed: MetadataQueueRow | null = null;
+  await db.withTransactionAsync(async () => {
+    const row = (await db.getFirstAsync(
+      `SELECT * FROM local_metadata_sync_queue WHERE id = ? AND queue_status = 'pending'`,
+      [id],
+    )) as MetadataQueueRow | null;
+    if (!row) return;
+    await db.runAsync(
+      `UPDATE local_metadata_sync_queue
+         SET queue_status = 'in_progress',
+             attempt_count = attempt_count + 1,
+             updated_at = ?
+       WHERE id = ?`,
+      [now, id],
+    );
+    claimed = { ...row, queue_status: "in_progress", attempt_count: row.attempt_count + 1, updated_at: now };
+  });
+  return claimed;
+};
+
+export const markMetadataOperationSucceeded = async (id: string): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  const now = nowIso();
+  await db.runAsync(
+    `UPDATE local_metadata_sync_queue
+       SET queue_status = 'succeeded',
+           last_error_code = NULL,
+           last_safe_error = NULL,
+           updated_at = ?
+     WHERE id = ?`,
+    [now, id],
+  );
+};
+
+export const markMetadataOperationFailed = async (
+  id: string,
+  errorCode: string,
+  safeErrorMessage: string,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  const now = nowIso();
+  await db.runAsync(
+    `UPDATE local_metadata_sync_queue
+       SET queue_status = 'failed',
+           last_error_code = ?,
+           last_safe_error = ?,
+           updated_at = ?
+     WHERE id = ?`,
+    [errorCode, safeErrorMessage, now, id],
+  );
+};
+
+export const rescheduleMetadataOperation = async (
+  id: string,
+  nextRetryAt: string,
+  errorCode: string,
+  safeErrorMessage: string,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  const now = nowIso();
+  await db.runAsync(
+    `UPDATE local_metadata_sync_queue
+       SET queue_status = 'pending',
+           next_retry_at = ?,
+           last_error_code = ?,
+           last_safe_error = ?,
+           updated_at = ?
+     WHERE id = ?`,
+    [nextRetryAt, errorCode, safeErrorMessage, now, id],
+  );
+};
+
+export const deleteCompletedMetadataOperation = async (id: string): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  await db.runAsync(`DELETE FROM local_metadata_sync_queue WHERE id = ?`, [id]);
+};
+
+export const listMetadataQueue = async (): Promise<MetadataQueueRow[]> => {
+  const db = await openLocalDb();
+  if (!db) return [];
+  const rows = (await db.getAllAsync(
+    `SELECT * FROM local_metadata_sync_queue ORDER BY priority ASC, created_at ASC`,
+  )) as MetadataQueueRow[];
+  return rows;
+};
+
+export const countPendingMetadataOperations = async (): Promise<number> => {
+  const db = await openLocalDb();
+  if (!db) return 0;
+  const row = (await db.getFirstAsync(
+    `SELECT COUNT(*) as n FROM local_metadata_sync_queue WHERE queue_status = 'pending'`,
+  )) as { n: number } | null;
+  return row?.n ?? 0;
+};
+
+// ==========================================================================
+// Atomic local project creation
+// ==========================================================================
+
+export interface AtomicCreateProjectInput {
+  project: ProjectRecord;
+  queueRowId: string;
+  idempotencyKey: string;
+}
+
+/**
+ * Insert the project into local_projects and enqueue an UPSERT metadata sync
+ * operation INSIDE ONE TRANSACTION. If any step fails the whole transaction
+ * is rolled back — the caller never sees a partial commit.
+ */
+export const atomicCreateProjectWithSync = async (
+  input: AtomicCreateProjectInput,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return; // caller (web path) uses remote directly and never hits this.
+  const p = input.project;
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(
+      `INSERT INTO local_projects
+        (id, workspace_id, name, description, status,
+         default_spoken_language_mode, default_expected_spoken_languages,
+         default_summary_output_language, default_translation_target_language,
+         created_by, created_at, updated_at, deleted_at,
+         local_sync_status, cloud_sync_status,
+         last_sync_error_code, last_sync_error_message, last_synced_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        p.id,
+        p.workspace_id,
+        p.name,
+        p.description,
+        p.status,
+        p.default_spoken_language_mode,
+        p.default_expected_spoken_languages == null
+          ? null
+          : JSON.stringify(p.default_expected_spoken_languages),
+        p.default_summary_output_language,
+        p.default_translation_target_language,
+        p.created_by,
+        p.created_at,
+        p.updated_at,
+        p.deleted_at,
+        p.local_sync_status,
+        p.cloud_sync_status,
+        p.last_sync_error_code,
+        p.last_sync_error_message,
+        p.last_synced_at,
+      ],
+    );
+    const now = nowIso();
+    await db.runAsync(
+      `INSERT INTO local_metadata_sync_queue
+        (id, user_id, workspace_id, entity_type, entity_id, operation,
+         parent_entity_type, parent_entity_id, priority,
+         queue_status, attempt_count, next_retry_at,
+         last_error_code, last_safe_error, idempotency_key,
+         created_at, updated_at)
+       VALUES (?, ?, ?, 'project', ?, 'UPSERT', NULL, NULL, 100,
+               'pending', 0, NULL, NULL, NULL, ?, ?, ?)
+       ON CONFLICT(idempotency_key) DO UPDATE SET
+         queue_status = 'pending',
+         attempt_count = 0,
+         next_retry_at = NULL,
+         last_error_code = NULL,
+         last_safe_error = NULL,
+         updated_at = excluded.updated_at`,
+      [
+        input.queueRowId,
+        p.created_by,
+        p.workspace_id,
+        p.id,
+        input.idempotencyKey,
+        now,
+        now,
+      ],
+    );
+  });
+};

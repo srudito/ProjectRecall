@@ -39,17 +39,29 @@ export interface CreateProjectInput {
 
 export const createProject = async (input: CreateProjectInput): Promise<ProjectRecord> => {
   const now = nowIso();
-  const project: ProjectRecord = {
-    id: generateId(),
-    workspace_id: input.workspaceId,
-    name: input.name,
-    description: input.description ?? null,
-    status: "active",
-    created_by: input.createdBy,
-    created_at: now,
-    updated_at: now,
-    deleted_at: null,
-  };
+const project: ProjectRecord = {
+  id: generateId(),
+  workspace_id: input.workspaceId,
+  name: input.name,
+  description: input.description ?? null,
+  status: "active",
+
+  default_spoken_language_mode: null,
+  default_expected_spoken_languages: [],
+  default_summary_output_language: null,
+  default_translation_target_language: null,
+
+  created_by: input.createdBy,
+  created_at: now,
+  updated_at: now,
+  deleted_at: null,
+
+  local_sync_status: "pending",
+  cloud_sync_status: "pending",
+  last_sync_error_code: null,
+  last_sync_error_message: null,
+  last_synced_at: null,
+};
   await upsertProject(project);
   return project;
 };

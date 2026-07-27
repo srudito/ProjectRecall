@@ -22,14 +22,42 @@ export default function Home() {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
 
-  useEffect(() => {
-    (async () => {
-      const ws = await resolvePersonalWorkspace(user?.id ?? "anonymous");
-      const [ps, ss] = await Promise.all([fetchProjects(ws.id), fetchSessions(ws.id)]);
-      setProjects(ps);
-      setSessions(ss);
-    })();
-  }, [user?.id]);
+useEffect(() => {
+  if (!user?.id) {
+    setProjects([]);
+    setSessions([]);
+    return;
+  }
+
+  let isActive = true;
+
+  const loadHomeData = async () => {
+    try {
+      const ws = await resolvePersonalWorkspace(user.id);
+
+      const [projectRows, sessionRows] = await Promise.all([
+        fetchProjects(ws.id),
+        fetchSessions(ws.id),
+      ]);
+
+      if (isActive) {
+        setProjects(projectRows);
+        setSessions(sessionRows);
+      }
+    } catch {
+      if (isActive) {
+        setProjects([]);
+        setSessions([]);
+      }
+    }
+  };
+
+  void loadHomeData();
+
+  return () => {
+    isActive = false;
+  };
+}, [user?.id]);
 
   return (
     <Screen scrollable testID="home-screen">
