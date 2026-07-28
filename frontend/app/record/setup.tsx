@@ -1,5 +1,5 @@
 import { useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { FlatList, ScrollView, Text, TouchableOpacity, View } from "react-native";
 
 import { Button } from "@/src/components/Button";
@@ -11,7 +11,8 @@ import { spokenLanguageCatalog } from "@/src/i18n/languages";
 import { useI18n } from "@/src/i18n/I18nProvider";
 import { createSession, fetchProjects } from "@/src/services/session/service";
 import { validateSpokenLanguageSelection } from "@/src/services/language/precedence";
-import { ProjectRecord } from "@/src/services/sqlite/repository";
+import type { ProjectRecord } from "@/src/services/sqlite/repository";
+import { subscribeProjectSyncChanges } from "@/src/services/sync/project-sync-events";
 import { resolvePersonalWorkspace } from "@/src/services/workspace/service";
 import { useAuthStore } from "@/src/stores/auth-store";
 import { useTheme } from "@/src/theme/ThemeProvider";
@@ -29,13 +30,31 @@ export default function RecordSetup() {
   const [selectedLangs, setSelectedLangs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  const loadProjects = useCallback(async () => {
+    if (!user?.id) {
+      setProjects([]);
+      return;
+    }
+
+    try {
+      const workspace = await resolvePersonalWorkspace(user.id);
+      setProjects(await fetchProjects(workspace.id));
+    } catch {
+      setError(t("errors", "AUTH_SESSION_EXPIRED"));
+    }
+  }, [t, user?.id]);
+
   useEffect(() => {
-    (async () => {
-      const ws = await resolvePersonalWorkspace(user?.id ?? "anonymous");
-      const ps = await fetchProjects(ws.id);
-      setProjects(ps);
-    })();
-  }, [user?.id]);
+    void loadProjects();
+  }, [loadProjects]);
+
+  useEffect(
+    () =>
+      subscribeProjectSyncChanges(() => {
+        void loadProjects();
+      }),
+    [loadProjects],
+  );
 
   const toggleLang = (tag: string) => {
     if (mode === SpokenLanguageMode.SINGLE_LANGUAGE) {
@@ -49,21 +68,31 @@ export default function RecordSetup() {
 
   const start = async () => {
     setError(null);
+    if (!user?.id) {
+      setError(t("errors", "AUTH_SESSION_EXPIRED"));
+      return;
+    }
+
     const validation = validateSpokenLanguageSelection(mode, selectedLangs);
     if (!validation.valid) {
       setError(t("errors", "LANGUAGE_SELECTION_INVALID"));
       return;
     }
-    const ws = await resolvePersonalWorkspace(user?.id ?? "anonymous");
-    const session = await createSession({
-      workspaceId: ws.id,
-      createdBy: user?.id ?? "anonymous",
-      projectId,
-      title: title.trim() || "Untitled session",
-      spokenLanguageMode: mode,
-      expectedSpokenLanguages: selectedLangs,
-    });
-    router.replace({ pathname: "/record/active", params: { sessionId: session.id } });
+
+    try {
+      const ws = await resolvePersonalWorkspace(user.id);
+      const session = await createSession({
+        workspaceId: ws.id,
+        createdBy: user.id,
+        projectId,
+        title: title.trim() || "Untitled session",
+        spokenLanguageMode: mode,
+        expectedSpokenLanguages: selectedLangs,
+      });
+      router.replace({ pathname: "/record/active", params: { sessionId: session.id } });
+    } catch {
+      setError(t("errors", "DATABASE_WRITE_FAILED"));
+    }
   };
 
   const modeButtons: { key: SpokenLanguageMode; label: string; help: string }[] = [
@@ -94,7 +123,10 @@ export default function RecordSetup() {
       </Text>
       <FlatList
         horizontal
-        data={[{ id: "none", name: t("recording", "setup.selectProject") } as ProjectRecord, ...projects]}
+        data={[
+          { id: "none", name: t("recording", "setup.selectProject") },
+          ...projects.map((project) => ({ id: project.id, name: project.name })),
+        ]}
         keyExtractor={(it) => it.id}
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={{ gap: spacing.xs, paddingVertical: spacing.xs }}

@@ -27,7 +27,19 @@
     "search": "Search",
     "createProject": "Create project",
     "renameProject": "Rename project",
-    "archiveProject": "Archive project"
+    "archiveProject": "Archive project",
+    "projectCreateFailed": "The project could not be created. Check your connection and try again.",
+    "projectLoadFailed": "Projects could not be refreshed. Your locally saved projects are still available.",
+    "authenticationRequired": "Sign in to create or synchronize projects.",
+    "syncStatus": {
+      "local_only": "Local only",
+      "pending": "Pending sync",
+      "synchronizing": "Synchronizing",
+      "synchronized": "Synchronized",
+      "failed": "Sync failed"
+    },
+    "retrySync": "Retry synchronization",
+    "projectRetryFailed": "The project synchronization could not be restarted."
   },
   "empty": {
     "sessions": "No sessions yet. Tap Record to capture your first one.",

@@ -27,7 +27,19 @@
     "search": "Cari",
     "createProject": "Buat proyek",
     "renameProject": "Ganti nama proyek",
-    "archiveProject": "Arsipkan proyek"
+    "archiveProject": "Arsipkan proyek",
+    "projectCreateFailed": "Proyek tidak dapat dibuat. Periksa koneksi lalu coba lagi.",
+    "projectLoadFailed": "Daftar proyek tidak dapat diperbarui. Proyek yang tersimpan lokal tetap tersedia.",
+    "authenticationRequired": "Masuk untuk membuat atau menyinkronkan proyek.",
+    "syncStatus": {
+      "local_only": "Hanya lokal",
+      "pending": "Menunggu sinkron",
+      "synchronizing": "Menyinkronkan",
+      "synchronized": "Tersinkron",
+      "failed": "Sinkron gagal"
+    },
+    "retrySync": "Coba sinkronisasi lagi",
+    "projectRetryFailed": "Sinkronisasi proyek tidak dapat dimulai kembali."
   },
   "empty": {
     "sessions": "Belum ada sesi. Ketuk Rekam untuk memulai.",

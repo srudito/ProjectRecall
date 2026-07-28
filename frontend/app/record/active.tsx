@@ -4,7 +4,7 @@ import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Crypto from "expo-crypto";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Modal, Pressable, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 
 import { Button } from "@/src/components/Button";
@@ -15,12 +15,12 @@ import {
   addBookmark,
   addMediaAsset,
   addNote,
-  getSessionBundle,
   markSessionRecording,
   markSessionStopped,
   recordTimelineEvent,
 } from "@/src/services/session/service";
-import { SessionRecord, getSession, listBookmarksForSession } from "@/src/services/sqlite/repository";
+import { getSession, listBookmarksForSession } from "@/src/services/sqlite/repository";
+import type { SessionRecord } from "@/src/services/sqlite/repository";
 import { TimelineEventType } from "@/src/domain/enums";
 import { throwIfInvalid } from "@/src/services/files/validation";
 import { isDuplicateBookmark } from "@/src/services/session/duplicate-prevention";
@@ -35,6 +35,7 @@ export default function ActiveRecording() {
   const { t } = useI18n();
   const { colors, spacing, typography, radii } = useTheme();
   const user = useAuthStore((s) => s.user);
+  const userId = user?.id ?? null;
 
   const controller = useRecordingStore((s) => s.controller);
   const snapshot = useRecordingStore((s) => s.snapshot);
@@ -45,7 +46,7 @@ export default function ActiveRecording() {
   const [showNoteSheet, setShowNoteSheet] = useState(false);
   const [noteText, setNoteText] = useState("");
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
-  const [tick, setTick] = useState(0);
+  const [, setTick] = useState(0);
 
   useEffect(() => {
     const unsub = bind();
@@ -61,6 +62,10 @@ export default function ActiveRecording() {
   useEffect(() => {
     (async () => {
       if (!sessionId) return;
+      if (!userId) {
+        setStatusMsg(t("errors", "AUTH_SESSION_EXPIRED"));
+        return;
+      }
       const s = await getSession(String(sessionId));
       setSession(s);
       // Auto-start.
@@ -74,7 +79,7 @@ export default function ActiveRecording() {
             source_entity_type: null,
             source_entity_id: null,
             recording_offset_ms: 0,
-            created_by: user?.id ?? "anonymous",
+            created_by: userId,
           });
         } catch (e) {
           setStatusMsg(String(e));
@@ -91,7 +96,10 @@ export default function ActiveRecording() {
   }, [snapshot.state, t]);
 
   const onPauseOrResume = async () => {
-    if (!session) return;
+    if (!session || !userId) {
+      if (!userId) setStatusMsg(t("errors", "AUTH_SESSION_EXPIRED"));
+      return;
+    }
     if (snapshot.state === RecordingState.RECORDING) {
       await controller.pause();
       await recordTimelineEvent(session, {
@@ -99,7 +107,7 @@ export default function ActiveRecording() {
         source_entity_type: null,
         source_entity_id: null,
         recording_offset_ms: controller.getSnapshot().offsetMs,
-        created_by: user?.id ?? "anonymous",
+        created_by: userId,
       });
     } else if (snapshot.state === RecordingState.PAUSED) {
       await controller.resume();
@@ -108,13 +116,16 @@ export default function ActiveRecording() {
         source_entity_type: null,
         source_entity_id: null,
         recording_offset_ms: controller.getSnapshot().offsetMs,
-        created_by: user?.id ?? "anonymous",
+        created_by: userId,
       });
     }
   };
 
   const onStop = async () => {
-    if (!session) return;
+    if (!session || !userId) {
+      if (!userId) setStatusMsg(t("errors", "AUTH_SESSION_EXPIRED"));
+      return;
+    }
     try {
       const result = await controller.stop();
       const finalOffset = result?.durationMs ?? controller.getSnapshot().offsetMs;
@@ -124,7 +135,7 @@ export default function ActiveRecording() {
         source_entity_type: "recording",
         source_entity_id: null,
         recording_offset_ms: finalOffset,
-        created_by: user?.id ?? "anonymous",
+        created_by: userId,
       });
       router.replace({ pathname: "/record/review", params: { sessionId: stopped.id } });
     } catch (e) {
@@ -133,7 +144,10 @@ export default function ActiveRecording() {
   };
 
   const onBookmark = async () => {
-    if (!session) return;
+    if (!session || !userId) {
+      if (!userId) setStatusMsg(t("errors", "AUTH_SESSION_EXPIRED"));
+      return;
+    }
     const now = Date.now();
     const offsetMs = controller.getSnapshot().offsetMs;
     // Dup-prevention (fast taps).
@@ -145,20 +159,24 @@ export default function ActiveRecording() {
     if (dup) return;
     await addBookmark({
       session,
-      createdBy: user?.id ?? "anonymous",
+      createdBy: userId,
       label: t("recording", "bookmark.defaultLabel"),
       offsetMs,
     });
   };
 
   const onSaveNote = async () => {
+    if (!userId) {
+      setStatusMsg(t("errors", "AUTH_SESSION_EXPIRED"));
+      return;
+    }
     if (!session || noteText.trim().length === 0) {
       setShowNoteSheet(false);
       return;
     }
     await addNote({
       session,
-      createdBy: user?.id ?? "anonymous",
+      createdBy: userId,
       text: noteText.trim(),
       offsetMs: controller.getSnapshot().offsetMs,
     });
@@ -209,7 +227,10 @@ export default function ActiveRecording() {
   };
 
   const ingestAsset = async (input: { uri: string; mime: string; fileName: string; size: number; kind: "image" | "video" | "document"; width?: number; height?: number; durationMs?: number }) => {
-    if (!session) return;
+    if (!session || !userId) {
+      if (!userId) setStatusMsg(t("errors", "AUTH_SESSION_EXPIRED"));
+      return;
+    }
     try {
       const validation = throwIfInvalid({
         mimeType: input.mime,
@@ -228,7 +249,7 @@ export default function ActiveRecording() {
       }
       await addMediaAsset({
         session,
-        addedBy: user?.id ?? "anonymous",
+        addedBy: userId,
         assetType: input.kind,
         mimeType: input.mime,
         originalFileName: input.fileName,

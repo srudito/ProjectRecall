@@ -9,6 +9,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { useIconFonts } from "@/src/hooks/use-icon-fonts";
 import { I18nProvider } from "@/src/i18n/I18nProvider";
+import { ProjectSyncCoordinator } from "@/src/services/sync/ProjectSyncCoordinator";
 import { useAuthStore } from "@/src/stores/auth-store";
 import { ThemeProvider, useTheme } from "@/src/theme/ThemeProvider";
 
@@ -76,6 +77,7 @@ export default function RootLayout() {
         <I18nProvider>
           <QueryClientProvider client={queryClient}>
             <KeyboardProvider>
+              <ProjectSyncCoordinator />
               <StatusBarAdapter />
               <AuthedStack />
             </KeyboardProvider>

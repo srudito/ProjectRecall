@@ -1,5 +1,5 @@
 import { useFocusEffect, useRouter } from "expo-router";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   FlatList,
   Text,
@@ -16,11 +16,13 @@ import {
   createProject,
   fetchProjects,
   fetchSessions,
+  retryProjectSync,
 } from "@/src/services/session/service";
 import type {
   ProjectRecord,
   SessionRecord,
 } from "@/src/services/sqlite/repository";
+import { subscribeProjectSyncChanges } from "@/src/services/sync/project-sync-events";
 import { resolvePersonalWorkspace } from "@/src/services/workspace/service";
 import { useAuthStore } from "@/src/stores/auth-store";
 import { useTheme } from "@/src/theme/ThemeProvider";
@@ -57,7 +59,14 @@ export default function Library() {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
   const [creatingProject, setCreatingProject] = useState(false);
+  const [submittingProject, setSubmittingProject] = useState(false);
+  const [retryingProjectId, setRetryingProjectId] = useState<string | null>(
+    null,
+  );
+  const [projectError, setProjectError] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
+  const projectSubmitInFlight = useRef(false);
+  const projectRetryInFlight = useRef(false);
 
   const refresh = useCallback(async () => {
     if (!user?.id) {
@@ -66,22 +75,31 @@ export default function Library() {
       return;
     }
 
-    const workspace = await resolvePersonalWorkspace(user.id);
+    try {
+      const workspace = await resolvePersonalWorkspace(user.id);
+      const [projectRows, sessionRows] = await Promise.all([
+        fetchProjects(workspace.id),
+        fetchSessions(workspace.id),
+      ]);
 
-    const [projectRows, sessionRows] = await Promise.all([
-      fetchProjects(workspace.id),
-      fetchSessions(workspace.id),
-    ]);
-
-    setProjects(projectRows);
-    setSessions(sessionRows);
-  }, [user?.id]);
+      setProjects(projectRows);
+      setSessions(sessionRows);
+    } catch {
+      setProjectError(t("library", "library.projectLoadFailed"));
+    }
+  }, [t, user?.id]);
 
   useFocusEffect(
     useCallback(() => {
       void refresh();
     }, [refresh]),
   );
+
+  useEffect(() => {
+    return subscribeProjectSyncChanges(() => {
+      void refresh();
+    });
+  }, [refresh]);
 
   const filteredSessions = sessions.filter((session) => {
     const selectedStatus = FILTER_TO_STATUS[filter];
@@ -104,22 +122,68 @@ export default function Library() {
   const submitNewProject = async () => {
     const projectName = newName.trim();
 
-    if (!projectName || !user?.id) {
+    if (!user?.id) {
+      setProjectError(t("library", "library.authenticationRequired"));
       return;
     }
+    if (!projectName || projectSubmitInFlight.current) return;
 
-    const workspace = await resolvePersonalWorkspace(user.id);
+    projectSubmitInFlight.current = true;
+    setSubmittingProject(true);
+    setProjectError(null);
 
-    await createProject({
-      workspaceId: workspace.id,
-      createdBy: user.id,
-      name: projectName,
-    });
+    try {
+      const workspace = await resolvePersonalWorkspace(user.id);
+      const project = await createProject({
+        workspaceId: workspace.id,
+        createdBy: user.id,
+        name: projectName,
+      });
 
-    setNewName("");
-    setCreatingProject(false);
+      setProjects((current) => {
+        const withoutDuplicate = current.filter((item) => item.id !== project.id);
+        return [project, ...withoutDuplicate];
+      });
+      setNewName("");
+      setCreatingProject(false);
+      await refresh();
+    } catch {
+      setProjectError(t("library", "library.projectCreateFailed"));
+    } finally {
+      projectSubmitInFlight.current = false;
+      setSubmittingProject(false);
+    }
+  };
 
-    await refresh();
+  const retryFailedProject = async (project: ProjectRecord) => {
+    if (projectRetryInFlight.current) return;
+
+    projectRetryInFlight.current = true;
+    setRetryingProjectId(project.id);
+    setProjectError(null);
+    try {
+      const pending = await retryProjectSync(project);
+      setProjects((current) =>
+        current.map((item) => (item.id === pending.id ? pending : item)),
+      );
+    } catch {
+      setProjectError(t("library", "library.projectRetryFailed"));
+    } finally {
+      projectRetryInFlight.current = false;
+      setRetryingProjectId(null);
+    }
+  };
+
+  const projectSyncLabel = (status: string): string => {
+    const supported = [
+      "local_only",
+      "pending",
+      "synchronizing",
+      "synchronized",
+      "failed",
+    ];
+    const key = supported.includes(status) ? status : "local_only";
+    return t("library", `library.syncStatus.${key}`);
   };
 
   const renderTabs = () => {
@@ -287,7 +351,10 @@ export default function Library() {
           <Button
             testID="library-create-project-button"
             label={t("library", "library.createProject")}
-            onPress={() => setCreatingProject(true)}
+            onPress={() => {
+              setProjectError(null);
+              setCreatingProject(true);
+            }}
           />
 
           {creatingProject ? (
@@ -305,15 +372,34 @@ export default function Library() {
                 testID="library-new-project-submit-button"
                 label={t("common", "actions.save")}
                 onPress={submitNewProject}
+                loading={submittingProject}
+                disabled={!newName.trim()}
               />
 
               <Button
                 testID="library-new-project-cancel-button"
                 label={t("common", "actions.cancel")}
                 variant="ghost"
-                onPress={() => setCreatingProject(false)}
+                onPress={() => {
+                  setProjectError(null);
+                  setCreatingProject(false);
+                }}
+                disabled={submittingProject}
               />
             </View>
+          ) : null}
+
+          {projectError ? (
+            <Text
+              testID="library-project-error"
+              accessibilityRole="alert"
+              style={[
+                typography.caption,
+                { color: colors.recording, marginTop: spacing.sm },
+              ]}
+            >
+              {projectError}
+            </Text>
           ) : null}
 
           <View style={{ marginTop: spacing.md }}>
@@ -354,6 +440,36 @@ export default function Library() {
                     >
                       {project.description}
                     </Text>
+                  ) : null}
+                  <Text
+                    testID={`library-project-sync-${project.id}`}
+                    style={[
+                      typography.caption,
+                      {
+                        color:
+                          project.local_sync_status === "failed"
+                            ? colors.recording
+                            : project.local_sync_status === "synchronized"
+                              ? colors.success
+                              : colors.textTertiary,
+                        marginTop: spacing.xxs,
+                      },
+                    ]}
+                  >
+                    {projectSyncLabel(project.local_sync_status)}
+                  </Text>
+                  {project.local_sync_status === "failed" ? (
+                    <Button
+                      testID={`library-project-retry-${project.id}`}
+                      label={t("library", "library.retrySync")}
+                      variant="ghost"
+                      onPress={() => {
+                        void retryFailedProject(project);
+                      }}
+                      loading={retryingProjectId === project.id}
+                      disabled={retryingProjectId !== null}
+                      style={{ marginTop: spacing.xs }}
+                    />
                   ) : null}
                 </Card>
               ))

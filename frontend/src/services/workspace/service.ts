@@ -1,12 +1,11 @@
-// Local workspace helper. Milestone 1: personal workspace only.
-// We assume the Supabase auth trigger created a personal workspace whose id
-// is deterministically retrievable by querying workspaces where owner = auth.uid().
-// For local-only mode (no Supabase), we synthesize a stable local workspace id
-// from the user id so local records still validate.
+// Personal workspace resolver. The real Supabase workspace id is cached so a
+// previously authenticated native user can continue creating local projects
+// while offline without inventing an id that will later fail RLS.
 
 import * as Crypto from "expo-crypto";
 
 import { getSupabase } from "@/src/services/supabase/client";
+import { storage } from "@/src/utils/storage";
 
 export interface PersonalWorkspace {
   id: string;
@@ -14,27 +13,80 @@ export interface PersonalWorkspace {
 }
 
 const LOCAL_NAMESPACE_KEY = "workspace";
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export const resolvePersonalWorkspace = async (userId: string): Promise<PersonalWorkspace> => {
+const workspaceIdKey = (userId: string) => `workspace.personal.${userId}.id`;
+const workspaceNameKey = (userId: string) => `workspace.personal.${userId}.name`;
+
+const requireUserId = (userId: string): void => {
+  if (!UUID_PATTERN.test(userId)) {
+    throw new Error("An authenticated user id is required to resolve a workspace.");
+  }
+};
+
+const readCachedWorkspace = async (
+  userId: string,
+): Promise<PersonalWorkspace | null> => {
+  const id = await storage.getItem<string>(workspaceIdKey(userId), "");
+  if (!id || !UUID_PATTERN.test(id)) return null;
+  const name = await storage.getItem<string>(workspaceNameKey(userId), "My workspace");
+  return { id, name: name || "My workspace" };
+};
+
+const cacheWorkspace = async (
+  userId: string,
+  workspace: PersonalWorkspace,
+): Promise<void> => {
+  await Promise.all([
+    storage.setItem(workspaceIdKey(userId), workspace.id),
+    storage.setItem(workspaceNameKey(userId), workspace.name),
+  ]);
+};
+
+export const resolvePersonalWorkspace = async (
+  userId: string,
+): Promise<PersonalWorkspace> => {
+  requireUserId(userId);
+
+  const cached = await readCachedWorkspace(userId);
   const supabase = getSupabase();
+
   if (supabase) {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("workspaces")
       .select("id, name")
       .eq("owner_user_id", userId)
       .eq("workspace_type", "personal")
       .limit(1)
       .maybeSingle();
+
     if (data?.id) {
-      return { id: data.id, name: data.name };
+      const workspace = { id: data.id, name: data.name };
+      await cacheWorkspace(userId, workspace);
+      return workspace;
     }
+
+    if (cached) return cached;
+
+    if (error) {
+      throw new Error("The personal workspace could not be loaded from the cloud.");
+    }
+
+    throw new Error("No personal workspace exists for the signed-in user.");
   }
-  // Local-only fallback: derive a deterministic UUID from the user id.
-  // Not cryptographically meaningful — it just needs to be stable.
-  const seed = `${LOCAL_NAMESPACE_KEY}:${userId || "anonymous"}`;
-  const digest = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, seed);
-  // Convert first 32 hex chars into a 4-4-4-4-12 UUID shape.
+
+  if (cached) return cached;
+
+  // True local-only mode: derive a deterministic id from a valid user UUID.
+  // This branch is never used when Supabase is configured.
+  const seed = `${LOCAL_NAMESPACE_KEY}:${userId}`;
+  const digest = await Crypto.digestStringAsync(
+    Crypto.CryptoDigestAlgorithm.SHA256,
+    seed,
+  );
   const hex = digest.slice(0, 32).toLowerCase();
-  const id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
-  return { id, name: "My workspace" };
+  const id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+  const workspace = { id, name: "My workspace" };
+  await cacheWorkspace(userId, workspace);
+  return workspace;
 };

@@ -762,16 +762,21 @@ export const enqueueMetadataSync = async (input: EnqueueMetadataInput): Promise<
  */
 export const getNextEligibleMetadataOperation = async (
   now: string = nowIso(),
+  userId?: string,
 ): Promise<MetadataQueueRow | null> => {
   const db = await openLocalDb();
   if (!db) return null;
+
+  const userClause = userId ? " AND user_id = ?" : "";
+  const params = userId ? [now, userId] : [now];
   const row = (await db.getFirstAsync(
     `SELECT * FROM local_metadata_sync_queue
      WHERE queue_status = 'pending'
        AND (next_retry_at IS NULL OR next_retry_at <= ?)
+       ${userClause}
      ORDER BY priority ASC, created_at ASC
      LIMIT 1`,
-    [now],
+    params,
   )) as MetadataQueueRow | null;
   return row ?? null;
 };
@@ -885,6 +890,56 @@ export const countPendingMetadataOperations = async (): Promise<number> => {
   return row?.n ?? 0;
 };
 
+/**
+ * Recover operations that were claimed before the process was interrupted.
+ * This is safe because the worker is protected by an in-process mutex and is
+ * called once during startup before new work is claimed.
+ */
+export const resetInProgressMetadataOperations = async (): Promise<number> => {
+  const db = await openLocalDb();
+  if (!db) return 0;
+  const result = await db.runAsync(
+    `UPDATE local_metadata_sync_queue
+       SET queue_status = 'pending',
+           next_retry_at = NULL,
+           updated_at = ?
+     WHERE queue_status = 'in_progress'`,
+    [nowIso()],
+  );
+  return result.changes;
+};
+
+export const deleteMetadataOperationsForEntity = async (
+  entityType: MetadataQueueEntityType,
+  entityId: string,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  await db.runAsync(
+    `DELETE FROM local_metadata_sync_queue
+     WHERE entity_type = ? AND entity_id = ?`,
+    [entityType, entityId],
+  );
+};
+
+export const requeueMetadataOperationForEntity = async (
+  entityType: MetadataQueueEntityType,
+  entityId: string,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  await db.runAsync(
+    `UPDATE local_metadata_sync_queue
+       SET queue_status = 'pending',
+           next_retry_at = NULL,
+           last_error_code = NULL,
+           last_safe_error = NULL,
+           updated_at = ?
+     WHERE entity_type = ? AND entity_id = ?`,
+    [nowIso(), entityType, entityId],
+  );
+};
+
 // ==========================================================================
 // Atomic local project creation
 // ==========================================================================
@@ -961,6 +1016,67 @@ export const atomicCreateProjectWithSync = async (
         p.created_by,
         p.workspace_id,
         p.id,
+        input.idempotencyKey,
+        now,
+        now,
+      ],
+    );
+  });
+};
+
+export interface AtomicRequeueProjectSyncInput {
+  projectId: string;
+  userId: string;
+  workspaceId: string;
+  queueRowId: string;
+  idempotencyKey: string;
+}
+
+/**
+ * Requeue a failed/pending project and update its visible sync state in one
+ * local transaction. This prevents a `pending` project from being left without
+ * a corresponding queue operation if SQLite fails midway through a manual
+ * retry.
+ */
+export const atomicRequeueProjectSync = async (
+  input: AtomicRequeueProjectSyncInput,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  const now = nowIso();
+
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(
+      `UPDATE local_projects
+          SET local_sync_status = 'pending',
+              cloud_sync_status = 'pending',
+              last_sync_error_code = NULL,
+              last_sync_error_message = NULL
+        WHERE id = ?`,
+      [input.projectId],
+    );
+
+    await db.runAsync(
+      `INSERT INTO local_metadata_sync_queue
+        (id, user_id, workspace_id, entity_type, entity_id, operation,
+         parent_entity_type, parent_entity_id, priority,
+         queue_status, attempt_count, next_retry_at,
+         last_error_code, last_safe_error, idempotency_key,
+         created_at, updated_at)
+       VALUES (?, ?, ?, 'project', ?, 'UPSERT', NULL, NULL, 100,
+               'pending', 0, NULL, NULL, NULL, ?, ?, ?)
+       ON CONFLICT(idempotency_key) DO UPDATE SET
+         queue_status = 'pending',
+         attempt_count = 0,
+         next_retry_at = NULL,
+         last_error_code = NULL,
+         last_safe_error = NULL,
+         updated_at = excluded.updated_at`,
+      [
+        input.queueRowId,
+        input.userId,
+        input.workspaceId,
+        input.projectId,
         input.idempotencyKey,
         now,
         now,

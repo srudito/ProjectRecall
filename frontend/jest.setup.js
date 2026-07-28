@@ -37,3 +37,14 @@ jest.mock("expo-localization", () => ({
 }));
 
 jest.mock("react-native-url-polyfill/auto", () => ({}));
+
+jest.mock("@react-native-community/netinfo", () => ({
+  __esModule: true,
+  default: {
+    fetch: jest.fn(async () => ({
+      isConnected: true,
+      isInternetReachable: true,
+    })),
+    addEventListener: jest.fn(() => jest.fn()),
+  },
+}));

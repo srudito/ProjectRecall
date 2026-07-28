@@ -2,9 +2,9 @@
 //
 // Uses SQLite's built-in PRAGMA user_version as the authoritative schema
 // version marker. Each migration knows its target version and its `up` runs
-// inside a transaction. `PRAGMA user_version` is only updated after the
-// migration transaction commits, so an interrupted upgrade replays cleanly
-// on the next launch.
+// inside a transaction. `PRAGMA user_version` is updated within that same
+// transaction, so it advances only when the transaction commits and an
+// interrupted upgrade replays cleanly on the next launch.
 //
 // The local_meta table's "schema_version" row is retained for diagnostics but
 // is NEVER used to gate migrations — user_version is the source of truth.
@@ -245,6 +245,56 @@ const v2Ddl: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_projects_workspace_status ON local_projects(workspace_id, status, deleted_at)`,
 ];
 
+// Version 3: backfill project sync work for projects created before the
+// project metadata worker existed. Version 2 added the columns/queue but did
+// not enqueue pre-existing rows, so those projects would otherwise remain
+// local forever.
+const v3Ddl: readonly string[] = [
+  `UPDATE local_projects
+      SET local_sync_status = 'pending',
+          cloud_sync_status = 'pending',
+          last_sync_error_code = NULL,
+          last_sync_error_message = NULL
+    WHERE deleted_at IS NULL
+      AND status = 'active'
+      AND (local_sync_status <> 'synchronized'
+           OR cloud_sync_status <> 'synchronized')`,
+  `INSERT INTO local_metadata_sync_queue
+      (id, user_id, workspace_id, entity_type, entity_id, operation,
+       parent_entity_type, parent_entity_id, priority, queue_status,
+       attempt_count, next_retry_at, last_error_code, last_safe_error,
+       idempotency_key, created_at, updated_at)
+    SELECT 'project-upsert:' || id,
+           created_by,
+           workspace_id,
+           'project',
+           id,
+           'UPSERT',
+           NULL,
+           NULL,
+           100,
+           'pending',
+           0,
+           NULL,
+           NULL,
+           NULL,
+           'upsert:project:' || id,
+           created_at,
+           updated_at
+      FROM local_projects
+     WHERE deleted_at IS NULL
+       AND status = 'active'
+       AND (local_sync_status <> 'synchronized'
+            OR cloud_sync_status <> 'synchronized')
+    ON CONFLICT(idempotency_key) DO UPDATE SET
+      queue_status = 'pending',
+      attempt_count = 0,
+      next_retry_at = NULL,
+      last_error_code = NULL,
+      last_safe_error = NULL,
+      updated_at = excluded.updated_at`,
+];
+
 export const MIGRATIONS: readonly Migration[] = [
   {
     version: 1,
@@ -260,6 +310,15 @@ export const MIGRATIONS: readonly Migration[] = [
     description: "Project sync columns + local_metadata_sync_queue.",
     up: async ({ db }) => {
       for (const stmt of v2Ddl) {
+        await db.execAsync(stmt);
+      }
+    },
+  },
+  {
+    version: 3,
+    description: "Backfill pending project sync operations.",
+    up: async ({ db }) => {
+      for (const stmt of v3Ddl) {
         await db.execAsync(stmt);
       }
     },
@@ -289,9 +348,10 @@ const setUserVersion = async (db: MinimalDb, version: number): Promise<void> => 
 
 /**
  * Apply all migrations whose version > current user_version.
- * Each migration runs in its own transaction; user_version is bumped ONLY
- * after that transaction commits. If a transaction fails the next launch
- * sees the same user_version and replays cleanly.
+ * Each migration runs in its own transaction; user_version is changed inside
+ * that transaction and therefore advances only if the transaction commits. If
+ * a transaction fails, the next launch sees the same user_version and replays
+ * cleanly.
  */
 export const runMigrations = async (
   db: MinimalDb,
