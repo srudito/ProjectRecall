@@ -15,13 +15,15 @@ import {
   addBookmark,
   addMediaAsset,
   addNote,
+  fetchSession,
   markSessionRecording,
   markSessionStopped,
   recordTimelineEvent,
+  setSessionStatus,
 } from "@/src/services/session/service";
-import { getSession, listBookmarksForSession } from "@/src/services/sqlite/repository";
+import { listBookmarksForSession } from "@/src/services/sqlite/repository";
 import type { SessionRecord } from "@/src/services/sqlite/repository";
-import { TimelineEventType } from "@/src/domain/enums";
+import { SessionStatus, TimelineEventType } from "@/src/domain/enums";
 import { throwIfInvalid } from "@/src/services/files/validation";
 import { isDuplicateBookmark } from "@/src/services/session/duplicate-prevention";
 import { useRecordingStore } from "@/src/stores/recording-store";
@@ -46,18 +48,31 @@ export default function ActiveRecording() {
   const [showNoteSheet, setShowNoteSheet] = useState(false);
   const [noteText, setNoteText] = useState("");
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
-  const [, setTick] = useState(0);
+  const [elapsedMs, setElapsedMs] = useState(0);
 
   useEffect(() => {
     const unsub = bind();
     return unsub;
   }, [bind]);
 
-  // 1Hz refresh so the timer updates while recording (offset is queried live).
+  // Keep the displayed timer live. The Zustand snapshot is emitted on state
+  // transitions, while the offset tracker itself advances continuously. Poll
+  // the controller while recording and freeze the final value while paused or
+  // stopped.
   useEffect(() => {
-    const interval = setInterval(() => setTick((n) => n + 1), 1000);
+    const refreshElapsed = () => {
+      setElapsedMs(controller.getSnapshot().offsetMs);
+    };
+
+    refreshElapsed();
+
+    if (snapshot.state !== RecordingState.RECORDING) {
+      return;
+    }
+
+    const interval = setInterval(refreshElapsed, 250);
     return () => clearInterval(interval);
-  }, []);
+  }, [controller, snapshot.state]);
 
   useEffect(() => {
     (async () => {
@@ -66,7 +81,7 @@ export default function ActiveRecording() {
         setStatusMsg(t("errors", "AUTH_SESSION_EXPIRED"));
         return;
       }
-      const s = await getSession(String(sessionId));
+      const s = await fetchSession(String(sessionId));
       setSession(s);
       // Auto-start.
       if (s && snapshot.state === RecordingState.IDLE) {
@@ -100,24 +115,33 @@ export default function ActiveRecording() {
       if (!userId) setStatusMsg(t("errors", "AUTH_SESSION_EXPIRED"));
       return;
     }
-    if (snapshot.state === RecordingState.RECORDING) {
-      await controller.pause();
-      await recordTimelineEvent(session, {
-        event_type: TimelineEventType.RECORDING_PAUSED,
-        source_entity_type: null,
-        source_entity_id: null,
-        recording_offset_ms: controller.getSnapshot().offsetMs,
-        created_by: userId,
-      });
-    } else if (snapshot.state === RecordingState.PAUSED) {
-      await controller.resume();
-      await recordTimelineEvent(session, {
-        event_type: TimelineEventType.RECORDING_RESUMED,
-        source_entity_type: null,
-        source_entity_id: null,
-        recording_offset_ms: controller.getSnapshot().offsetMs,
-        created_by: userId,
-      });
+
+    try {
+      if (snapshot.state === RecordingState.RECORDING) {
+        await controller.pause();
+        const paused = await setSessionStatus(session, SessionStatus.PAUSED);
+        setSession(paused);
+        await recordTimelineEvent(paused, {
+          event_type: TimelineEventType.RECORDING_PAUSED,
+          source_entity_type: null,
+          source_entity_id: null,
+          recording_offset_ms: controller.getSnapshot().offsetMs,
+          created_by: userId,
+        });
+      } else if (snapshot.state === RecordingState.PAUSED) {
+        await controller.resume();
+        const resumed = await setSessionStatus(session, SessionStatus.RECORDING);
+        setSession(resumed);
+        await recordTimelineEvent(resumed, {
+          event_type: TimelineEventType.RECORDING_RESUMED,
+          source_entity_type: null,
+          source_entity_id: null,
+          recording_offset_ms: controller.getSnapshot().offsetMs,
+          created_by: userId,
+        });
+      }
+    } catch (error) {
+      setStatusMsg(String(error));
     }
   };
 
@@ -292,7 +316,7 @@ export default function ActiveRecording() {
             testID="recording-elapsed-timer"
             style={[typography.timer, { color: colors.textPrimary, marginTop: spacing.md }]}
           >
-            {formatDurationMs(snapshot.offsetMs)}
+            {formatDurationMs(elapsedMs)}
           </Text>
           <Text style={[typography.caption, { color: colors.textTertiary, marginTop: spacing.xs }]}>
             {t("recording", "meterUnavailable")}

@@ -22,7 +22,7 @@ import type {
   ProjectRecord,
   SessionRecord,
 } from "@/src/services/sqlite/repository";
-import { subscribeProjectSyncChanges } from "@/src/services/sync/project-sync-events";
+import { subscribeMetadataSyncChanges } from "@/src/services/sync/project-sync-events";
 import { resolvePersonalWorkspace } from "@/src/services/workspace/service";
 import { useAuthStore } from "@/src/stores/auth-store";
 import { useTheme } from "@/src/theme/ThemeProvider";
@@ -42,7 +42,7 @@ const FILTER_TO_STATUS: Record<Filter, string | null> = {
   all: null,
   localOnly: "local_only",
   pending: "pending",
-  syncing: "uploading",
+  syncing: "synchronizing",
   synced: "synchronized",
   failed: "failed",
 };
@@ -96,7 +96,7 @@ export default function Library() {
   );
 
   useEffect(() => {
-    return subscribeProjectSyncChanges(() => {
+    return subscribeMetadataSyncChanges(() => {
       void refresh();
     });
   }, [refresh]);
@@ -174,7 +174,7 @@ export default function Library() {
     }
   };
 
-  const projectSyncLabel = (status: string): string => {
+  const syncStatusLabel = (status: string): string => {
     const supported = [
       "local_only",
       "pending",
@@ -456,7 +456,7 @@ export default function Library() {
                       },
                     ]}
                   >
-                    {projectSyncLabel(project.local_sync_status)}
+                    {syncStatusLabel(project.local_sync_status)}
                   </Text>
                   {project.local_sync_status === "failed" ? (
                     <Button
@@ -536,7 +536,7 @@ export default function Library() {
                     {formatDurationMs(
                       item.total_recorded_duration_ms,
                     )}{" "}
-                    • {item.local_sync_status}
+                    • {syncStatusLabel(item.local_sync_status)}
                   </Text>
                 </Card>
               </TouchableOpacity>

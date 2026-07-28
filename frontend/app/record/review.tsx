@@ -6,8 +6,8 @@ import { Button } from "@/src/components/Button";
 import { Card } from "@/src/components/Card";
 import { Screen } from "@/src/components/Screen";
 import { useI18n } from "@/src/i18n/I18nProvider";
-import { getSessionBundle } from "@/src/services/session/service";
-import { SessionRecord, getSession } from "@/src/services/sqlite/repository";
+import { fetchSession, getSessionBundle } from "@/src/services/session/service";
+import type { SessionRecord } from "@/src/services/sqlite/repository";
 import { useTheme } from "@/src/theme/ThemeProvider";
 import { formatDurationMs } from "@/src/utils/format";
 
@@ -22,7 +22,7 @@ export default function Review() {
   useEffect(() => {
     (async () => {
       if (!sessionId) return;
-      const s = await getSession(String(sessionId));
+      const s = await fetchSession(String(sessionId));
       setSession(s);
       const bundle = await getSessionBundle(String(sessionId));
       setCounts({

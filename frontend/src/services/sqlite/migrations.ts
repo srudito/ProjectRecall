@@ -295,6 +295,63 @@ const v3Ddl: readonly string[] = [
       updated_at = excluded.updated_at`,
 ];
 
+
+// Version 4: add durable session synchronization diagnostics and enqueue
+// existing local sessions behind their parent projects.
+const v4Ddl: readonly string[] = [
+  `ALTER TABLE local_sessions ADD COLUMN last_sync_error_code TEXT`,
+  `ALTER TABLE local_sessions ADD COLUMN last_sync_error_message TEXT`,
+  `ALTER TABLE local_sessions ADD COLUMN last_synced_at TEXT`,
+  `CREATE INDEX IF NOT EXISTS idx_sessions_workspace_sync ON local_sessions(workspace_id, local_sync_status, deleted_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_meta_queue_parent ON local_metadata_sync_queue(parent_entity_type, parent_entity_id, queue_status)`,
+  `UPDATE local_sessions
+      SET local_sync_status = 'pending',
+          cloud_sync_status = 'pending',
+          last_sync_error_code = NULL,
+          last_sync_error_message = NULL
+    WHERE deleted_at IS NULL
+      AND status <> 'deleting'
+      AND (local_sync_status <> 'synchronized'
+           OR cloud_sync_status <> 'synchronized')`,
+  `INSERT INTO local_metadata_sync_queue
+      (id, user_id, workspace_id, entity_type, entity_id, operation,
+       parent_entity_type, parent_entity_id, priority, queue_status,
+       attempt_count, next_retry_at, last_error_code, last_safe_error,
+       idempotency_key, created_at, updated_at)
+    SELECT 'session-upsert:' || id,
+           created_by,
+           workspace_id,
+           'session',
+           id,
+           'UPSERT',
+           CASE WHEN project_id IS NULL THEN NULL ELSE 'project' END,
+           project_id,
+           200,
+           'pending',
+           0,
+           NULL,
+           NULL,
+           NULL,
+           'upsert:session:' || id,
+           created_at,
+           updated_at
+      FROM local_sessions
+     WHERE deleted_at IS NULL
+       AND status <> 'deleting'
+       AND (local_sync_status <> 'synchronized'
+            OR cloud_sync_status <> 'synchronized')
+    ON CONFLICT(idempotency_key) DO UPDATE SET
+      parent_entity_type = excluded.parent_entity_type,
+      parent_entity_id = excluded.parent_entity_id,
+      priority = excluded.priority,
+      queue_status = 'pending',
+      attempt_count = 0,
+      next_retry_at = NULL,
+      last_error_code = NULL,
+      last_safe_error = NULL,
+      updated_at = excluded.updated_at`,
+];
+
 export const MIGRATIONS: readonly Migration[] = [
   {
     version: 1,
@@ -319,6 +376,15 @@ export const MIGRATIONS: readonly Migration[] = [
     description: "Backfill pending project sync operations.",
     up: async ({ db }) => {
       for (const stmt of v3Ddl) {
+        await db.execAsync(stmt);
+      }
+    },
+  },
+  {
+    version: 4,
+    description: "Session sync diagnostics + pending session backfill.",
+    up: async ({ db }) => {
+      for (const stmt of v4Ddl) {
         await db.execAsync(stmt);
       }
     },

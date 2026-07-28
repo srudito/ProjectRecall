@@ -1,5 +1,10 @@
 # Project Sync v1 - Manual Verification
 
+
+> **Historical checkpoint note:** This document describes the Project Sync v1
+> boundary. Session metadata synchronization is added by Session Sync v1; see
+> `SESSION_SYNC_V1_IMPLEMENTATION.md` and `SESSION_SYNC_V1_TEST.md`.
+
 Use the `milestone1sync` branch and the existing Supabase development project.
 Do not use a service-role key in the mobile application.
 

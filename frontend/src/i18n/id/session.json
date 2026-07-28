@@ -29,6 +29,7 @@
     "syncNow": "Sinkron sekarang",
     "syncLater": "Sinkron nanti",
     "retry": "Coba lagi",
+    "retryFailed": "Sinkronisasi sesi tidak dapat dimulai kembali.",
     "details": "Detail sinkronisasi"
   },
   "actions": {

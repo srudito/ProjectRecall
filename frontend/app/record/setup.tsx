@@ -12,7 +12,7 @@ import { useI18n } from "@/src/i18n/I18nProvider";
 import { createSession, fetchProjects } from "@/src/services/session/service";
 import { validateSpokenLanguageSelection } from "@/src/services/language/precedence";
 import type { ProjectRecord } from "@/src/services/sqlite/repository";
-import { subscribeProjectSyncChanges } from "@/src/services/sync/project-sync-events";
+import { subscribeMetadataSyncChanges } from "@/src/services/sync/project-sync-events";
 import { resolvePersonalWorkspace } from "@/src/services/workspace/service";
 import { useAuthStore } from "@/src/stores/auth-store";
 import { useTheme } from "@/src/theme/ThemeProvider";
@@ -50,7 +50,7 @@ export default function RecordSetup() {
 
   useEffect(
     () =>
-      subscribeProjectSyncChanges(() => {
+      subscribeMetadataSyncChanges(() => {
         void loadProjects();
       }),
     [loadProjects],

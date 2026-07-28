@@ -1,6 +1,6 @@
-// Session service. Project metadata is local-first on native and remote-only
-// on web. The remaining Milestone 1 entities are still local-only and will be
-// moved onto the same synchronization foundation in the next pass.
+// Session service. Project and session metadata are local-first on native and
+// remote-only on web. Notes, bookmarks, timeline events, recording metadata,
+// media metadata, and binary files remain on their original local-only paths.
 
 import * as Crypto from "expo-crypto";
 import { Platform } from "react-native";
@@ -14,8 +14,11 @@ import {
 import {
   atomicCreateProjectWithSync,
   atomicRequeueProjectSync,
+  atomicRequeueSessionSync,
+  atomicUpsertSessionWithSync,
   deleteMetadataOperationsForEntity,
   getProject,
+  getSession,
   insertBookmark,
   insertMediaAsset,
   insertNote,
@@ -40,8 +43,13 @@ import {
   fetchRemoteProjects,
   upsertRemoteProject,
 } from "@/src/services/supabase/project-repository";
-import { notifyProjectSyncChanges } from "@/src/services/sync/project-sync-events";
-import { requestProjectSync } from "@/src/services/sync/project-sync-worker";
+import {
+  fetchRemoteSession,
+  fetchRemoteSessions,
+  upsertRemoteSession,
+} from "@/src/services/supabase/session-repository";
+import { notifyMetadataSyncChanges } from "@/src/services/sync/project-sync-events";
+import { requestMetadataSync } from "@/src/services/sync/project-sync-worker";
 import { buildIdempotencyKey } from "@/src/services/upload-queue/backoff";
 
 const generateId = () => Crypto.randomUUID();
@@ -189,7 +197,7 @@ export const createProject = async (
     queueRowId: generateId(),
     idempotencyKey: buildIdempotencyKey(["upsert", "project", project.id]),
   });
-  requestProjectSync();
+  requestMetadataSync();
   return project;
 };
 
@@ -218,7 +226,7 @@ export const retryProjectSync = async (
     queueRowId: generateId(),
     idempotencyKey: buildIdempotencyKey(["upsert", "project", project.id]),
   });
-  requestProjectSync();
+  requestMetadataSync();
   return pending;
 };
 
@@ -229,10 +237,10 @@ const refreshNativeProjectsFromCloud = async (
     const remoteProjects = await fetchRemoteProjects(workspaceId);
     const changed = await mergeRemoteProjectsIntoLocal(remoteProjects);
     if (changed) {
-      notifyProjectSyncChanges();
+      notifyMetadataSyncChanges();
     }
   } finally {
-    requestProjectSync();
+    requestMetadataSync();
   }
 };
 
@@ -263,52 +271,221 @@ export interface CreateSessionInput {
   expectedSpokenLanguages: string[];
 }
 
+const isUnsynchronizedSession = (session: SessionRecord): boolean =>
+  session.local_sync_status !== "synchronized" ||
+  session.cloud_sync_status !== "synchronized";
+
+const sessionContentMatches = (
+  left: SessionRecord,
+  right: SessionRecord,
+): boolean =>
+  left.id === right.id &&
+  left.workspace_id === right.workspace_id &&
+  left.project_id === right.project_id &&
+  left.created_by === right.created_by &&
+  left.title === right.title &&
+  left.session_type === right.session_type &&
+  left.status === right.status &&
+  left.started_at === right.started_at &&
+  left.stopped_at === right.stopped_at &&
+  left.total_recorded_duration_ms === right.total_recorded_duration_ms &&
+  left.spoken_language_mode === right.spoken_language_mode &&
+  JSON.stringify(left.expected_spoken_languages) ===
+    JSON.stringify(right.expected_spoken_languages) &&
+  JSON.stringify(left.detected_spoken_languages) ===
+    JSON.stringify(right.detected_spoken_languages) &&
+  left.primary_detected_language === right.primary_detected_language &&
+  left.language_detection_status === right.language_detection_status &&
+  left.summary_output_language === right.summary_output_language &&
+  left.translation_target_language === right.translation_target_language &&
+  left.transcript_display_mode === right.transcript_display_mode &&
+  JSON.stringify(left.language_metadata) === JSON.stringify(right.language_metadata) &&
+  left.deleted_at === right.deleted_at;
+
+export const mergeRemoteSessionsIntoLocal = async (
+  remoteSessions: SessionRecord[],
+): Promise<boolean> => {
+  let changed = false;
+
+  for (const remote of remoteSessions) {
+    const local = await getSession(remote.id);
+
+    if (!local) {
+      await upsertSession(remote);
+      changed = true;
+      continue;
+    }
+
+    // Local deletion is intentionally preserved until cloud-aware deletion is
+    // implemented; a cloud refresh must never resurrect the hidden local row.
+    if (local.deleted_at != null) {
+      continue;
+    }
+
+    if (isUnsynchronizedSession(local)) {
+      const alreadyReachedCloud = sessionContentMatches(local, remote);
+      const cloudIsAtLeastAsNew =
+        timestampMs(remote.updated_at) >= timestampMs(local.updated_at);
+
+      if (!alreadyReachedCloud && !cloudIsAtLeastAsNew) {
+        continue;
+      }
+
+      await upsertSession({
+        ...remote,
+        local_sync_status: "synchronized",
+        cloud_sync_status: "synchronized",
+        last_sync_error_code: null,
+        last_sync_error_message: null,
+        last_synced_at: nowIso(),
+      });
+      await deleteMetadataOperationsForEntity("session", remote.id);
+      changed = true;
+      continue;
+    }
+
+    const remoteIsNewer =
+      timestampMs(remote.updated_at) > timestampMs(local.updated_at);
+    const contentChanged = !sessionContentMatches(local, remote);
+
+    if (remoteIsNewer || contentChanged) {
+      await upsertSession({
+        ...remote,
+        local_sync_status: "synchronized",
+        cloud_sync_status: "synchronized",
+        last_sync_error_code: null,
+        last_sync_error_message: null,
+        last_synced_at: nowIso(),
+      });
+      changed = true;
+    }
+  }
+
+  return changed;
+};
+
+const saveSessionWithSync = async (
+  session: SessionRecord,
+): Promise<SessionRecord> => {
+  requireUuid(session.workspace_id, "workspaceId");
+  requireUuid(session.created_by, "createdBy");
+  if (session.project_id) requireUuid(session.project_id, "projectId");
+
+  if (Platform.OS === "web") {
+    return upsertRemoteSession(session);
+  }
+
+  await atomicUpsertSessionWithSync({
+    session,
+    queueRowId: generateId(),
+    idempotencyKey: buildIdempotencyKey(["upsert", "session", session.id]),
+  });
+  requestMetadataSync();
+  return session;
+};
+
 export const createSession = async (
   input: CreateSessionInput,
 ): Promise<SessionRecord> => {
+  requireUuid(input.workspaceId, "workspaceId");
+  requireUuid(input.createdBy, "createdBy");
+  if (input.projectId) requireUuid(input.projectId, "projectId");
+
   const now = nowIso();
   const session: SessionRecord = {
     id: generateId(),
     workspace_id: input.workspaceId,
     project_id: input.projectId,
     created_by: input.createdBy,
-    title: input.title,
+    title: input.title.trim() || "Untitled session",
+    session_type: "standard",
     status: SessionStatus.DRAFT,
-    spoken_language_mode: input.spokenLanguageMode,
-    expected_spoken_languages: input.expectedSpokenLanguages,
     started_at: null,
     stopped_at: null,
     total_recorded_duration_ms: 0,
-    local_sync_status: UploadStatus.LOCAL_ONLY,
-    cloud_sync_status: UploadStatus.LOCAL_ONLY,
+    spoken_language_mode: input.spokenLanguageMode,
+    expected_spoken_languages: input.expectedSpokenLanguages,
+    detected_spoken_languages: [],
+    primary_detected_language: null,
+    language_detection_status: "NOT_STARTED",
+    summary_output_language: null,
+    translation_target_language: null,
+    transcript_display_mode: "ORIGINAL",
+    language_metadata: null,
+    local_sync_status: "pending",
+    cloud_sync_status: "pending",
     created_at: now,
     updated_at: now,
     deleted_at: null,
+    last_sync_error_code: null,
+    last_sync_error_message: null,
+    last_synced_at: null,
   };
-  await upsertSession(session);
-  return session;
+
+  return saveSessionWithSync(session);
+};
+
+export const retrySessionSync = async (
+  session: SessionRecord,
+): Promise<SessionRecord> => {
+  requireUuid(session.workspace_id, "workspaceId");
+  requireUuid(session.created_by, "createdBy");
+  if (session.project_id) requireUuid(session.project_id, "projectId");
+
+  const pending: SessionRecord = {
+    ...session,
+    local_sync_status: "pending",
+    cloud_sync_status: "pending",
+    last_sync_error_code: null,
+    last_sync_error_message: null,
+  };
+
+  if (Platform.OS === "web") {
+    return upsertRemoteSession(pending);
+  }
+
+  await atomicRequeueSessionSync({
+    sessionId: session.id,
+    userId: session.created_by,
+    workspaceId: session.workspace_id,
+    projectId: session.project_id,
+    queueRowId: generateId(),
+    idempotencyKey: buildIdempotencyKey(["upsert", "session", session.id]),
+  });
+  requestMetadataSync();
+  return pending;
 };
 
 export const setSessionStatus = async (
   session: SessionRecord,
   status: string,
 ): Promise<SessionRecord> => {
-  const updated = { ...session, status, updated_at: nowIso() };
-  await upsertSession(updated);
-  return updated;
+  const updated: SessionRecord = {
+    ...session,
+    status,
+    updated_at: nowIso(),
+    local_sync_status: "pending",
+    cloud_sync_status: "pending",
+    last_sync_error_code: null,
+    last_sync_error_message: null,
+  };
+  return saveSessionWithSync(updated);
 };
 
 export const markSessionRecording = async (
   session: SessionRecord,
 ): Promise<SessionRecord> => {
-  const updated = {
+  const updated: SessionRecord = {
     ...session,
     status: SessionStatus.RECORDING,
     started_at: session.started_at ?? nowIso(),
     updated_at: nowIso(),
+    local_sync_status: "pending",
+    cloud_sync_status: "pending",
+    last_sync_error_code: null,
+    last_sync_error_message: null,
   };
-  await upsertSession(updated);
-  return updated;
+  return saveSessionWithSync(updated);
 };
 
 export const markSessionStopped = async (
@@ -321,16 +498,82 @@ export const markSessionStopped = async (
     stopped_at: nowIso(),
     total_recorded_duration_ms: totalDurationMs,
     updated_at: nowIso(),
+    local_sync_status: "pending",
+    cloud_sync_status: "pending",
+    last_sync_error_code: null,
+    last_sync_error_message: null,
   };
-  await upsertSession(updated);
-  return updated;
+  return saveSessionWithSync(updated);
 };
 
 export const deleteSession = async (session: SessionRecord): Promise<void> => {
   await softDeleteSession(session.id);
+  await deleteMetadataOperationsForEntity("session", session.id);
 };
 
-export const fetchSessions = (workspaceId: string) => listSessions(workspaceId);
+const refreshNativeSessionsFromCloud = async (
+  workspaceId: string,
+): Promise<void> => {
+  try {
+    const remoteSessions = await fetchRemoteSessions(workspaceId);
+    const changed = await mergeRemoteSessionsIntoLocal(remoteSessions);
+    if (changed) notifyMetadataSyncChanges();
+  } finally {
+    requestMetadataSync();
+  }
+};
+
+export const fetchSessions = async (
+  workspaceId: string,
+): Promise<SessionRecord[]> => {
+  requireUuid(workspaceId, "workspaceId");
+
+  if (Platform.OS === "web") {
+    return fetchRemoteSessions(workspaceId);
+  }
+
+  const localSessions = await listSessions(workspaceId);
+  void refreshNativeSessionsFromCloud(workspaceId).catch(() => {
+    // Local sessions remain available while offline. Queue diagnostics retain
+    // the safe cloud error for pending writes.
+  });
+  return localSessions;
+};
+
+export const fetchSession = async (
+  sessionId: string,
+): Promise<SessionRecord | null> => {
+  requireUuid(sessionId, "sessionId");
+
+  if (Platform.OS === "web") {
+    return fetchRemoteSession(sessionId);
+  }
+
+  const local = await getSession(sessionId);
+  if (local?.deleted_at != null) return null;
+
+  if (local) {
+    void fetchRemoteSession(sessionId)
+      .then(async (remote) => {
+        if (!remote) return;
+        const changed = await mergeRemoteSessionsIntoLocal([remote]);
+        if (changed) notifyMetadataSyncChanges();
+      })
+      .catch(() => {
+        // The local row remains usable offline.
+      });
+    return local;
+  }
+
+  try {
+    const remote = await fetchRemoteSession(sessionId);
+    if (!remote) return null;
+    await upsertSession(remote);
+    return remote;
+  } catch {
+    return null;
+  }
+};
 
 // --- Notes / Bookmarks / Media --------------------------------------------
 export const addNote = async (input: {

@@ -1,5 +1,10 @@
 # Project Sync v1 Implementation Report
 
+
+> **Historical checkpoint note:** This document describes the Project Sync v1
+> boundary. Session metadata synchronization is added by Session Sync v1; see
+> `SESSION_SYNC_V1_IMPLEMENTATION.md` and `SESSION_SYNC_V1_TEST.md`.
+
 ## Scope completed
 
 This pass adds project-only local-to-cloud synchronization while preserving the

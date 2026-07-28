@@ -1,5 +1,5 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ScrollView, Text, TouchableOpacity, View } from "react-native";
 
 import { Button } from "@/src/components/Button";
@@ -8,15 +8,20 @@ import { Screen } from "@/src/components/Screen";
 import { useI18n } from "@/src/i18n/I18nProvider";
 import { TimelineEventType } from "@/src/domain/enums";
 import { sortTimeline } from "@/src/services/timeline/ordering";
-import { deleteSession, getSessionBundle } from "@/src/services/session/service";
 import {
+  deleteSession,
+  fetchSession,
+  getSessionBundle,
+  retrySessionSync,
+} from "@/src/services/session/service";
+import type {
   BookmarkRecord,
   MediaAssetRecord,
   NoteRecord,
   SessionRecord,
   TimelineEventRecord,
-  getSession,
 } from "@/src/services/sqlite/repository";
+import { subscribeMetadataSyncChanges } from "@/src/services/sync/project-sync-events";
 import { useTheme } from "@/src/theme/ThemeProvider";
 import { formatDurationMs } from "@/src/utils/format";
 
@@ -74,29 +79,71 @@ export default function SessionDetail() {
   const [notes, setNotes] = useState<NoteRecord[]>([]);
   const [bookmarks, setBookmarks] = useState<BookmarkRecord[]>([]);
   const [assets, setAssets] = useState<MediaAssetRecord[]>([]);
+  const [retryingSync, setRetryingSync] = useState(false);
+  const [syncActionError, setSyncActionError] = useState<string | null>(null);
+
+  const loadSession = useCallback(async () => {
+    if (!id) return;
+    const sessionId = String(id);
+    const loadedSession = await fetchSession(sessionId);
+    setSession(loadedSession);
+
+    const bundle = await getSessionBundle(sessionId);
+    setNotes(bundle.notes);
+    setBookmarks(bundle.bookmarks);
+    setAssets(bundle.assets);
+    setTimeline(
+      sortTimeline(bundle.timeline).map((event) => ({
+        ...event,
+        label: buildLabel(
+          event,
+          bundle.notes,
+          bundle.bookmarks,
+          bundle.assets,
+          t,
+        ),
+      })),
+    );
+  }, [id, t]);
 
   useEffect(() => {
-    (async () => {
-      if (!id) return;
-      const s = await getSession(String(id));
-      setSession(s);
-      const bundle = await getSessionBundle(String(id));
-      setNotes(bundle.notes);
-      setBookmarks(bundle.bookmarks);
-      setAssets(bundle.assets);
-      const combined = sortTimeline(bundle.timeline).map((ev) => ({
-        ...ev,
-        label: buildLabel(ev, bundle.notes, bundle.bookmarks, bundle.assets, t),
-      }));
-      setTimeline(combined);
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+    void loadSession();
+    return subscribeMetadataSyncChanges(() => {
+      void loadSession();
+    });
+  }, [loadSession]);
 
   const onDelete = async () => {
     if (!session) return;
     await deleteSession(session);
     router.replace("/(tabs)/library");
+  };
+
+  const onRetrySync = async () => {
+    if (!session || retryingSync) return;
+
+    setRetryingSync(true);
+    setSyncActionError(null);
+    try {
+      const pending = await retrySessionSync(session);
+      setSession(pending);
+    } catch {
+      setSyncActionError(t("session", "sync.retryFailed"));
+    } finally {
+      setRetryingSync(false);
+    }
+  };
+
+  const syncStatusLabel = (status: string): string => {
+    const supported = new Set([
+      "local_only",
+      "pending",
+      "synchronizing",
+      "synchronized",
+      "failed",
+    ]);
+    const key = supported.has(status) ? status : "local_only";
+    return t("library", `library.syncStatus.${key}`);
   };
 
   if (!session) {
@@ -108,7 +155,7 @@ export default function SessionDetail() {
   }
 
   const renderTabs = () => {
-    const tabs: Array<{ key: typeof tab; label: string }> = [
+    const tabs: { key: typeof tab; label: string }[] = [
       { key: "overview", label: t("session", "tabs.overview") },
       { key: "timeline", label: t("session", "tabs.timeline") },
       { key: "evidence", label: t("session", "tabs.evidence") },
@@ -164,6 +211,40 @@ export default function SessionDetail() {
           <Text style={[typography.body, { color: colors.textPrimary }]}>
             {session.expected_spoken_languages.join(", ") || "—"}
           </Text>
+          <View style={{ height: spacing.md }} />
+          <Text style={[typography.caption, { color: colors.textTertiary }]}>
+            {t("session", "sync.details")}
+          </Text>
+          <Text style={[typography.body, { color: colors.textPrimary }]}>
+            {syncStatusLabel(session.local_sync_status)}
+          </Text>
+          {session.last_sync_error_message ? (
+            <Text style={[typography.caption, { color: colors.recording, marginTop: spacing.xs }]}>
+              {session.last_sync_error_message}
+            </Text>
+          ) : null}
+          {syncActionError ? (
+            <Text
+              accessibilityRole="alert"
+              style={[
+                typography.caption,
+                { color: colors.recording, marginTop: spacing.xs },
+              ]}
+            >
+              {syncActionError}
+            </Text>
+          ) : null}
+          {session.local_sync_status === "failed" ? (
+            <Button
+              testID="session-retry-sync-button"
+              label={t("session", "sync.retry")}
+              variant="secondary"
+              onPress={onRetrySync}
+              loading={retryingSync}
+              disabled={retryingSync}
+              style={{ marginTop: spacing.xs }}
+            />
+          ) : null}
         </Card>
       ) : null}
 

@@ -102,13 +102,29 @@ describe("local SQLite migration runner", () => {
 
     const result = await runMigrations(db, MIGRATIONS);
 
-    expect(LATEST_LOCAL_SCHEMA_VERSION).toBe(3);
-    expect(result).toEqual({ appliedVersions: [3], finalVersion: 3 });
-    expect(
-      state.executed.some((sql) => sql.includes("local_metadata_sync_queue")),
-    ).toBe(true);
+    expect(LATEST_LOCAL_SCHEMA_VERSION).toBe(4);
+    expect(result).toEqual({ appliedVersions: [3, 4], finalVersion: 4 });
     expect(
       state.executed.some((sql) => sql.includes("upsert:project:")),
+    ).toBe(true);
+  });
+
+  it("adds session diagnostics and backfills session sync at version 4", async () => {
+    const { db, state } = createFakeDb(3);
+
+    const result = await runMigrations(db, MIGRATIONS);
+
+    expect(result).toEqual({ appliedVersions: [4], finalVersion: 4 });
+    expect(
+      state.executed.some((sql) =>
+        sql.includes("ALTER TABLE local_sessions ADD COLUMN last_synced_at"),
+      ),
+    ).toBe(true);
+    expect(
+      state.executed.some((sql) => sql.includes("upsert:session:")),
+    ).toBe(true);
+    expect(
+      state.executed.some((sql) => sql.includes("parent_entity_type")),
     ).toBe(true);
   });
 

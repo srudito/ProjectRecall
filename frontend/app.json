@@ -15,7 +15,9 @@
         "NSMicrophoneUsageDescription": "Record audio when you tap Record.",
         "NSCameraUsageDescription": "Attach photos to the current recording.",
         "NSPhotoLibraryUsageDescription": "Attach photos and videos to sessions.",
-        "UIBackgroundModes": ["audio"]
+        "UIBackgroundModes": [
+          "audio"
+        ]
       }
     },
     "android": {
@@ -69,7 +71,8 @@
           "cameraPermission": "Attach photos to the current recording."
         }
       ],
-      "expo-localization"
+      "expo-localization",
+      "expo-asset"
     ],
     "experiments": {
       "typedRoutes": true

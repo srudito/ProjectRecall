@@ -1,29 +1,70 @@
 // Recording controller.
 //
-// Owns the expo-audio recorder instance, the recording state machine, and the
-// offset tracker. Exposes a small imperative surface used by the UI.
+// Owns the recording state machine and offset tracker. The expo-audio recorder
+// itself is created by React's useAudioRecorder hook and attached through
+// attachRecorder(). expo-audio does not expose AudioRecorder as a public
+// cross-platform constructor, so this controller must never call
+// `new AudioRecorder(...)` directly.
 //
 // Real device behaviour (background recording, screen lock, foreground service
-// notification) requires a development build. This module preserves the
-// recorder object across app lifecycle so that resuming the app after
-// backgrounding does not silently lose the session.
+// notification) requires a development build. The recorder hook is mounted at
+// the application root so the native recorder object survives route changes
+// and app background/foreground transitions during an active recording.
 
 import * as FileSystem from "expo-file-system/legacy";
 
 import { AppError, ErrorCode } from "@/src/domain/errors";
-import { canTransition, nextState, RecordingEvent, RecordingState } from "./state-machine";
-import { createOffsetTracker, OffsetTracker } from "./offset-tracker";
 
-// expo-audio APIs are surface-tested here — imports are optional so this file
-// can run in Jest with a mock.
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-let ExpoAudio: any;
+import { createOffsetTracker } from "./offset-tracker";
+import type { OffsetTracker } from "./offset-tracker";
+import {
+  canTransition,
+  nextState,
+  RecordingEvent,
+  RecordingState,
+} from "./state-machine";
+
+/**
+ * Permission and audio-session functions do not require React hooks.
+ *
+ * The module is loaded lazily so pure Jest tests can import this controller
+ * without requiring a native Expo runtime.
+ */
+type ExpoAudioModule = typeof import("expo-audio");
+
+let ExpoAudio: ExpoAudioModule | null = null;
+
 try {
-  // Lazy require so jest tests without native env still load the file.
+  // Intentional lazy native-module loading for Jest compatibility.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  ExpoAudio = require("expo-audio");
+  ExpoAudio = require("expo-audio") as ExpoAudioModule;
 } catch {
   ExpoAudio = null;
+}
+
+/**
+ * Narrow recorder surface used by the controller.
+ *
+ * The real implementation is returned by expo-audio's useAudioRecorder hook.
+ * Tests can provide a small fake without loading a native module.
+ */
+export interface AudioRecorderAdapter {
+  readonly uri: string | null;
+
+  prepareToRecordAsync(options?: unknown): Promise<void>;
+
+  record(options?: unknown): void;
+
+  pause(): void;
+
+  stop(): Promise<void>;
+
+  getStatus?(): {
+    durationMillis?: number;
+    isRecording?: boolean;
+    metering?: number;
+    url?: string | null;
+  };
 }
 
 export interface RecordingSnapshot {
@@ -31,186 +72,403 @@ export interface RecordingSnapshot {
   offsetMs: number;
   fileUri: string | null;
   isMetered: boolean;
-  meter: number | null; // -160..0 dBFS when available
-  error?: { code: string; message?: string } | null;
+
+  /**
+   * Metering value in dBFS, usually approximately -160 through 0,
+   * when the platform and recorder expose it.
+   */
+  meter: number | null;
+
+  error?: {
+    code: string;
+    message?: string;
+  } | null;
 }
 
 export interface RecordingController {
   getSnapshot(): RecordingSnapshot;
+
+  attachRecorder(recorder: AudioRecorderAdapter | null): void;
+
   requestPermission(): Promise<boolean>;
+
   start(): Promise<void>;
+
   pause(): Promise<void>;
+
   resume(): Promise<void>;
-  stop(): Promise<{ fileUri: string; durationMs: number; fileSize: number } | null>;
+
+  stop(): Promise<{
+    fileUri: string;
+    durationMs: number;
+    fileSize: number;
+  } | null>;
+
   discard(): Promise<void>;
-  subscribe(listener: (snap: RecordingSnapshot) => void): () => void;
+
+  subscribe(
+    listener: (snapshot: RecordingSnapshot) => void,
+  ): () => void;
 }
 
 export const createRecordingController = (): RecordingController => {
   let state: RecordingState = RecordingState.IDLE;
-  let recorder: any = null;
+  let recorder: AudioRecorderAdapter | null = null;
   let fileUri: string | null = null;
   let error: RecordingSnapshot["error"] = null;
-  let meter: number | null = null;
+
   const tracker: OffsetTracker = createOffsetTracker();
-  const listeners = new Set<(snap: RecordingSnapshot) => void>();
+  const listeners = new Set<
+    (snapshot: RecordingSnapshot) => void
+  >();
 
-  const isMetered = false;
+  const getRecorderStatus = () => {
+    try {
+      return recorder?.getStatus?.() ?? null;
+    } catch {
+      return null;
+    }
+  };
 
-  const buildSnapshot = (): RecordingSnapshot => ({
-    state,
-    offsetMs: tracker.currentOffsetMs(),
-    fileUri,
-    isMetered,
-    meter,
-    error,
-  });
+  const buildSnapshot = (): RecordingSnapshot => {
+    const recorderStatus = getRecorderStatus();
 
-  const emit = () => {
-    const snap = buildSnapshot();
-    listeners.forEach((l) => l(snap));
+    const meter =
+      typeof recorderStatus?.metering === "number"
+        ? recorderStatus.metering
+        : null;
+
+    return {
+      state,
+      offsetMs: tracker.currentOffsetMs(),
+      fileUri,
+      isMetered: meter !== null,
+      meter,
+      error,
+    };
+  };
+
+  const emit = (): void => {
+    const snapshot = buildSnapshot();
+
+    listeners.forEach((listener) => {
+      listener(snapshot);
+    });
   };
 
   const transition = (event: RecordingEvent): boolean => {
-    if (!canTransition(state, event)) return false;
-    const next = nextState(state, event);
-    if (next != null) {
-      state = next;
-      emit();
-      return true;
+    if (!canTransition(state, event)) {
+      return false;
     }
-    return false;
+
+    const targetState = nextState(state, event);
+
+    if (targetState == null) {
+      return false;
+    }
+
+    state = targetState;
+    emit();
+
+    return true;
+  };
+
+  const attachRecorder = (
+    nextRecorder: AudioRecorderAdapter | null,
+  ): void => {
+    recorder = nextRecorder;
+    emit();
   };
 
   const requestPermission = async (): Promise<boolean> => {
-    if (!ExpoAudio) throw new AppError(ErrorCode.MICROPHONE_UNAVAILABLE);
+    if (!ExpoAudio) {
+      throw new AppError(ErrorCode.MICROPHONE_UNAVAILABLE);
+    }
+
     transition(RecordingEvent.REQUEST_PERMISSION);
+
     try {
-      const perm = await ExpoAudio.requestRecordingPermissionsAsync();
-      const granted = perm?.granted === true || perm?.status === "granted";
+      const permission =
+        await ExpoAudio.requestRecordingPermissionsAsync();
+
+      const granted =
+        permission.granted === true ||
+        permission.status === "granted";
+
       if (!granted) {
-        error = { code: ErrorCode.MICROPHONE_PERMISSION_DENIED };
+        error = {
+          code: ErrorCode.MICROPHONE_PERMISSION_DENIED,
+        };
+
         transition(RecordingEvent.PERMISSION_DENIED);
+
         return false;
       }
+
+      error = null;
       transition(RecordingEvent.PERMISSION_GRANTED);
+
       return true;
-    } catch (e) {
-      error = { code: ErrorCode.MICROPHONE_PERMISSION_DENIED, message: String(e) };
+    } catch (cause) {
+      error = {
+        code: ErrorCode.MICROPHONE_PERMISSION_DENIED,
+        message: String(cause),
+      };
+
       transition(RecordingEvent.PERMISSION_DENIED);
+
       return false;
     }
   };
 
   const start = async (): Promise<void> => {
-    if (!ExpoAudio) throw new AppError(ErrorCode.MICROPHONE_UNAVAILABLE);
-    // If we're idle but haven't requested permission, do it now.
+    if (!ExpoAudio || !recorder) {
+      throw new AppError(
+        ErrorCode.MICROPHONE_UNAVAILABLE,
+        "Audio recorder is not ready",
+      );
+    }
+
+    // Allow a new recording or a retry after a terminal state.
+    if (
+      state === RecordingState.SAVED ||
+      state === RecordingState.FAILED
+    ) {
+      transition(RecordingEvent.RESET);
+    }
+
+    // If idle, request permission before preparing the recorder.
     if (state === RecordingState.IDLE) {
-      const ok = await requestPermission();
-      if (!ok) throw new AppError(ErrorCode.MICROPHONE_PERMISSION_DENIED);
+      const permissionGranted = await requestPermission();
+
+      if (!permissionGranted) {
+        throw new AppError(
+          ErrorCode.MICROPHONE_PERMISSION_DENIED,
+        );
+      }
     }
+
     if (state !== RecordingState.PREPARING) {
-      throw new AppError(ErrorCode.RECORDING_PREPARE_FAILED, "Recorder not in preparing state");
+      throw new AppError(
+        ErrorCode.RECORDING_PREPARE_FAILED,
+        "Recorder not in preparing state",
+      );
     }
+
     try {
-      const RecordingPresets = ExpoAudio.RecordingPresets ?? {};
-      const preset = RecordingPresets.HIGH_QUALITY ?? RecordingPresets.LOW_QUALITY ?? {};
-      recorder = new ExpoAudio.AudioRecorder(preset);
+      await ExpoAudio.setAudioModeAsync({
+        allowsRecording: true,
+        playsInSilentMode: true,
+      });
+
       await recorder.prepareToRecordAsync();
+
       recorder.record();
+
       tracker.reset();
       tracker.start();
+
+      fileUri = null;
       error = null;
+
       transition(RecordingEvent.PREPARE_SUCCESS);
-    } catch (e) {
-      error = { code: ErrorCode.RECORDING_PREPARE_FAILED, message: String(e) };
+    } catch (cause) {
+      error = {
+        code: ErrorCode.RECORDING_PREPARE_FAILED,
+        message: String(cause),
+      };
+
       transition(RecordingEvent.PREPARE_FAILED);
-      throw new AppError(ErrorCode.RECORDING_PREPARE_FAILED, String(e));
+
+      throw new AppError(
+        ErrorCode.RECORDING_PREPARE_FAILED,
+        String(cause),
+      );
     }
   };
 
   const pause = async (): Promise<void> => {
-    if (!recorder) return;
-    if (state !== RecordingState.RECORDING) return;
+    if (
+      !recorder ||
+      state !== RecordingState.RECORDING
+    ) {
+      return;
+    }
+
     try {
       recorder.pause();
       tracker.pause();
+
       transition(RecordingEvent.PAUSE);
-    } catch (e) {
-      error = { code: ErrorCode.RECORDING_PAUSE_FAILED, message: String(e) };
-      throw new AppError(ErrorCode.RECORDING_PAUSE_FAILED, String(e));
+    } catch (cause) {
+      error = {
+        code: ErrorCode.RECORDING_PAUSE_FAILED,
+        message: String(cause),
+      };
+
+      emit();
+
+      throw new AppError(
+        ErrorCode.RECORDING_PAUSE_FAILED,
+        String(cause),
+      );
     }
   };
 
   const resume = async (): Promise<void> => {
-    if (!recorder) return;
-    if (state !== RecordingState.PAUSED) return;
+    if (
+      !recorder ||
+      state !== RecordingState.PAUSED
+    ) {
+      return;
+    }
+
     try {
       recorder.record();
       tracker.resume();
+
       transition(RecordingEvent.RESUME);
-    } catch (e) {
-      error = { code: ErrorCode.RECORDING_RESUME_FAILED, message: String(e) };
-      throw new AppError(ErrorCode.RECORDING_RESUME_FAILED, String(e));
+    } catch (cause) {
+      error = {
+        code: ErrorCode.RECORDING_RESUME_FAILED,
+        message: String(cause),
+      };
+
+      emit();
+
+      throw new AppError(
+        ErrorCode.RECORDING_RESUME_FAILED,
+        String(cause),
+      );
     }
   };
 
-  const stop = async (): Promise<{ fileUri: string; durationMs: number; fileSize: number } | null> => {
-    if (!recorder) return null;
+  const stop = async (): Promise<{
+    fileUri: string;
+    durationMs: number;
+    fileSize: number;
+  } | null> => {
+    if (!recorder) {
+      return null;
+    }
+
+    if (
+      state !== RecordingState.RECORDING &&
+      state !== RecordingState.PAUSED
+    ) {
+      return null;
+    }
+
     transition(RecordingEvent.STOP);
+
     try {
       await recorder.stop();
-      const durationMs = tracker.stop();
-      const uri: string | null = recorder.uri ?? null;
+
+      const trackedDurationMs = tracker.stop();
+      const recorderStatus = getRecorderStatus();
+
+      const recorderDurationMs =
+        typeof recorderStatus?.durationMillis === "number"
+          ? recorderStatus.durationMillis
+          : 0;
+
+      const durationMs = Math.max(
+        trackedDurationMs,
+        recorderDurationMs,
+      );
+
+      const uri =
+        recorder.uri ??
+        recorderStatus?.url ??
+        null;
+
       fileUri = uri;
+
       let fileSize = 0;
-      if (uri && FileSystem.getInfoAsync) {
+
+      if (uri) {
         try {
           const info = await FileSystem.getInfoAsync(uri);
-          if (info.exists && "size" in info && typeof info.size === "number") {
+
+          if (
+            info.exists &&
+            "size" in info &&
+            typeof info.size === "number"
+          ) {
             fileSize = info.size;
           }
         } catch {
+          // File-size lookup failure should not invalidate the recording.
           fileSize = 0;
         }
       }
+
+      error = null;
       transition(RecordingEvent.STOP_SUCCESS);
-      recorder = null;
-      if (!uri) return null;
-      return { fileUri: uri, durationMs, fileSize };
-    } catch (e) {
-      error = { code: ErrorCode.RECORDING_STOP_FAILED, message: String(e) };
+
+      if (!uri) {
+        return null;
+      }
+
+      return {
+        fileUri: uri,
+        durationMs,
+        fileSize,
+      };
+    } catch (cause) {
+      error = {
+        code: ErrorCode.RECORDING_STOP_FAILED,
+        message: String(cause),
+      };
+
       transition(RecordingEvent.STOP_FAILED);
-      throw new AppError(ErrorCode.RECORDING_STOP_FAILED, String(e));
+
+      throw new AppError(
+        ErrorCode.RECORDING_STOP_FAILED,
+        String(cause),
+      );
     }
   };
 
   const discard = async (): Promise<void> => {
     if (recorder) {
       try {
-        await recorder.stop();
+        const recorderStatus = getRecorderStatus();
+
+        if (recorderStatus?.isRecording) {
+          await recorder.stop();
+        }
       } catch {
-        // ignore
+        // Ignore recorder cleanup failures.
       }
-      recorder = null;
     }
+
     if (fileUri) {
       try {
-        await FileSystem.deleteAsync(fileUri, { idempotent: true });
+        await FileSystem.deleteAsync(fileUri, {
+          idempotent: true,
+        });
       } catch {
-        // ignore
+        // Ignore local-file cleanup failures.
       }
+
       fileUri = null;
     }
+
     tracker.reset();
+
     state = RecordingState.IDLE;
     error = null;
+
     emit();
   };
 
-  const subscribe = (listener: (snap: RecordingSnapshot) => void): (() => void) => {
+  const subscribe = (
+    listener: (snapshot: RecordingSnapshot) => void,
+  ): (() => void) => {
     listeners.add(listener);
     listener(buildSnapshot());
+
     return () => {
       listeners.delete(listener);
     };
@@ -218,6 +476,7 @@ export const createRecordingController = (): RecordingController => {
 
   return {
     getSnapshot: buildSnapshot,
+    attachRecorder,
     requestPermission,
     start,
     pause,

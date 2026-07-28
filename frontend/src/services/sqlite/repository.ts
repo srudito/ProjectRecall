@@ -13,17 +13,28 @@ interface LocalSessionRow {
   project_id: string | null;
   created_by: string;
   title: string;
+  session_type: string;
   status: string;
-  spoken_language_mode: string;
-  expected_spoken_languages: string; // JSON array
   started_at: string | null;
   stopped_at: string | null;
   total_recorded_duration_ms: number;
+  spoken_language_mode: string;
+  expected_spoken_languages: string;
+  detected_spoken_languages: string;
+  primary_detected_language: string | null;
+  language_detection_status: string;
+  summary_output_language: string | null;
+  translation_target_language: string | null;
+  transcript_display_mode: string;
+  language_metadata: string | null;
   local_sync_status: string;
   cloud_sync_status: string;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  last_sync_error_code: string | null;
+  last_sync_error_message: string | null;
+  last_synced_at: string | null;
 }
 
 export interface SessionRecord {
@@ -32,89 +43,192 @@ export interface SessionRecord {
   project_id: string | null;
   created_by: string;
   title: string;
+  session_type: string;
   status: string;
-  spoken_language_mode: string;
-  expected_spoken_languages: string[];
   started_at: string | null;
   stopped_at: string | null;
   total_recorded_duration_ms: number;
+  spoken_language_mode: string;
+  expected_spoken_languages: string[];
+  detected_spoken_languages: string[];
+  primary_detected_language: string | null;
+  language_detection_status: string;
+  summary_output_language: string | null;
+  translation_target_language: string | null;
+  transcript_display_mode: string;
+  language_metadata: Record<string, unknown> | null;
   local_sync_status: string;
   cloud_sync_status: string;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  last_sync_error_code: string | null;
+  last_sync_error_message: string | null;
+  last_synced_at: string | null;
 }
 
+const parseStringArray = (value: string | null): string[] => {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === "string")
+      : [];
+  } catch {
+    return [];
+  }
+};
+
+const parseJsonObject = (
+  value: string | null,
+): Record<string, unknown> | null => {
+  if (!value) return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return parsed != null && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+};
+
 const parseSession = (row: LocalSessionRow): SessionRecord => ({
-  ...row,
-  expected_spoken_languages: (() => {
-    try {
-      return JSON.parse(row.expected_spoken_languages) as string[];
-    } catch {
-      return [];
-    }
-  })(),
+  id: row.id,
+  workspace_id: row.workspace_id,
+  project_id: row.project_id,
+  created_by: row.created_by,
+  title: row.title,
+  session_type: row.session_type,
+  status: row.status,
+  started_at: row.started_at,
+  stopped_at: row.stopped_at,
+  total_recorded_duration_ms: row.total_recorded_duration_ms,
+  spoken_language_mode: row.spoken_language_mode,
+  expected_spoken_languages: parseStringArray(row.expected_spoken_languages),
+  detected_spoken_languages: parseStringArray(row.detected_spoken_languages),
+  primary_detected_language: row.primary_detected_language,
+  language_detection_status: row.language_detection_status,
+  summary_output_language: row.summary_output_language,
+  translation_target_language: row.translation_target_language,
+  transcript_display_mode: row.transcript_display_mode,
+  language_metadata: parseJsonObject(row.language_metadata),
+  local_sync_status: row.local_sync_status,
+  cloud_sync_status: row.cloud_sync_status,
+  created_at: row.created_at,
+  updated_at: row.updated_at,
+  deleted_at: row.deleted_at,
+  last_sync_error_code: row.last_sync_error_code,
+  last_sync_error_message: row.last_sync_error_message,
+  last_synced_at: row.last_synced_at,
 });
 
-export const upsertSession = async (record: SessionRecord): Promise<void> => {
-  const db = await openLocalDb();
-  if (!db) return;
-  const now = nowIso();
+const sessionColumns = `
+  id, workspace_id, project_id, created_by, title, session_type, status,
+  started_at, stopped_at, total_recorded_duration_ms, spoken_language_mode,
+  expected_spoken_languages, detected_spoken_languages,
+  primary_detected_language, language_detection_status,
+  summary_output_language, translation_target_language,
+  transcript_display_mode, language_metadata, local_sync_status,
+  cloud_sync_status, created_at, updated_at, deleted_at,
+  last_sync_error_code, last_sync_error_message, last_synced_at
+`;
+
+const upsertSessionOnDb = async (
+  db: SQLite.SQLiteDatabase,
+  record: SessionRecord,
+): Promise<void> => {
   await db.runAsync(
     `INSERT INTO local_sessions
-     (id, workspace_id, project_id, created_by, title, session_type, status,
-      started_at, stopped_at, total_recorded_duration_ms, spoken_language_mode,
-      expected_spoken_languages, detected_spoken_languages, primary_detected_language,
-      language_detection_status, summary_output_language, translation_target_language,
-      transcript_display_mode, language_metadata, local_sync_status, cloud_sync_status,
-      created_at, updated_at, deleted_at)
-     VALUES (?, ?, ?, ?, ?, 'standard', ?, ?, ?, ?, ?, ?, '[]', NULL, 'NOT_STARTED',
-             NULL, NULL, 'ORIGINAL', NULL, ?, ?, ?, ?, ?)
+      (id, workspace_id, project_id, created_by, title, session_type, status,
+       started_at, stopped_at, total_recorded_duration_ms,
+       spoken_language_mode, expected_spoken_languages,
+       detected_spoken_languages, primary_detected_language,
+       language_detection_status, summary_output_language,
+       translation_target_language, transcript_display_mode,
+       language_metadata, local_sync_status, cloud_sync_status,
+       created_at, updated_at, deleted_at, last_sync_error_code,
+       last_sync_error_message, last_synced_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
+       workspace_id=excluded.workspace_id,
+       project_id=excluded.project_id,
        title=excluded.title,
+       session_type=excluded.session_type,
        status=excluded.status,
        started_at=excluded.started_at,
        stopped_at=excluded.stopped_at,
        total_recorded_duration_ms=excluded.total_recorded_duration_ms,
        spoken_language_mode=excluded.spoken_language_mode,
        expected_spoken_languages=excluded.expected_spoken_languages,
+       detected_spoken_languages=excluded.detected_spoken_languages,
+       primary_detected_language=excluded.primary_detected_language,
+       language_detection_status=excluded.language_detection_status,
+       summary_output_language=excluded.summary_output_language,
+       translation_target_language=excluded.translation_target_language,
+       transcript_display_mode=excluded.transcript_display_mode,
+       language_metadata=excluded.language_metadata,
        local_sync_status=excluded.local_sync_status,
        cloud_sync_status=excluded.cloud_sync_status,
-       project_id=excluded.project_id,
        updated_at=excluded.updated_at,
-       deleted_at=excluded.deleted_at`,
+       deleted_at=excluded.deleted_at,
+       last_sync_error_code=excluded.last_sync_error_code,
+       last_sync_error_message=excluded.last_sync_error_message,
+       last_synced_at=excluded.last_synced_at`,
     [
       record.id,
       record.workspace_id,
       record.project_id,
       record.created_by,
       record.title,
+      record.session_type,
       record.status,
       record.started_at,
       record.stopped_at,
       record.total_recorded_duration_ms,
       record.spoken_language_mode,
       JSON.stringify(record.expected_spoken_languages ?? []),
+      JSON.stringify(record.detected_spoken_languages ?? []),
+      record.primary_detected_language,
+      record.language_detection_status,
+      record.summary_output_language,
+      record.translation_target_language,
+      record.transcript_display_mode,
+      record.language_metadata == null
+        ? null
+        : JSON.stringify(record.language_metadata),
       record.local_sync_status,
       record.cloud_sync_status,
       record.created_at,
-      now,
+      record.updated_at,
       record.deleted_at,
+      record.last_sync_error_code,
+      record.last_sync_error_message,
+      record.last_synced_at,
     ],
   );
 };
 
-export const listSessions = async (workspaceId: string): Promise<SessionRecord[]> => {
+/**
+ * Store a session without rewriting entity updated_at. Cloud hydration must
+ * preserve the cloud timestamp or it can create a local/cloud sync loop.
+ */
+export const upsertSession = async (record: SessionRecord): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  await upsertSessionOnDb(db, record);
+};
+
+export const listSessions = async (
+  workspaceId: string,
+): Promise<SessionRecord[]> => {
   const db = await openLocalDb();
   if (!db) return [];
   const rows = (await db.getAllAsync(
-    `SELECT id, workspace_id, project_id, created_by, title, status,
-            spoken_language_mode, expected_spoken_languages, started_at,
-            stopped_at, total_recorded_duration_ms, local_sync_status,
-            cloud_sync_status, created_at, updated_at, deleted_at
-     FROM local_sessions
-     WHERE workspace_id = ? AND deleted_at IS NULL
-     ORDER BY created_at DESC`,
+    `SELECT ${sessionColumns}
+       FROM local_sessions
+      WHERE workspace_id = ? AND deleted_at IS NULL
+      ORDER BY created_at DESC`,
     [workspaceId],
   )) as LocalSessionRow[];
   return rows.map(parseSession);
@@ -124,22 +238,58 @@ export const getSession = async (id: string): Promise<SessionRecord | null> => {
   const db = await openLocalDb();
   if (!db) return null;
   const row = (await db.getFirstAsync(
-    `SELECT id, workspace_id, project_id, created_by, title, status,
-            spoken_language_mode, expected_spoken_languages, started_at,
-            stopped_at, total_recorded_duration_ms, local_sync_status,
-            cloud_sync_status, created_at, updated_at, deleted_at
-     FROM local_sessions WHERE id = ?`,
+    `SELECT ${sessionColumns} FROM local_sessions WHERE id = ?`,
     [id],
   )) as LocalSessionRow | null;
   return row ? parseSession(row) : null;
 };
 
+export interface SessionSyncStatusUpdate {
+  local_sync_status?: string;
+  cloud_sync_status?: string;
+  last_sync_error_code?: string | null;
+  last_sync_error_message?: string | null;
+  last_synced_at?: string | null;
+}
+
+export const updateSessionSyncStatus = async (
+  id: string,
+  patch: SessionSyncStatusUpdate,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+
+  const allowedKeys: (keyof SessionSyncStatusUpdate)[] = [
+    "local_sync_status",
+    "cloud_sync_status",
+    "last_sync_error_code",
+    "last_sync_error_message",
+    "last_synced_at",
+  ];
+  const entries = allowedKeys
+    .filter((key) => Object.prototype.hasOwnProperty.call(patch, key))
+    .map((key) => ({ key, value: patch[key] ?? null }));
+
+  if (entries.length === 0) return;
+
+  const setSql = entries.map(({ key }) => `${key} = ?`).join(", ");
+  const values: (string | null)[] = entries.map(({ value }) => value);
+  await db.runAsync(
+    `UPDATE local_sessions SET ${setSql} WHERE id = ?`,
+    [...values, id],
+  );
+};
+
 export const softDeleteSession = async (id: string): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
+  const now = nowIso();
   await db.runAsync(
-    `UPDATE local_sessions SET deleted_at = ?, status = 'deleting', updated_at = ? WHERE id = ?`,
-    [nowIso(), nowIso(), id],
+    `UPDATE local_sessions
+        SET deleted_at = ?, status = 'deleting', updated_at = ?,
+            local_sync_status = 'local_only', cloud_sync_status = 'local_only'
+      WHERE id = ?`,
+    [now, now, id],
   );
 };
 
@@ -668,7 +818,7 @@ export type { SQLite };
 // ==========================================================================
 
 export type MetadataQueueOperation = "UPSERT" | "DELETE";
-export type MetadataQueueEntityType = "project"; // extensible later
+export type MetadataQueueEntityType = "project" | "session";
 export type MetadataQueueStatus =
   | "pending"
   | "in_progress"
@@ -857,6 +1007,36 @@ export const rescheduleMetadataOperation = async (
   await db.runAsync(
     `UPDATE local_metadata_sync_queue
        SET queue_status = 'pending',
+           next_retry_at = ?,
+           last_error_code = ?,
+           last_safe_error = ?,
+           updated_at = ?
+     WHERE id = ?`,
+    [nextRetryAt, errorCode, safeErrorMessage, now, id],
+  );
+};
+
+/**
+ * Put an operation back into the queue because a parent entity is not ready.
+ * The claim attempt is reversed so repeated lifecycle triggers do not exhaust
+ * the retry budget while the parent project is still synchronizing.
+ */
+export const deferMetadataOperationForDependency = async (
+  id: string,
+  nextRetryAt: string,
+  errorCode: string,
+  safeErrorMessage: string,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  const now = nowIso();
+  await db.runAsync(
+    `UPDATE local_metadata_sync_queue
+       SET queue_status = 'pending',
+           attempt_count = CASE
+             WHEN attempt_count > 0 THEN attempt_count - 1
+             ELSE 0
+           END,
            next_retry_at = ?,
            last_error_code = ?,
            last_safe_error = ?,
@@ -1076,6 +1256,130 @@ export const atomicRequeueProjectSync = async (
         input.queueRowId,
         input.userId,
         input.workspaceId,
+        input.projectId,
+        input.idempotencyKey,
+        now,
+        now,
+      ],
+    );
+  });
+};
+
+// ============================================================================
+// Atomic local session creation/update
+// ============================================================================
+
+export interface AtomicUpsertSessionWithSyncInput {
+  session: SessionRecord;
+  queueRowId: string;
+  idempotencyKey: string;
+}
+
+/**
+ * Save the latest session state and coalesce its cloud UPSERT operation inside
+ * one SQLite transaction. The queue reads the canonical row at execution time,
+ * so rapid draft -> recording -> recorded updates synchronize only the latest
+ * state without losing the stable session UUID.
+ */
+export const atomicUpsertSessionWithSync = async (
+  input: AtomicUpsertSessionWithSyncInput,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  const session = input.session;
+
+  await db.withTransactionAsync(async () => {
+    await upsertSessionOnDb(db, session);
+    const now = nowIso();
+    await db.runAsync(
+      `INSERT INTO local_metadata_sync_queue
+        (id, user_id, workspace_id, entity_type, entity_id, operation,
+         parent_entity_type, parent_entity_id, priority,
+         queue_status, attempt_count, next_retry_at,
+         last_error_code, last_safe_error, idempotency_key,
+         created_at, updated_at)
+       VALUES (?, ?, ?, 'session', ?, 'UPSERT', ?, ?, 200,
+               'pending', 0, NULL, NULL, NULL, ?, ?, ?)
+       ON CONFLICT(idempotency_key) DO UPDATE SET
+         user_id = excluded.user_id,
+         workspace_id = excluded.workspace_id,
+         parent_entity_type = excluded.parent_entity_type,
+         parent_entity_id = excluded.parent_entity_id,
+         priority = excluded.priority,
+         queue_status = 'pending',
+         attempt_count = 0,
+         next_retry_at = NULL,
+         last_error_code = NULL,
+         last_safe_error = NULL,
+         updated_at = excluded.updated_at`,
+      [
+        input.queueRowId,
+        session.created_by,
+        session.workspace_id,
+        session.id,
+        session.project_id == null ? null : "project",
+        session.project_id,
+        input.idempotencyKey,
+        now,
+        now,
+      ],
+    );
+  });
+};
+
+export interface AtomicRequeueSessionSyncInput {
+  sessionId: string;
+  userId: string;
+  workspaceId: string;
+  projectId: string | null;
+  queueRowId: string;
+  idempotencyKey: string;
+}
+
+export const atomicRequeueSessionSync = async (
+  input: AtomicRequeueSessionSyncInput,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  const now = nowIso();
+
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(
+      `UPDATE local_sessions
+          SET local_sync_status = 'pending',
+              cloud_sync_status = 'pending',
+              last_sync_error_code = NULL,
+              last_sync_error_message = NULL
+        WHERE id = ? AND deleted_at IS NULL`,
+      [input.sessionId],
+    );
+
+    await db.runAsync(
+      `INSERT INTO local_metadata_sync_queue
+        (id, user_id, workspace_id, entity_type, entity_id, operation,
+         parent_entity_type, parent_entity_id, priority,
+         queue_status, attempt_count, next_retry_at,
+         last_error_code, last_safe_error, idempotency_key,
+         created_at, updated_at)
+       VALUES (?, ?, ?, 'session', ?, 'UPSERT', ?, ?, 200,
+               'pending', 0, NULL, NULL, NULL, ?, ?, ?)
+       ON CONFLICT(idempotency_key) DO UPDATE SET
+         user_id = excluded.user_id,
+         workspace_id = excluded.workspace_id,
+         parent_entity_type = excluded.parent_entity_type,
+         parent_entity_id = excluded.parent_entity_id,
+         queue_status = 'pending',
+         attempt_count = 0,
+         next_retry_at = NULL,
+         last_error_code = NULL,
+         last_safe_error = NULL,
+         updated_at = excluded.updated_at`,
+      [
+        input.queueRowId,
+        input.userId,
+        input.workspaceId,
+        input.sessionId,
+        input.projectId == null ? null : "project",
         input.projectId,
         input.idempotencyKey,
         now,

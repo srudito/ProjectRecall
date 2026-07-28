@@ -12,13 +12,13 @@ import type {
   ProjectRecord,
   SessionRecord,
 } from "@/src/services/sqlite/repository";
-import { subscribeProjectSyncChanges } from "@/src/services/sync/project-sync-events";
+import { subscribeMetadataSyncChanges } from "@/src/services/sync/project-sync-events";
 import { resolvePersonalWorkspace } from "@/src/services/workspace/service";
 import { useAuthStore } from "@/src/stores/auth-store";
 import { useTheme } from "@/src/theme/ThemeProvider";
 import { formatDurationMs } from "@/src/utils/format";
 
-const supportedProjectSyncStatuses = new Set([
+const supportedSyncStatuses = new Set([
   "local_only",
   "pending",
   "synchronizing",
@@ -34,8 +34,8 @@ export default function Home() {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
 
-  const projectSyncLabel = (status: string): string => {
-    const key = supportedProjectSyncStatuses.has(status)
+  const syncStatusLabel = (status: string): string => {
+    const key = supportedSyncStatuses.has(status)
       ? status
       : "local_only";
     return t("library", `library.syncStatus.${key}`);
@@ -68,7 +68,7 @@ export default function Home() {
 
   useEffect(
     () =>
-      subscribeProjectSyncChanges(() => {
+      subscribeMetadataSyncChanges(() => {
         void loadHomeData();
       }),
     [loadHomeData],
@@ -144,7 +144,7 @@ export default function Home() {
               <Text
                 style={[typography.caption, { color: colors.textTertiary }]}
               >
-                {projectSyncLabel(project.local_sync_status)}
+                {syncStatusLabel(project.local_sync_status)}
               </Text>
             </View>
           ))
@@ -180,7 +180,7 @@ export default function Home() {
                 style={[typography.caption, { color: colors.textTertiary }]}
               >
                 {formatDurationMs(session.total_recorded_duration_ms)} •{" "}
-                {session.status}
+                {session.status} • {syncStatusLabel(session.local_sync_status)}
               </Text>
             </View>
           ))

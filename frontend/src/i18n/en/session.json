@@ -29,6 +29,7 @@
     "syncNow": "Sync now",
     "syncLater": "Sync later",
     "retry": "Retry",
+    "retryFailed": "Session synchronization could not be restarted.",
     "details": "Sync details"
   },
   "actions": {

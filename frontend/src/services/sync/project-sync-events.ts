@@ -1,14 +1,14 @@
-type ProjectSyncListener = () => void;
+type MetadataSyncListener = () => void;
 
-const listeners = new Set<ProjectSyncListener>();
+const listeners = new Set<MetadataSyncListener>();
 
 /**
- * Subscribe to project synchronization changes. This is intentionally a tiny
- * in-process signal rather than a second state store: SQLite and Supabase remain
- * the sources of truth, and screens simply refresh their current workspace.
+ * Subscribe to metadata synchronization changes. SQLite and Supabase remain
+ * the sources of truth; this signal only tells active screens to refresh their
+ * current workspace or entity.
  */
-export const subscribeProjectSyncChanges = (
-  listener: ProjectSyncListener,
+export const subscribeMetadataSyncChanges = (
+  listener: MetadataSyncListener,
 ): (() => void) => {
   listeners.add(listener);
   return () => {
@@ -16,7 +16,7 @@ export const subscribeProjectSyncChanges = (
   };
 };
 
-export const notifyProjectSyncChanges = (): void => {
+export const notifyMetadataSyncChanges = (): void => {
   for (const listener of listeners) {
     try {
       listener();
@@ -25,3 +25,7 @@ export const notifyProjectSyncChanges = (): void => {
     }
   }
 };
+
+// Backward-compatible aliases retained for the verified Project Sync v1 code.
+export const subscribeProjectSyncChanges = subscribeMetadataSyncChanges;
+export const notifyProjectSyncChanges = notifyMetadataSyncChanges;
