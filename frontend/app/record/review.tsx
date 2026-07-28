@@ -58,7 +58,7 @@ export default function Review() {
       <Button
         testID="review-open-detail-button"
         label={t("session", "tabs.overview")}
-        onPress={() => sessionId && router.replace({ pathname: "/session/[id]", params: { id: String(sessionId) } })}
+        onPress={() => sessionId && router.push({ pathname: "/session/[id]", params: { id: String(sessionId) } })}
       />
       <Button
         testID="review-go-home-button"

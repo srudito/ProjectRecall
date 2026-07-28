@@ -119,6 +119,15 @@ export default function SessionDetail() {
     router.replace("/(tabs)/library");
   };
 
+  const onBack = () => {
+    if (router.canGoBack()) {
+      router.back();
+      return;
+    }
+
+    router.replace("/(tabs)/library");
+  };
+
   const onRetrySync = async () => {
     if (!session || retryingSync) return;
 
@@ -323,7 +332,7 @@ export default function SessionDetail() {
         testID="session-back-button"
         label={t("common", "actions.back")}
         variant="ghost"
-        onPress={() => router.back()}
+        onPress={onBack}
       />
     </Screen>
   );
