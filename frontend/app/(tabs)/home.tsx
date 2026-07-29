@@ -57,8 +57,9 @@ export default function Home() {
       setProjects(projectRows);
       setSessions(sessionRows);
     } catch {
-      setProjects([]);
-      setSessions([]);
+      // Preserve already-loaded local rows during a transient offline or
+      // workspace-resolution failure. User sign-out is handled by the early
+      // branch above, which intentionally clears these lists.
     }
   }, [user?.id]);
 

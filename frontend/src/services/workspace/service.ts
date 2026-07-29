@@ -1,7 +1,8 @@
 // Personal workspace resolver. The real Supabase workspace id is cached so a
-// previously authenticated native user can continue creating local projects
-// while offline without inventing an id that will later fail RLS.
+// previously authenticated native user can continue creating and reopening
+// local data while offline without inventing an id that will later fail RLS.
 
+import NetInfo from "@react-native-community/netinfo";
 import * as Crypto from "expo-crypto";
 
 import { getSupabase } from "@/src/services/supabase/client";
@@ -43,6 +44,12 @@ const cacheWorkspace = async (
   ]);
 };
 
+const isDefinitelyOffline = (state: {
+  isConnected: boolean | null;
+  isInternetReachable: boolean | null;
+}): boolean =>
+  state.isConnected === false || state.isInternetReachable === false;
+
 export const resolvePersonalWorkspace = async (
   userId: string,
 ): Promise<PersonalWorkspace> => {
@@ -51,28 +58,51 @@ export const resolvePersonalWorkspace = async (
   const cached = await readCachedWorkspace(userId);
   const supabase = getSupabase();
 
+  // A native cold start while offline must use the last verified workspace
+  // immediately. Do not wait for a cloud request that cannot succeed.
+  if (cached && supabase) {
+    try {
+      const connection = await NetInfo.fetch();
+      if (isDefinitelyOffline(connection)) {
+        return cached;
+      }
+    } catch {
+      // Unknown connectivity: try the cloud below, then fall back to cache.
+    }
+  }
+
   if (supabase) {
-    const { data, error } = await supabase
-      .from("workspaces")
-      .select("id, name")
-      .eq("owner_user_id", userId)
-      .eq("workspace_type", "personal")
-      .limit(1)
-      .maybeSingle();
+    try {
+      const { data, error } = await supabase
+        .from("workspaces")
+        .select("id, name")
+        .eq("owner_user_id", userId)
+        .eq("workspace_type", "personal")
+        .limit(1)
+        .maybeSingle();
 
-    if (data?.id) {
-      const workspace = { id: data.id, name: data.name };
-      await cacheWorkspace(userId, workspace);
-      return workspace;
+      if (data?.id) {
+        const workspace = { id: data.id, name: data.name };
+        await cacheWorkspace(userId, workspace);
+        return workspace;
+      }
+
+      if (cached) return cached;
+
+      if (error) {
+        throw new Error("The personal workspace could not be loaded from the cloud.");
+      }
+
+      throw new Error("No personal workspace exists for the signed-in user.");
+    } catch (cause) {
+      // supabase-js may reject on a low-level fetch failure instead of returning
+      // an error object. The cached, previously verified workspace remains the
+      // correct local scope while offline.
+      if (cached) return cached;
+
+      if (cause instanceof Error) throw cause;
+      throw new Error("The personal workspace could not be loaded.");
     }
-
-    if (cached) return cached;
-
-    if (error) {
-      throw new Error("The personal workspace could not be loaded from the cloud.");
-    }
-
-    throw new Error("No personal workspace exists for the signed-in user.");
   }
 
   if (cached) return cached;
