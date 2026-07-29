@@ -60,11 +60,14 @@ export default function Library() {
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
   const [creatingProject, setCreatingProject] = useState(false);
   const [submittingProject, setSubmittingProject] = useState(false);
-  const [retryingProjectId, setRetryingProjectId] = useState<string | null>(
+  const [retryingProjectId, setRetryingProjectId] = useState<
+    string | null
+  >(null);
+  const [projectError, setProjectError] = useState<string | null>(
     null,
   );
-  const [projectError, setProjectError] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
+
   const projectSubmitInFlight = useRef(false);
   const projectRetryInFlight = useRef(false);
 
@@ -72,11 +75,13 @@ export default function Library() {
     if (!user?.id) {
       setProjects([]);
       setSessions([]);
+      setProjectError(null);
       return;
     }
 
     try {
       const workspace = await resolvePersonalWorkspace(user.id);
+
       const [projectRows, sessionRows] = await Promise.all([
         fetchProjects(workspace.id),
         fetchSessions(workspace.id),
@@ -85,7 +90,9 @@ export default function Library() {
       setProjects(projectRows);
       setSessions(sessionRows);
     } catch {
-      setProjectError(t("library", "library.projectLoadFailed"));
+      setProjectError(
+        t("library", "library.projectLoadFailed"),
+      );
     }
   }, [t, user?.id]);
 
@@ -114,7 +121,9 @@ export default function Library() {
     const passesSearch =
       normalizedQuery.length === 0
         ? true
-        : session.title.toLowerCase().includes(normalizedQuery);
+        : session.title
+            .toLowerCase()
+            .includes(normalizedQuery);
 
     return passesFilter && passesSearch;
   });
@@ -123,10 +132,18 @@ export default function Library() {
     const projectName = newName.trim();
 
     if (!user?.id) {
-      setProjectError(t("library", "library.authenticationRequired"));
+      setProjectError(
+        t("library", "library.authenticationRequired"),
+      );
       return;
     }
-    if (!projectName || projectSubmitInFlight.current) return;
+
+    if (
+      !projectName ||
+      projectSubmitInFlight.current
+    ) {
+      return;
+    }
 
     projectSubmitInFlight.current = true;
     setSubmittingProject(true);
@@ -134,6 +151,7 @@ export default function Library() {
 
     try {
       const workspace = await resolvePersonalWorkspace(user.id);
+
       const project = await createProject({
         workspaceId: workspace.id,
         createdBy: user.id,
@@ -141,33 +159,50 @@ export default function Library() {
       });
 
       setProjects((current) => {
-        const withoutDuplicate = current.filter((item) => item.id !== project.id);
+        const withoutDuplicate = current.filter(
+          (item) => item.id !== project.id,
+        );
+
         return [project, ...withoutDuplicate];
       });
+
       setNewName("");
       setCreatingProject(false);
+
       await refresh();
     } catch {
-      setProjectError(t("library", "library.projectCreateFailed"));
+      setProjectError(
+        t("library", "library.projectCreateFailed"),
+      );
     } finally {
       projectSubmitInFlight.current = false;
       setSubmittingProject(false);
     }
   };
 
-  const retryFailedProject = async (project: ProjectRecord) => {
-    if (projectRetryInFlight.current) return;
+  const retryFailedProject = async (
+    project: ProjectRecord,
+  ) => {
+    if (projectRetryInFlight.current) {
+      return;
+    }
 
     projectRetryInFlight.current = true;
     setRetryingProjectId(project.id);
     setProjectError(null);
+
     try {
       const pending = await retryProjectSync(project);
+
       setProjects((current) =>
-        current.map((item) => (item.id === pending.id ? pending : item)),
+        current.map((item) =>
+          item.id === pending.id ? pending : item,
+        ),
       );
     } catch {
-      setProjectError(t("library", "library.projectRetryFailed"));
+      setProjectError(
+        t("library", "library.projectRetryFailed"),
+      );
     } finally {
       projectRetryInFlight.current = false;
       setRetryingProjectId(null);
@@ -182,19 +217,49 @@ export default function Library() {
       "synchronized",
       "failed",
     ];
-    const key = supported.includes(status) ? status : "local_only";
-    return t("library", `library.syncStatus.${key}`);
+
+    const key = supported.includes(status)
+      ? status
+      : "local_only";
+
+    return t(
+      "library",
+      `library.syncStatus.${key}`,
+    );
+  };
+
+  const syncStatusColor = (status: string): string => {
+    switch (status) {
+      case "synchronized":
+        return colors.success;
+
+      case "pending":
+      case "synchronizing":
+        return colors.warning;
+
+      case "failed":
+        return colors.recording;
+
+      default:
+        return colors.textTertiary;
+    }
   };
 
   const renderTabs = () => {
     const items: { key: Tab; label: string }[] = [
       {
         key: "projects",
-        label: t("library", "library.tabs.projects"),
+        label: t(
+          "library",
+          "library.tabs.projects",
+        ),
       },
       {
         key: "sessions",
-        label: t("library", "library.tabs.sessions"),
+        label: t(
+          "library",
+          "library.tabs.sessions",
+        ),
       },
     ];
 
@@ -247,44 +312,59 @@ export default function Library() {
     );
   };
 
-  const renderFilters = () => {
-    const items: { key: Filter; label: string }[] = [
-      {
-        key: "all",
-        label: t("library", "library.filters.all"),
-      },
-      {
-        key: "localOnly",
-        label: t("library", "library.filters.localOnly"),
-      },
-      {
-        key: "pending",
-        label: t("library", "library.filters.pending"),
-      },
-      {
-        key: "syncing",
-        label: t("library", "library.filters.syncing"),
-      },
-      {
-        key: "synced",
-        label: t("library", "library.filters.synced"),
-      },
-      {
-        key: "failed",
-        label: t("library", "library.filters.failed"),
-      },
-    ];
+const renderFilters = () => {
+  const items: { key: Filter; label: string }[] = [
+    {
+      key: "all",
+      label: t("library", "library.filters.all"),
+    },
+    {
+      key: "localOnly",
+      label: t("library", "library.filters.localOnly"),
+    },
+    {
+      key: "pending",
+      label: t("library", "library.filters.pending"),
+    },
+    {
+      key: "syncing",
+      label: t("library", "library.filters.syncing"),
+    },
+    {
+      key: "synced",
+      label: t("library", "library.filters.synced"),
+    },
+    {
+      key: "failed",
+      label: t("library", "library.filters.failed"),
+    },
+  ];
 
-    return (
+  return (
+    <View
+      style={{
+        height: 56,
+        minHeight: 56,
+        maxHeight: 56,
+        flexGrow: 0,
+        flexShrink: 0,
+      }}
+    >
       <FlatList
         horizontal
         data={items}
         keyExtractor={(item) => item.key}
         showsHorizontalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        style={{
+          flexGrow: 0,
+          flexShrink: 0,
+        }}
         contentContainerStyle={{
           paddingHorizontal: spacing.xxs,
-          gap: spacing.xs,
           paddingVertical: 8,
+          gap: spacing.xs,
+          alignItems: "center",
         }}
         renderItem={({ item }) => {
           const selected = filter === item.key;
@@ -295,7 +375,7 @@ export default function Library() {
               onPress={() => setFilter(item.key)}
               style={{
                 paddingHorizontal: spacing.md,
-                paddingVertical: 8,
+                height: 36,
                 borderRadius: 20,
                 borderWidth: 1,
                 borderColor: selected
@@ -304,9 +384,9 @@ export default function Library() {
                 backgroundColor: selected
                   ? colors.accent
                   : colors.surface,
-                flexShrink: 0,
-                height: 36,
+                alignItems: "center",
                 justifyContent: "center",
+                flexShrink: 0,
               }}
             >
               <Text
@@ -325,10 +405,10 @@ export default function Library() {
             </TouchableOpacity>
           );
         }}
-        style={{ height: 56 }}
       />
-    );
-  };
+    </View>
+  );
+};
 
   return (
     <Screen testID="library-screen">
@@ -347,203 +427,307 @@ export default function Library() {
       {renderTabs()}
 
       {tab === "projects" ? (
-        <View style={{ flex: 1 }}>
-          <Button
-            testID="library-create-project-button"
-            label={t("library", "library.createProject")}
-            onPress={() => {
-              setProjectError(null);
-              setCreatingProject(true);
-            }}
-          />
-
-          {creatingProject ? (
-            <View style={{ marginTop: spacing.md }}>
-              <Field
-                testID="library-new-project-name-input"
-                label={t("common", "labels.project")}
-                placeholder="Project name"
-                value={newName}
-                onChangeText={setNewName}
-                autoFocus
-              />
-
+        <FlatList
+          data={projects}
+          keyExtractor={(item) => item.id}
+          extraData={retryingProjectId}
+          style={{ flex: 1 }}
+          contentContainerStyle={{
+            paddingTop: spacing.xs,
+            paddingBottom: spacing.xl,
+          }}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+          ListHeaderComponent={
+            <View
+              style={{
+                marginBottom: spacing.md,
+              }}
+            >
               <Button
-                testID="library-new-project-submit-button"
-                label={t("common", "actions.save")}
-                onPress={submitNewProject}
-                loading={submittingProject}
-                disabled={!newName.trim()}
-              />
-
-              <Button
-                testID="library-new-project-cancel-button"
-                label={t("common", "actions.cancel")}
-                variant="ghost"
+                testID="library-create-project-button"
+                label={t(
+                  "library",
+                  "library.createProject",
+                )}
+                disabled={submittingProject}
                 onPress={() => {
                   setProjectError(null);
-                  setCreatingProject(false);
+                  setCreatingProject(true);
                 }}
-                disabled={submittingProject}
               />
-            </View>
-          ) : null}
 
-          {projectError ? (
+              {creatingProject ? (
+                <View
+                  style={{
+                    marginTop: spacing.md,
+                  }}
+                >
+                  <Field
+                    testID="library-new-project-name-input"
+                    label={t(
+                      "common",
+                      "labels.project",
+                    )}
+                    placeholder="Project name"
+                    value={newName}
+                    onChangeText={(value) => {
+                      setNewName(value);
+
+                      if (projectError) {
+                        setProjectError(null);
+                      }
+                    }}
+                    autoFocus
+                  />
+
+                  <Button
+                    testID="library-new-project-submit-button"
+                    label={t(
+                      "common",
+                      "actions.save",
+                    )}
+                    loading={submittingProject}
+                    disabled={
+                      submittingProject ||
+                      newName.trim().length === 0
+                    }
+                    onPress={() => {
+                      void submitNewProject();
+                    }}
+                  />
+
+                  <Button
+                    testID="library-new-project-cancel-button"
+                    label={t(
+                      "common",
+                      "actions.cancel",
+                    )}
+                    variant="ghost"
+                    disabled={submittingProject}
+                    onPress={() => {
+                      setProjectError(null);
+                      setNewName("");
+                      setCreatingProject(false);
+                    }}
+                  />
+                </View>
+              ) : null}
+
+              {projectError ? (
+                <Text
+                  testID="library-project-error"
+                  accessibilityRole="alert"
+                  style={[
+                    typography.caption,
+                    {
+                      color: colors.recording,
+                      marginTop: spacing.sm,
+                    },
+                  ]}
+                >
+                  {projectError}
+                </Text>
+              ) : null}
+            </View>
+          }
+          ListEmptyComponent={
             <Text
-              testID="library-project-error"
-              accessibilityRole="alert"
               style={[
                 typography.caption,
-                { color: colors.recording, marginTop: spacing.sm },
+                {
+                  color: colors.textTertiary,
+                  marginTop: spacing.sm,
+                },
               ]}
             >
-              {projectError}
+              {t(
+                "library",
+                "empty.projects",
+              )}
             </Text>
-          ) : null}
+          }
+          renderItem={({ item }) => {
+            const isRetrying =
+              retryingProjectId === item.id;
 
-          <View style={{ marginTop: spacing.md }}>
-            {projects.length === 0 ? (
-              <Text
-                style={[
-                  typography.caption,
-                  { color: colors.textTertiary },
-                ]}
+            const retryInProgress =
+              retryingProjectId !== null;
+
+            const syncFailed =
+              item.local_sync_status === "failed";
+
+            return (
+              <Card
+                testID={`library-project-${item.id}`}
+                style={{
+                  marginBottom: spacing.sm,
+                }}
               >
-                {t("library", "empty.projects")}
-              </Text>
-            ) : (
-              projects.map((project) => (
-                <Card
-                  key={project.id}
-                  testID={`library-project-${project.id}`}
-                  style={{ marginBottom: spacing.sm }}
+                <Text
+                  style={[
+                    typography.bodyMedium,
+                    {
+                      color: colors.textPrimary,
+                    },
+                  ]}
                 >
-                  <Text
-                    style={[
-                      typography.bodyMedium,
-                      { color: colors.textPrimary },
-                    ]}
-                  >
-                    {project.name}
-                  </Text>
+                  {item.name}
+                </Text>
 
-                  {project.description ? (
-                    <Text
-                      style={[
-                        typography.caption,
-                        {
-                          color: colors.textTertiary,
-                          marginTop: spacing.xxs,
-                        },
-                      ]}
-                    >
-                      {project.description}
-                    </Text>
-                  ) : null}
+                {item.description ? (
                   <Text
-                    testID={`library-project-sync-${project.id}`}
                     style={[
                       typography.caption,
                       {
                         color:
-                          project.local_sync_status === "failed"
-                            ? colors.recording
-                            : project.local_sync_status === "synchronized"
-                              ? colors.success
-                              : colors.textTertiary,
-                        marginTop: spacing.xxs,
+                          colors.textTertiary,
+                        marginTop:
+                          spacing.xxs,
                       },
                     ]}
                   >
-                    {syncStatusLabel(project.local_sync_status)}
+                    {item.description}
                   </Text>
-                  {project.local_sync_status === "failed" ? (
+                ) : null}
+
+                <Text
+                  testID={`library-project-sync-status-${item.id}`}
+                  style={[
+                    typography.caption,
+                    {
+                      color: syncStatusColor(
+                        item.local_sync_status,
+                      ),
+                      marginTop: spacing.xs,
+                    },
+                  ]}
+                >
+                  {syncStatusLabel(
+                    item.local_sync_status,
+                  )}
+                </Text>
+
+                {syncFailed ? (
+                  <View
+                    style={{
+                      marginTop: spacing.sm,
+                    }}
+                  >
                     <Button
-                      testID={`library-project-retry-${project.id}`}
-                      label={t("library", "library.retrySync")}
-                      variant="ghost"
+                      testID={`library-project-retry-${item.id}`}
+                      label={t(
+                        "library",
+                        "library.retrySync",
+                      )}
+                      variant="secondary"
+                      loading={isRetrying}
+                      disabled={retryInProgress}
                       onPress={() => {
-                        void retryFailedProject(project);
+                        void retryFailedProject(
+                          item,
+                        );
                       }}
-                      loading={retryingProjectId === project.id}
-                      disabled={retryingProjectId !== null}
-                      style={{ marginTop: spacing.xs }}
                     />
-                  ) : null}
-                </Card>
-              ))
-            )}
-          </View>
-        </View>
-      ) : (
-        <View style={{ flex: 1 }}>
-          <Field
-            testID="library-search-input"
-            placeholder={t("library", "library.search")}
-            value={query}
-            onChangeText={setQuery}
-          />
+                  </View>
+                ) : null}
+              </Card>
+            );
+          }}
+        />
+) : (
+  <View
+    style={{
+      flex: 1,
+      minHeight: 0,
+    }}
+  >
+    <Field
+      testID="library-search-input"
+      placeholder={t("library", "library.search")}
+      value={query}
+      onChangeText={setQuery}
+    />
 
-          {renderFilters()}
+    {renderFilters()}
 
-          <FlatList
-            data={filteredSessions}
-            keyExtractor={(item) => item.id}
-            contentContainerStyle={{
-              paddingTop: spacing.sm,
-              paddingBottom: spacing.xl,
+    <FlatList
+      data={filteredSessions}
+      keyExtractor={(item) => item.id}
+      style={{
+        flex: 1,
+        minHeight: 0,
+      }}
+      contentContainerStyle={{
+        paddingTop: spacing.sm,
+        paddingBottom: spacing.xl,
+      }}
+      keyboardShouldPersistTaps="handled"
+      showsVerticalScrollIndicator={false}
+      ListEmptyComponent={
+        <Text
+          style={[
+            typography.caption,
+            {
+              color: colors.textTertiary,
+              marginTop: spacing.sm,
+            },
+          ]}
+        >
+          {t("library", "empty.sessions")}
+        </Text>
+      }
+      renderItem={({ item }) => (
+        <TouchableOpacity
+          testID={`library-session-${item.id}`}
+          onPress={() =>
+            router.push({
+              pathname: "/session/[id]",
+              params: {
+                id: item.id,
+              },
+            })
+          }
+        >
+          <Card
+            style={{
+              marginBottom: spacing.sm,
             }}
-            ListEmptyComponent={
-              <Text
-                style={[
-                  typography.caption,
-                  { color: colors.textTertiary },
-                ]}
-              >
-                {t("library", "empty.sessions")}
-              </Text>
-            }
-            renderItem={({ item }) => (
-              <TouchableOpacity
-                testID={`library-session-${item.id}`}
-                onPress={() =>
-                  router.push({
-                    pathname: "/session/[id]",
-                    params: { id: item.id },
-                  })
-                }
-              >
-                <Card style={{ marginBottom: spacing.sm }}>
-                  <Text
-                    style={[
-                      typography.bodyMedium,
-                      { color: colors.textPrimary },
-                    ]}
-                  >
-                    {item.title}
-                  </Text>
+          >
+            <Text
+              style={[
+                typography.bodyMedium,
+                {
+                  color: colors.textPrimary,
+                },
+              ]}
+            >
+              {item.title}
+            </Text>
 
-                  <Text
-                    style={[
-                      typography.caption,
-                      {
-                        color: colors.textTertiary,
-                        marginTop: spacing.xxs,
-                      },
-                    ]}
-                  >
-                    {formatDurationMs(
-                      item.total_recorded_duration_ms,
-                    )}{" "}
-                    • {syncStatusLabel(item.local_sync_status)}
-                  </Text>
-                </Card>
-              </TouchableOpacity>
-            )}
-          />
-        </View>
+            <Text
+              style={[
+                typography.caption,
+                {
+                  color: colors.textTertiary,
+                  marginTop: spacing.xxs,
+                },
+              ]}
+            >
+              {formatDurationMs(
+                item.total_recorded_duration_ms,
+              )}{" "}
+              •{" "}
+              {syncStatusLabel(
+                item.local_sync_status,
+              )}
+            </Text>
+          </Card>
+        </TouchableOpacity>
       )}
+    />
+  </View>
+)}
     </Screen>
   );
 }
