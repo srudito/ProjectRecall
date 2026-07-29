@@ -5,7 +5,7 @@ import * as ImagePicker from "expo-image-picker";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Crypto from "expo-crypto";
 import { useEffect, useMemo, useState } from "react";
-import { Modal, Pressable, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { Modal, Platform, Pressable, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 
 import { Button } from "@/src/components/Button";
 import { Screen } from "@/src/components/Screen";
@@ -16,6 +16,7 @@ import {
   addMediaAsset,
   addNote,
   fetchSession,
+  getSessionBundle,
   markSessionRecording,
   markSessionStopped,
   recordTimelineEvent,
@@ -49,6 +50,9 @@ export default function ActiveRecording() {
   const [noteText, setNoteText] = useState("");
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
+  const [meter, setMeter] = useState<number | null>(null);
+  const [bookmarkPending, setBookmarkPending] = useState(false);
+  const [bookmarkFeedback, setBookmarkFeedback] = useState<string | null>(null);
 
   useEffect(() => {
     const unsub = bind();
@@ -60,19 +64,35 @@ export default function ActiveRecording() {
   // the controller while recording and freeze the final value while paused or
   // stopped.
   useEffect(() => {
-    const refreshElapsed = () => {
-      setElapsedMs(controller.getSnapshot().offsetMs);
+    const refreshTelemetry = () => {
+      const current = controller.getSnapshot();
+      setElapsedMs(current.offsetMs);
+      setMeter(
+        current.state === RecordingState.RECORDING
+          ? current.meter
+          : null,
+      );
     };
 
-    refreshElapsed();
+    refreshTelemetry();
 
     if (snapshot.state !== RecordingState.RECORDING) {
       return;
     }
 
-    const interval = setInterval(refreshElapsed, 250);
+    const interval = setInterval(refreshTelemetry, 250);
     return () => clearInterval(interval);
   }, [controller, snapshot.state]);
+
+  useEffect(() => {
+    if (!bookmarkFeedback) return;
+
+    const timeout = setTimeout(() => {
+      setBookmarkFeedback(null);
+    }, 2000);
+
+    return () => clearTimeout(timeout);
+  }, [bookmarkFeedback]);
 
   useEffect(() => {
     (async () => {
@@ -81,10 +101,23 @@ export default function ActiveRecording() {
         setStatusMsg(t("errors", "AUTH_SESSION_EXPIRED"));
         return;
       }
+      setSession(null);
+      setElapsedMs(0);
+      setMeter(null);
+      setStatusMsg(null);
+      setBookmarkFeedback(null);
+
       const s = await fetchSession(String(sessionId));
       setSession(s);
-      // Auto-start.
-      if (s && snapshot.state === RecordingState.IDLE) {
+
+      const canStartNewRecording =
+        snapshot.state === RecordingState.IDLE ||
+        snapshot.state === RecordingState.SAVED ||
+        snapshot.state === RecordingState.FAILED;
+
+      // Auto-start a fresh recorder lifecycle for every new session. Terminal
+      // states belong to the previous session and are reset by controller.start().
+      if (s && canStartNewRecording) {
         try {
           await controller.start();
           const started = await markSessionRecording(s);
@@ -168,25 +201,65 @@ export default function ActiveRecording() {
   };
 
   const onBookmark = async () => {
+    if (bookmarkPending) return;
+
     if (!session || !userId) {
       if (!userId) setStatusMsg(t("errors", "AUTH_SESSION_EXPIRED"));
       return;
     }
-    const now = Date.now();
-    const offsetMs = controller.getSnapshot().offsetMs;
-    // Dup-prevention (fast taps).
-    const existing = await listBookmarksForSession(session.id);
-    const dup = isDuplicateBookmark(
-      { recording_offset_ms: offsetMs, created_at_ms: now },
-      existing.map((b) => ({ recording_offset_ms: b.recording_offset_ms, created_at_ms: new Date(b.created_at).getTime() })),
-    );
-    if (dup) return;
-    await addBookmark({
-      session,
-      createdBy: userId,
-      label: t("recording", "bookmark.defaultLabel"),
-      offsetMs,
-    });
+
+    const recordingIsActive =
+      snapshot.state === RecordingState.RECORDING ||
+      snapshot.state === RecordingState.PAUSED;
+
+    if (!recordingIsActive) {
+      setStatusMsg(t("recording", "bookmark.unavailable"));
+      return;
+    }
+
+    setBookmarkPending(true);
+
+    try {
+      const now = Date.now();
+      const offsetMs = controller.getSnapshot().offsetMs;
+
+      // Native reads the durable local database; web reads the cloud bundle.
+      const existing =
+        Platform.OS === "web"
+          ? (await getSessionBundle(session.id)).bookmarks
+          : await listBookmarksForSession(session.id);
+
+      const duplicate = isDuplicateBookmark(
+        { recording_offset_ms: offsetMs, created_at_ms: now },
+        existing.map((bookmark) => ({
+          recording_offset_ms: bookmark.recording_offset_ms,
+          created_at_ms: new Date(bookmark.created_at).getTime(),
+        })),
+      );
+
+      if (duplicate) {
+        setBookmarkFeedback(t("recording", "bookmark.duplicate"));
+        return;
+      }
+
+      const bookmark = await addBookmark({
+        session,
+        createdBy: userId,
+        label: t("recording", "bookmark.defaultLabel"),
+        offsetMs,
+      });
+
+      setStatusMsg(null);
+      setBookmarkFeedback(
+        t("recording", "bookmark.added", {
+          time: formatDurationMs(bookmark.recording_offset_ms),
+        }),
+      );
+    } catch (error) {
+      setStatusMsg(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBookmarkPending(false);
+    }
   };
 
   const onSaveNote = async () => {
@@ -198,14 +271,20 @@ export default function ActiveRecording() {
       setShowNoteSheet(false);
       return;
     }
-    await addNote({
-      session,
-      createdBy: userId,
-      text: noteText.trim(),
-      offsetMs: controller.getSnapshot().offsetMs,
-    });
-    setNoteText("");
-    setShowNoteSheet(false);
+
+    try {
+      await addNote({
+        session,
+        createdBy: userId,
+        text: noteText.trim(),
+        offsetMs: controller.getSnapshot().offsetMs,
+      });
+      setNoteText("");
+      setShowNoteSheet(false);
+      setStatusMsg(null);
+    } catch (error) {
+      setStatusMsg(error instanceof Error ? error.message : String(error));
+    }
   };
 
   const attachFromCamera = async () => {
@@ -293,6 +372,10 @@ export default function ActiveRecording() {
   const canPause = snapshot.state === RecordingState.RECORDING;
   const canResume = snapshot.state === RecordingState.PAUSED;
   const canStop = snapshot.state === RecordingState.RECORDING || snapshot.state === RecordingState.PAUSED;
+  const meterProgress =
+    meter == null
+      ? 0
+      : Math.max(0.04, Math.min(1, (meter + 60) / 60));
 
   return (
     <Screen testID="active-recording-screen">
@@ -318,9 +401,28 @@ export default function ActiveRecording() {
           >
             {formatDurationMs(elapsedMs)}
           </Text>
-          <Text style={[typography.caption, { color: colors.textTertiary, marginTop: spacing.xs }]}>
-            {t("recording", "meterUnavailable")}
-          </Text>
+          {meter != null && snapshot.state === RecordingState.RECORDING ? (
+            <View
+              testID="recording-audio-meter"
+              accessibilityLabel={t("recording", "recordingIndicator")}
+              style={{
+                width: "70%",
+                height: 6,
+                marginTop: spacing.sm,
+                borderRadius: 3,
+                overflow: "hidden",
+                backgroundColor: colors.border,
+              }}
+            >
+              <View
+                style={{
+                  width: `${Math.round(meterProgress * 100)}%`,
+                  height: "100%",
+                  backgroundColor: colors.accent,
+                }}
+              />
+            </View>
+          ) : null}
           {statusMsg ? (
             <Text
               testID="recording-status-message"
@@ -358,12 +460,31 @@ export default function ActiveRecording() {
           <View style={{ flexDirection: "row", gap: spacing.xs }}>
             <TouchableOpacity
               testID="recording-bookmark-button"
-              style={[styles.actionPill, { borderColor: colors.border, backgroundColor: colors.surface }]}
-              onPress={onBookmark}
+              accessibilityRole="button"
+              accessibilityLabel={t("recording", "active.addBookmark")}
+              accessibilityState={{
+                disabled: !canStop || bookmarkPending,
+                busy: bookmarkPending,
+              }}
+              disabled={!canStop || bookmarkPending}
+              activeOpacity={0.7}
+              style={[
+                styles.actionPill,
+                {
+                  borderColor: colors.border,
+                  backgroundColor: colors.surface,
+                  opacity: !canStop || bookmarkPending ? 0.5 : 1,
+                },
+              ]}
+              onPress={() => {
+                void onBookmark();
+              }}
             >
               <Ionicons name="bookmark-outline" size={18} color={colors.textPrimary} />
               <Text style={{ color: colors.textPrimary, marginLeft: 6 }}>
-                {t("recording", "active.addBookmark")}
+                {bookmarkPending
+                  ? t("recording", "bookmark.adding")
+                  : t("recording", "active.addBookmark")}
               </Text>
             </TouchableOpacity>
 
@@ -389,6 +510,22 @@ export default function ActiveRecording() {
               </Text>
             </TouchableOpacity>
           </View>
+
+          {bookmarkFeedback ? (
+            <Text
+              testID="recording-bookmark-feedback"
+              accessibilityLiveRegion="polite"
+              style={[
+                typography.caption,
+                {
+                  color: colors.accent,
+                  textAlign: "center",
+                },
+              ]}
+            >
+              {bookmarkFeedback}
+            </Text>
+          ) : null}
         </View>
       </View>
 

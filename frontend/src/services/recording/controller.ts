@@ -229,11 +229,17 @@ export const createRecordingController = (): RecordingController => {
       );
     }
 
-    // Allow a new recording or a retry after a terminal state.
+    // Allow a new recording or a retry after a terminal state. Clear the
+    // previous session's telemetry before emitting IDLE so a new screen never
+    // inherits the old elapsed time or terminal error. This does not delete the
+    // previously recorded file; it only releases the controller reference.
     if (
       state === RecordingState.SAVED ||
       state === RecordingState.FAILED
     ) {
+      tracker.reset();
+      fileUri = null;
+      error = null;
       transition(RecordingEvent.RESET);
     }
 

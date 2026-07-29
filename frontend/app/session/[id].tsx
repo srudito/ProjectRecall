@@ -48,8 +48,15 @@ const buildLabel = (
       return `${t("session", "timeline.noteAdded")}: ${n?.text ?? ""}`;
     }
     case TimelineEventType.BOOKMARK_ADDED: {
-      const b = bookmarks.find((x) => x.id === ev.source_entity_id);
-      return `${t("session", "timeline.bookmarkAdded")}: ${b?.label ?? ""}`;
+      const bookmark = bookmarks.find(
+        (item) => item.id === ev.source_entity_id,
+      );
+      const label = bookmark?.label.trim();
+
+      // The default label is already "Bookmark". Returning only the label
+      // avoids the redundant "Bookmark: Bookmark" timeline text while still
+      // allowing a future custom bookmark name to be displayed directly.
+      return label || t("session", "timeline.bookmarkAdded");
     }
     case TimelineEventType.IMAGE_ADDED: {
       const a = assets.find((x) => x.id === ev.source_entity_id);
