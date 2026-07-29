@@ -1,24 +1,36 @@
 import NetInfo from "@react-native-community/netinfo";
 import { Platform } from "react-native";
 
-import { nextBackoffMs, shouldGiveUp } from "@/src/services/upload-queue/backoff";
 import {
   claimMetadataOperation,
   deferMetadataOperationForDependency,
   deleteCompletedMetadataOperation,
+  getBookmark,
   getNextEligibleMetadataOperation,
+  getNote,
   getProject,
   getSession,
+  getTimelineEvent,
   markMetadataOperationFailed,
   resetInProgressMetadataOperations,
   rescheduleMetadataOperation,
+  updateBookmarkSyncStatus,
+  updateNoteSyncStatus,
   updateProjectSyncStatus,
   updateSessionSyncStatus,
+  updateTimelineEventSyncStatus,
+  upsertBookmark,
+  upsertNote,
   upsertProject,
   upsertSession,
+  upsertTimelineEvent,
+  type BookmarkRecord,
+  type ContentSyncStatusUpdate,
   type MetadataQueueRow,
+  type NoteRecord,
   type ProjectRecord,
   type SessionRecord,
+  type TimelineEventRecord,
 } from "@/src/services/sqlite/repository";
 import { getSupabase } from "@/src/services/supabase/client";
 import {
@@ -26,7 +38,13 @@ import {
   ProjectSyncError,
   upsertRemoteProject,
 } from "@/src/services/supabase/project-repository";
+import {
+  upsertRemoteBookmark,
+  upsertRemoteNote,
+  upsertRemoteTimelineEvent,
+} from "@/src/services/supabase/session-content-repository";
 import { upsertRemoteSession } from "@/src/services/supabase/session-repository";
+import { nextBackoffMs, shouldGiveUp } from "@/src/services/upload-queue/backoff";
 
 import { notifyMetadataSyncChanges } from "./project-sync-events";
 
@@ -39,14 +57,18 @@ export interface MetadataSyncRunResult {
   failed: number;
 }
 
-// Backward-compatible public name retained for the verified Project Sync v1
-// integration. The worker now processes both project and session metadata.
+// Backward-compatible public name retained for Project/Session Sync callers.
 export type ProjectSyncRunResult = MetadataSyncRunResult;
 
 interface ConnectionState {
   isConnected: boolean | null;
   isInternetReachable: boolean | null;
 }
+
+type ContentStatusUpdater = (
+  id: string,
+  patch: ContentSyncStatusUpdate,
+) => Promise<void>;
 
 export interface MetadataSyncWorkerDependencies {
   platform: string;
@@ -60,12 +82,26 @@ export interface MetadataSyncWorkerDependencies {
   claimOperation: (id: string) => Promise<MetadataQueueRow | null>;
   getLocalProject: (id: string) => Promise<ProjectRecord | null>;
   getLocalSession: (id: string) => Promise<SessionRecord | null>;
+  getLocalNote: (id: string) => Promise<NoteRecord | null>;
+  getLocalBookmark: (id: string) => Promise<BookmarkRecord | null>;
+  getLocalTimelineEvent: (id: string) => Promise<TimelineEventRecord | null>;
   updateProjectStatus: typeof updateProjectSyncStatus;
   updateSessionStatus: typeof updateSessionSyncStatus;
+  updateNoteStatus: typeof updateNoteSyncStatus;
+  updateBookmarkStatus: typeof updateBookmarkSyncStatus;
+  updateTimelineStatus: typeof updateTimelineEventSyncStatus;
   saveLocalProject: typeof upsertProject;
   saveLocalSession: typeof upsertSession;
+  saveLocalNote: typeof upsertNote;
+  saveLocalBookmark: typeof upsertBookmark;
+  saveLocalTimelineEvent: typeof upsertTimelineEvent;
   upsertCloudProject: (project: ProjectRecord) => Promise<ProjectRecord>;
   upsertCloudSession: (session: SessionRecord) => Promise<SessionRecord>;
+  upsertCloudNote: (note: NoteRecord) => Promise<NoteRecord>;
+  upsertCloudBookmark: (bookmark: BookmarkRecord) => Promise<BookmarkRecord>;
+  upsertCloudTimelineEvent: (
+    event: TimelineEventRecord,
+  ) => Promise<TimelineEventRecord>;
   markOperationFailed: typeof markMetadataOperationFailed;
   rescheduleOperation: typeof rescheduleMetadataOperation;
   deferOperation: typeof deferMetadataOperationForDependency;
@@ -100,19 +136,31 @@ const defaultDependencies: MetadataSyncWorkerDependencies = {
   claimOperation: claimMetadataOperation,
   getLocalProject: getProject,
   getLocalSession: getSession,
+  getLocalNote: getNote,
+  getLocalBookmark: getBookmark,
+  getLocalTimelineEvent: getTimelineEvent,
   updateProjectStatus: updateProjectSyncStatus,
   updateSessionStatus: updateSessionSyncStatus,
+  updateNoteStatus: updateNoteSyncStatus,
+  updateBookmarkStatus: updateBookmarkSyncStatus,
+  updateTimelineStatus: updateTimelineEventSyncStatus,
   saveLocalProject: upsertProject,
   saveLocalSession: upsertSession,
+  saveLocalNote: upsertNote,
+  saveLocalBookmark: upsertBookmark,
+  saveLocalTimelineEvent: upsertTimelineEvent,
   upsertCloudProject: upsertRemoteProject,
   upsertCloudSession: upsertRemoteSession,
+  upsertCloudNote: upsertRemoteNote,
+  upsertCloudBookmark: upsertRemoteBookmark,
+  upsertCloudTimelineEvent: upsertRemoteTimelineEvent,
   markOperationFailed: markMetadataOperationFailed,
   rescheduleOperation: rescheduleMetadataOperation,
   deferOperation: deferMetadataOperationForDependency,
   deleteCompletedOperation: deleteCompletedMetadataOperation,
   now: () => new Date(),
   random: Math.random,
-  maxOperationsPerRun: 50,
+  maxOperationsPerRun: 75,
   maxAttempts: 8,
   notifyChanged: notifyMetadataSyncChanges,
 };
@@ -146,6 +194,90 @@ export const createMetadataSyncWorker = (
 
   let activeRun: Promise<MetadataSyncRunResult> | null = null;
 
+  const failOperation = async (
+    claimed: MetadataQueueRow,
+    result: MetadataSyncRunResult,
+    updateStatus: ContentStatusUpdater | null,
+    code: string,
+    message: string,
+  ): Promise<"continue"> => {
+    await dependencies.markOperationFailed(claimed.id, code, message);
+    if (updateStatus) {
+      await updateStatus(claimed.entity_id, {
+        local_sync_status: "failed",
+        cloud_sync_status: "failed",
+        last_sync_error_code: code,
+        last_sync_error_message: message,
+      });
+    }
+    result.failed += 1;
+    return "continue";
+  };
+
+  const deferOperation = async (
+    claimed: MetadataQueueRow,
+    result: MetadataSyncRunResult,
+    updateStatus: ContentStatusUpdater,
+    code: string,
+    message: string,
+  ): Promise<"break"> => {
+    await dependencies.deferOperation(
+      claimed.id,
+      parentRetryAt(dependencies),
+      code,
+      message,
+    );
+    await updateStatus(claimed.entity_id, {
+      local_sync_status: "pending",
+      cloud_sync_status: "pending",
+      last_sync_error_code: code,
+      last_sync_error_message: message,
+    });
+    result.deferred += 1;
+    return "break";
+  };
+
+  const ensureSessionReady = async (
+    sessionId: string,
+    claimed: MetadataQueueRow,
+    result: MetadataSyncRunResult,
+    updateStatus: ContentStatusUpdater,
+  ): Promise<"ready" | "continue" | "break"> => {
+    const session = await dependencies.getLocalSession(sessionId);
+    if (!session || session.deleted_at != null) {
+      return failOperation(
+        claimed,
+        result,
+        updateStatus,
+        "LOCAL_PARENT_SESSION_NOT_FOUND",
+        "The parent session is not available locally.",
+      );
+    }
+
+    const synchronized =
+      session.local_sync_status === "synchronized" &&
+      session.cloud_sync_status === "synchronized";
+    if (synchronized) return "ready";
+
+    if (session.local_sync_status === "failed") {
+      return failOperation(
+        claimed,
+        result,
+        updateStatus,
+        "PARENT_SESSION_SYNC_FAILED",
+        "Synchronize the session before retrying this item.",
+      );
+    }
+
+    return deferOperation(
+      claimed,
+      result,
+      updateStatus,
+      "PARENT_SESSION_PENDING",
+      "Waiting for the session to synchronize first.",
+    );
+  };
+
   const processProject = async (
     claimed: MetadataQueueRow,
     result: MetadataSyncRunResult,
@@ -171,9 +303,6 @@ export const createMetadataSyncWorker = (
     try {
       const remote = await dependencies.upsertCloudProject(project);
       const latest = await dependencies.getLocalProject(project.id);
-
-      // A newer local edit requeued the same stable operation while the remote
-      // request was in flight. Do not overwrite it or delete its pending row.
       if (latest && latest.updated_at !== project.updated_at) {
         result.deferred += 1;
         return "continue";
@@ -260,7 +389,6 @@ export const createMetadataSyncWorker = (
       const parentSynchronized =
         parent.local_sync_status === "synchronized" &&
         parent.cloud_sync_status === "synchronized";
-
       if (!parentSynchronized) {
         if (parent.local_sync_status === "failed") {
           const code = "PARENT_PROJECT_SYNC_FAILED";
@@ -306,7 +434,6 @@ export const createMetadataSyncWorker = (
     try {
       const remote = await dependencies.upsertCloudSession(session);
       const latest = await dependencies.getLocalSession(session.id);
-
       if (latest && latest.updated_at !== session.updated_at) {
         result.deferred += 1;
         return "continue";
@@ -353,6 +480,263 @@ export const createMetadataSyncWorker = (
         normalized.message,
       );
       await dependencies.updateSessionStatus(session.id, {
+        local_sync_status: "failed",
+        cloud_sync_status: "failed",
+        last_sync_error_code: normalized.code,
+        last_sync_error_message: normalized.message,
+      });
+      result.failed += 1;
+      return "continue";
+    }
+  };
+
+  const processMutableContent = async <
+    T extends NoteRecord | BookmarkRecord,
+  >(
+    claimed: MetadataQueueRow,
+    result: MetadataSyncRunResult,
+    options: {
+      getLocal: (id: string) => Promise<T | null>;
+      updateStatus: ContentStatusUpdater;
+      saveLocal: (record: T) => Promise<void>;
+      upsertCloud: (record: T) => Promise<T>;
+    },
+  ): Promise<"continue" | "break"> => {
+    const record = await options.getLocal(claimed.entity_id);
+    if (!record || record.deleted_at != null) {
+      await dependencies.deleteCompletedOperation(claimed.id);
+      if (!record) result.failed += 1;
+      return "continue";
+    }
+
+    const parentState = await ensureSessionReady(
+      record.session_id,
+      claimed,
+      result,
+      options.updateStatus,
+    );
+    if (parentState !== "ready") return parentState;
+
+    await options.updateStatus(record.id, {
+      local_sync_status: "synchronizing",
+      cloud_sync_status: "pending",
+      last_sync_error_code: null,
+      last_sync_error_message: null,
+    });
+
+    try {
+      const remote = await options.upsertCloud(record);
+      const latest = await options.getLocal(record.id);
+      if (latest && latest.updated_at !== record.updated_at) {
+        result.deferred += 1;
+        return "continue";
+      }
+
+      await options.saveLocal({
+        ...remote,
+        local_sync_status: "synchronized",
+        cloud_sync_status: "synchronized",
+        last_sync_error_code: null,
+        last_sync_error_message: null,
+        last_synced_at: dependencies.now().toISOString(),
+      });
+      await dependencies.deleteCompletedOperation(claimed.id);
+      result.synchronized += 1;
+      return "continue";
+    } catch (error) {
+      const normalized = safeUnknownError(error);
+      const exhausted = shouldGiveUp(
+        claimed.attempt_count,
+        dependencies.maxAttempts,
+      );
+
+      if (normalized.retryable && !exhausted) {
+        await dependencies.rescheduleOperation(
+          claimed.id,
+          nextRetryAt(dependencies, claimed.attempt_count),
+          normalized.code,
+          normalized.message,
+        );
+        await options.updateStatus(record.id, {
+          local_sync_status: "pending",
+          cloud_sync_status: "failed",
+          last_sync_error_code: normalized.code,
+          last_sync_error_message: normalized.message,
+        });
+        result.retried += 1;
+        return "break";
+      }
+
+      await dependencies.markOperationFailed(
+        claimed.id,
+        normalized.code,
+        normalized.message,
+      );
+      await options.updateStatus(record.id, {
+        local_sync_status: "failed",
+        cloud_sync_status: "failed",
+        last_sync_error_code: normalized.code,
+        last_sync_error_message: normalized.message,
+      });
+      result.failed += 1;
+      return "continue";
+    }
+  };
+
+  const ensureTimelineSourceReady = async (
+    event: TimelineEventRecord,
+    claimed: MetadataQueueRow,
+    result: MetadataSyncRunResult,
+  ): Promise<"ready" | "continue" | "break"> => {
+    if (!event.source_entity_id || !event.source_entity_type) return "ready";
+
+    if (event.source_entity_type === "note") {
+      const note = await dependencies.getLocalNote(event.source_entity_id);
+      if (!note) {
+        return failOperation(
+          claimed,
+          result,
+          dependencies.updateTimelineStatus,
+          "LOCAL_SOURCE_NOTE_NOT_FOUND",
+          "The timeline note is not available locally.",
+        );
+      }
+      if (
+        note.local_sync_status === "synchronized" &&
+        note.cloud_sync_status === "synchronized"
+      ) {
+        return "ready";
+      }
+      if (note.local_sync_status === "failed") {
+        return failOperation(
+          claimed,
+          result,
+          dependencies.updateTimelineStatus,
+          "SOURCE_NOTE_SYNC_FAILED",
+          "Synchronize the note before retrying its timeline event.",
+        );
+      }
+      return deferOperation(
+        claimed,
+        result,
+        dependencies.updateTimelineStatus,
+        "SOURCE_NOTE_PENDING",
+        "Waiting for the note to synchronize first.",
+      );
+    }
+
+    if (event.source_entity_type === "bookmark") {
+      const bookmark = await dependencies.getLocalBookmark(
+        event.source_entity_id,
+      );
+      if (!bookmark) {
+        return failOperation(
+          claimed,
+          result,
+          dependencies.updateTimelineStatus,
+          "LOCAL_SOURCE_BOOKMARK_NOT_FOUND",
+          "The timeline bookmark is not available locally.",
+        );
+      }
+      if (
+        bookmark.local_sync_status === "synchronized" &&
+        bookmark.cloud_sync_status === "synchronized"
+      ) {
+        return "ready";
+      }
+      if (bookmark.local_sync_status === "failed") {
+        return failOperation(
+          claimed,
+          result,
+          dependencies.updateTimelineStatus,
+          "SOURCE_BOOKMARK_SYNC_FAILED",
+          "Synchronize the bookmark before retrying its timeline event.",
+        );
+      }
+      return deferOperation(
+        claimed,
+        result,
+        dependencies.updateTimelineStatus,
+        "SOURCE_BOOKMARK_PENDING",
+        "Waiting for the bookmark to synchronize first.",
+      );
+    }
+
+    return "ready";
+  };
+
+  const processTimelineEvent = async (
+    claimed: MetadataQueueRow,
+    result: MetadataSyncRunResult,
+  ): Promise<"continue" | "break"> => {
+    const event = await dependencies.getLocalTimelineEvent(claimed.entity_id);
+    if (!event) {
+      await dependencies.deleteCompletedOperation(claimed.id);
+      result.failed += 1;
+      return "continue";
+    }
+
+    const sessionState = await ensureSessionReady(
+      event.session_id,
+      claimed,
+      result,
+      dependencies.updateTimelineStatus,
+    );
+    if (sessionState !== "ready") return sessionState;
+
+    const sourceState = await ensureTimelineSourceReady(event, claimed, result);
+    if (sourceState !== "ready") return sourceState;
+
+    await dependencies.updateTimelineStatus(event.id, {
+      local_sync_status: "synchronizing",
+      cloud_sync_status: "pending",
+      last_sync_error_code: null,
+      last_sync_error_message: null,
+    });
+
+    try {
+      const remote = await dependencies.upsertCloudTimelineEvent(event);
+      await dependencies.saveLocalTimelineEvent({
+        ...remote,
+        local_sync_status: "synchronized",
+        cloud_sync_status: "synchronized",
+        last_sync_error_code: null,
+        last_sync_error_message: null,
+        last_synced_at: dependencies.now().toISOString(),
+      });
+      await dependencies.deleteCompletedOperation(claimed.id);
+      result.synchronized += 1;
+      return "continue";
+    } catch (error) {
+      const normalized = safeUnknownError(error);
+      const exhausted = shouldGiveUp(
+        claimed.attempt_count,
+        dependencies.maxAttempts,
+      );
+
+      if (normalized.retryable && !exhausted) {
+        await dependencies.rescheduleOperation(
+          claimed.id,
+          nextRetryAt(dependencies, claimed.attempt_count),
+          normalized.code,
+          normalized.message,
+        );
+        await dependencies.updateTimelineStatus(event.id, {
+          local_sync_status: "pending",
+          cloud_sync_status: "failed",
+          last_sync_error_code: normalized.code,
+          last_sync_error_message: normalized.message,
+        });
+        result.retried += 1;
+        return "break";
+      }
+
+      await dependencies.markOperationFailed(
+        claimed.id,
+        normalized.code,
+        normalized.message,
+      );
+      await dependencies.updateTimelineStatus(event.id, {
         local_sync_status: "failed",
         cloud_sync_status: "failed",
         last_sync_error_code: normalized.code,
@@ -425,18 +809,40 @@ export const createMetadataSyncWorker = (
       }
 
       let action: "continue" | "break";
-      if (claimed.entity_type === "project") {
-        action = await processProject(claimed, result);
-      } else if (claimed.entity_type === "session") {
-        action = await processSession(claimed, result);
-      } else {
-        await dependencies.markOperationFailed(
-          claimed.id,
-          "UNSUPPORTED_METADATA_ENTITY",
-          "This metadata entity is not supported yet.",
-        );
-        result.failed += 1;
-        continue;
+      switch (claimed.entity_type) {
+        case "project":
+          action = await processProject(claimed, result);
+          break;
+        case "session":
+          action = await processSession(claimed, result);
+          break;
+        case "note":
+          action = await processMutableContent(claimed, result, {
+            getLocal: dependencies.getLocalNote,
+            updateStatus: dependencies.updateNoteStatus,
+            saveLocal: dependencies.saveLocalNote,
+            upsertCloud: dependencies.upsertCloudNote,
+          });
+          break;
+        case "bookmark":
+          action = await processMutableContent(claimed, result, {
+            getLocal: dependencies.getLocalBookmark,
+            updateStatus: dependencies.updateBookmarkStatus,
+            saveLocal: dependencies.saveLocalBookmark,
+            upsertCloud: dependencies.upsertCloudBookmark,
+          });
+          break;
+        case "timeline_event":
+          action = await processTimelineEvent(claimed, result);
+          break;
+        default:
+          await dependencies.markOperationFailed(
+            claimed.id,
+            "UNSUPPORTED_METADATA_ENTITY",
+            "This metadata entity is not supported yet.",
+          );
+          result.failed += 1;
+          continue;
       }
 
       if (action === "break") break;
@@ -464,9 +870,7 @@ export const createMetadataSyncWorker = (
   };
 };
 
-
-// Backward-compatible type/function names retained for Project Sync v1 callers
-// and tests while the worker now processes multiple metadata entity types.
+// Backward-compatible type/function names retained for earlier callers/tests.
 export type ProjectSyncWorkerDependencies = MetadataSyncWorkerDependencies;
 export const createProjectSyncWorker = createMetadataSyncWorker;
 

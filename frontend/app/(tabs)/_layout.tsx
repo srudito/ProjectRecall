@@ -1,4 +1,4 @@
-import { Tabs } from "expo-router";
+import { Tabs, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -7,7 +7,8 @@ import { useI18n } from "@/src/i18n/I18nProvider";
 import { useTheme } from "@/src/theme/ThemeProvider";
 
 export default function TabsLayout() {
-  const { colors, spacing } = useTheme();
+  const router = useRouter();
+  const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const { t } = useI18n();
 
@@ -47,6 +48,12 @@ export default function TabsLayout() {
       />
       <Tabs.Screen
         name="record"
+        listeners={{
+          tabPress: (event) => {
+            event.preventDefault();
+            router.push("/record/setup");
+          },
+        }}
         options={{
           title: t("recording", "setup.title"),
           tabBarLabel: "Record",

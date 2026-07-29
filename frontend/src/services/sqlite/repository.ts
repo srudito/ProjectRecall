@@ -499,7 +499,15 @@ export const updateProjectSyncStatus = async (
   );
 };
 
-export interface NoteRecord {
+export interface LocalContentSyncFields {
+  local_sync_status: string;
+  cloud_sync_status: string;
+  last_sync_error_code: string | null;
+  last_sync_error_message: string | null;
+  last_synced_at: string | null;
+}
+
+export interface NoteRecord extends LocalContentSyncFields {
   id: string;
   workspace_id: string;
   project_id: string | null;
@@ -509,40 +517,86 @@ export interface NoteRecord {
   created_by: string;
   created_at: string;
   updated_at: string;
+  deleted_at: string | null;
 }
 
-export const insertNote = async (r: NoteRecord): Promise<void> => {
-  const db = await openLocalDb();
-  if (!db) return;
+const upsertNoteOnDb = async (
+  db: SQLite.SQLiteDatabase,
+  note: NoteRecord,
+): Promise<void> => {
   await db.runAsync(
     `INSERT INTO local_notes
-      (id, workspace_id, project_id, session_id, text, recording_offset_ms, created_by, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, workspace_id, project_id, session_id, text,
+       recording_offset_ms, created_by, created_at, updated_at, deleted_at,
+       local_sync_status, cloud_sync_status, last_sync_error_code,
+       last_sync_error_message, last_synced_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       workspace_id=excluded.workspace_id,
+       project_id=excluded.project_id,
+       session_id=excluded.session_id,
+       text=excluded.text,
+       recording_offset_ms=excluded.recording_offset_ms,
+       updated_at=excluded.updated_at,
+       deleted_at=excluded.deleted_at,
+       local_sync_status=excluded.local_sync_status,
+       cloud_sync_status=excluded.cloud_sync_status,
+       last_sync_error_code=excluded.last_sync_error_code,
+       last_sync_error_message=excluded.last_sync_error_message,
+       last_synced_at=excluded.last_synced_at`,
     [
-      r.id,
-      r.workspace_id,
-      r.project_id,
-      r.session_id,
-      r.text,
-      r.recording_offset_ms,
-      r.created_by,
-      r.created_at,
-      r.updated_at,
+      note.id,
+      note.workspace_id,
+      note.project_id,
+      note.session_id,
+      note.text,
+      note.recording_offset_ms,
+      note.created_by,
+      note.created_at,
+      note.updated_at,
+      note.deleted_at,
+      note.local_sync_status,
+      note.cloud_sync_status,
+      note.last_sync_error_code,
+      note.last_sync_error_message,
+      note.last_synced_at,
     ],
   );
 };
 
-export const listNotesForSession = async (sessionId: string): Promise<NoteRecord[]> => {
+export const upsertNote = async (note: NoteRecord): Promise<void> => {
   const db = await openLocalDb();
-  if (!db) return [];
-  const rows = (await db.getAllAsync(
-    `SELECT * FROM local_notes WHERE session_id = ? AND deleted_at IS NULL ORDER BY recording_offset_ms ASC`,
-    [sessionId],
-  )) as NoteRecord[];
-  return rows;
+  if (!db) return;
+  await upsertNoteOnDb(db, note);
 };
 
-export interface BookmarkRecord {
+// Backward-compatible name retained for older call sites.
+export const insertNote = upsertNote;
+
+export const getNote = async (id: string): Promise<NoteRecord | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+  const row = (await db.getFirstAsync(
+    `SELECT * FROM local_notes WHERE id = ?`,
+    [id],
+  )) as NoteRecord | null;
+  return row ?? null;
+};
+
+export const listNotesForSession = async (
+  sessionId: string,
+): Promise<NoteRecord[]> => {
+  const db = await openLocalDb();
+  if (!db) return [];
+  return (await db.getAllAsync(
+    `SELECT * FROM local_notes
+      WHERE session_id = ? AND deleted_at IS NULL
+      ORDER BY recording_offset_ms ASC, created_at ASC`,
+    [sessionId],
+  )) as NoteRecord[];
+};
+
+export interface BookmarkRecord extends LocalContentSyncFields {
   id: string;
   workspace_id: string;
   project_id: string | null;
@@ -552,40 +606,90 @@ export interface BookmarkRecord {
   created_by: string;
   created_at: string;
   updated_at: string;
+  deleted_at: string | null;
 }
 
-export const insertBookmark = async (r: BookmarkRecord): Promise<void> => {
-  const db = await openLocalDb();
-  if (!db) return;
+const upsertBookmarkOnDb = async (
+  db: SQLite.SQLiteDatabase,
+  bookmark: BookmarkRecord,
+): Promise<void> => {
   await db.runAsync(
     `INSERT INTO local_bookmarks
-      (id, workspace_id, project_id, session_id, label, recording_offset_ms, created_by, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, workspace_id, project_id, session_id, label,
+       recording_offset_ms, created_by, created_at, updated_at, deleted_at,
+       local_sync_status, cloud_sync_status, last_sync_error_code,
+       last_sync_error_message, last_synced_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       workspace_id=excluded.workspace_id,
+       project_id=excluded.project_id,
+       session_id=excluded.session_id,
+       label=excluded.label,
+       recording_offset_ms=excluded.recording_offset_ms,
+       updated_at=excluded.updated_at,
+       deleted_at=excluded.deleted_at,
+       local_sync_status=excluded.local_sync_status,
+       cloud_sync_status=excluded.cloud_sync_status,
+       last_sync_error_code=excluded.last_sync_error_code,
+       last_sync_error_message=excluded.last_sync_error_message,
+       last_synced_at=excluded.last_synced_at`,
     [
-      r.id,
-      r.workspace_id,
-      r.project_id,
-      r.session_id,
-      r.label,
-      r.recording_offset_ms,
-      r.created_by,
-      r.created_at,
-      r.updated_at,
+      bookmark.id,
+      bookmark.workspace_id,
+      bookmark.project_id,
+      bookmark.session_id,
+      bookmark.label,
+      bookmark.recording_offset_ms,
+      bookmark.created_by,
+      bookmark.created_at,
+      bookmark.updated_at,
+      bookmark.deleted_at,
+      bookmark.local_sync_status,
+      bookmark.cloud_sync_status,
+      bookmark.last_sync_error_code,
+      bookmark.last_sync_error_message,
+      bookmark.last_synced_at,
     ],
   );
 };
 
-export const listBookmarksForSession = async (sessionId: string): Promise<BookmarkRecord[]> => {
+export const upsertBookmark = async (
+  bookmark: BookmarkRecord,
+): Promise<void> => {
   const db = await openLocalDb();
-  if (!db) return [];
-  const rows = (await db.getAllAsync(
-    `SELECT * FROM local_bookmarks WHERE session_id = ? AND deleted_at IS NULL ORDER BY recording_offset_ms ASC`,
-    [sessionId],
-  )) as BookmarkRecord[];
-  return rows;
+  if (!db) return;
+  await upsertBookmarkOnDb(db, bookmark);
 };
 
-export interface TimelineEventRecord {
+// Backward-compatible name retained for older call sites.
+export const insertBookmark = upsertBookmark;
+
+export const getBookmark = async (
+  id: string,
+): Promise<BookmarkRecord | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+  const row = (await db.getFirstAsync(
+    `SELECT * FROM local_bookmarks WHERE id = ?`,
+    [id],
+  )) as BookmarkRecord | null;
+  return row ?? null;
+};
+
+export const listBookmarksForSession = async (
+  sessionId: string,
+): Promise<BookmarkRecord[]> => {
+  const db = await openLocalDb();
+  if (!db) return [];
+  return (await db.getAllAsync(
+    `SELECT * FROM local_bookmarks
+      WHERE session_id = ? AND deleted_at IS NULL
+      ORDER BY recording_offset_ms ASC, created_at ASC`,
+    [sessionId],
+  )) as BookmarkRecord[];
+};
+
+export interface TimelineEventRecord extends LocalContentSyncFields {
   id: string;
   workspace_id: string;
   project_id: string | null;
@@ -598,38 +702,137 @@ export interface TimelineEventRecord {
   created_at: string;
 }
 
-export const insertTimelineEvent = async (r: TimelineEventRecord): Promise<void> => {
-  const db = await openLocalDb();
-  if (!db) return;
+const upsertTimelineEventOnDb = async (
+  db: SQLite.SQLiteDatabase,
+  event: TimelineEventRecord,
+): Promise<void> => {
   await db.runAsync(
     `INSERT INTO local_timeline_events
-      (id, workspace_id, project_id, session_id, event_type, source_entity_type, source_entity_id,
-       recording_offset_ms, created_by, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, workspace_id, project_id, session_id, event_type,
+       source_entity_type, source_entity_id, recording_offset_ms,
+       created_by, created_at, local_sync_status, cloud_sync_status,
+       last_sync_error_code, last_sync_error_message, last_synced_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       workspace_id=excluded.workspace_id,
+       project_id=excluded.project_id,
+       session_id=excluded.session_id,
+       event_type=excluded.event_type,
+       source_entity_type=excluded.source_entity_type,
+       source_entity_id=excluded.source_entity_id,
+       recording_offset_ms=excluded.recording_offset_ms,
+       local_sync_status=excluded.local_sync_status,
+       cloud_sync_status=excluded.cloud_sync_status,
+       last_sync_error_code=excluded.last_sync_error_code,
+       last_sync_error_message=excluded.last_sync_error_message,
+       last_synced_at=excluded.last_synced_at`,
     [
-      r.id,
-      r.workspace_id,
-      r.project_id,
-      r.session_id,
-      r.event_type,
-      r.source_entity_type,
-      r.source_entity_id,
-      r.recording_offset_ms,
-      r.created_by,
-      r.created_at,
+      event.id,
+      event.workspace_id,
+      event.project_id,
+      event.session_id,
+      event.event_type,
+      event.source_entity_type,
+      event.source_entity_id,
+      event.recording_offset_ms,
+      event.created_by,
+      event.created_at,
+      event.local_sync_status,
+      event.cloud_sync_status,
+      event.last_sync_error_code,
+      event.last_sync_error_message,
+      event.last_synced_at,
     ],
   );
 };
 
-export const listTimelineEvents = async (sessionId: string): Promise<TimelineEventRecord[]> => {
+export const upsertTimelineEvent = async (
+  event: TimelineEventRecord,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  await upsertTimelineEventOnDb(db, event);
+};
+
+// Backward-compatible name retained for older call sites.
+export const insertTimelineEvent = upsertTimelineEvent;
+
+export const getTimelineEvent = async (
+  id: string,
+): Promise<TimelineEventRecord | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+  const row = (await db.getFirstAsync(
+    `SELECT * FROM local_timeline_events WHERE id = ?`,
+    [id],
+  )) as TimelineEventRecord | null;
+  return row ?? null;
+};
+
+export const listTimelineEvents = async (
+  sessionId: string,
+): Promise<TimelineEventRecord[]> => {
   const db = await openLocalDb();
   if (!db) return [];
-  const rows = (await db.getAllAsync(
-    `SELECT * FROM local_timeline_events WHERE session_id = ? ORDER BY recording_offset_ms ASC, created_at ASC`,
+  return (await db.getAllAsync(
+    `SELECT * FROM local_timeline_events
+      WHERE session_id = ?
+      ORDER BY recording_offset_ms ASC, created_at ASC, id ASC`,
     [sessionId],
   )) as TimelineEventRecord[];
-  return rows;
 };
+
+export interface ContentSyncStatusUpdate {
+  local_sync_status?: string;
+  cloud_sync_status?: string;
+  last_sync_error_code?: string | null;
+  last_sync_error_message?: string | null;
+  last_synced_at?: string | null;
+}
+
+const updateContentSyncStatus = async (
+  table: "local_notes" | "local_bookmarks" | "local_timeline_events",
+  id: string,
+  patch: ContentSyncStatusUpdate,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+
+  const allowedKeys: (keyof ContentSyncStatusUpdate)[] = [
+    "local_sync_status",
+    "cloud_sync_status",
+    "last_sync_error_code",
+    "last_sync_error_message",
+    "last_synced_at",
+  ];
+  const entries = allowedKeys
+    .filter((key) => Object.prototype.hasOwnProperty.call(patch, key))
+    .map((key) => ({ key, value: patch[key] ?? null }));
+
+  if (entries.length === 0) return;
+
+  const setSql = entries.map(({ key }) => `${key} = ?`).join(", ");
+  const values: (string | null)[] = entries.map(({ value }) => value);
+  await db.runAsync(`UPDATE ${table} SET ${setSql} WHERE id = ?`, [
+    ...values,
+    id,
+  ]);
+};
+
+export const updateNoteSyncStatus = (
+  id: string,
+  patch: ContentSyncStatusUpdate,
+): Promise<void> => updateContentSyncStatus("local_notes", id, patch);
+
+export const updateBookmarkSyncStatus = (
+  id: string,
+  patch: ContentSyncStatusUpdate,
+): Promise<void> => updateContentSyncStatus("local_bookmarks", id, patch);
+
+export const updateTimelineEventSyncStatus = (
+  id: string,
+  patch: ContentSyncStatusUpdate,
+): Promise<void> => updateContentSyncStatus("local_timeline_events", id, patch);
 
 export interface MediaAssetRecord {
   id: string;
@@ -818,7 +1021,12 @@ export type { SQLite };
 // ==========================================================================
 
 export type MetadataQueueOperation = "UPSERT" | "DELETE";
-export type MetadataQueueEntityType = "project" | "session";
+export type MetadataQueueEntityType =
+  | "project"
+  | "session"
+  | "note"
+  | "bookmark"
+  | "timeline_event";
 export type MetadataQueueStatus =
   | "pending"
   | "in_progress"
@@ -1386,5 +1594,185 @@ export const atomicRequeueSessionSync = async (
         now,
       ],
     );
+  });
+};
+
+// ============================================================================
+// Atomic local note/bookmark/timeline creation
+// ============================================================================
+
+interface AtomicSessionContentQueueInput {
+  queueRowId: string;
+  idempotencyKey: string;
+}
+
+const enqueueMetadataOnDb = async (
+  db: SQLite.SQLiteDatabase,
+  input: {
+    queueRowId: string;
+    userId: string;
+    workspaceId: string;
+    entityType: MetadataQueueEntityType;
+    entityId: string;
+    parentEntityType: string | null;
+    parentEntityId: string | null;
+    priority: number;
+    idempotencyKey: string;
+    createdAt: string;
+  },
+): Promise<void> => {
+  const now = nowIso();
+  await db.runAsync(
+    `INSERT INTO local_metadata_sync_queue
+      (id, user_id, workspace_id, entity_type, entity_id, operation,
+       parent_entity_type, parent_entity_id, priority,
+       queue_status, attempt_count, next_retry_at,
+       last_error_code, last_safe_error, idempotency_key,
+       created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 'UPSERT', ?, ?, ?,
+             'pending', 0, NULL, NULL, NULL, ?, ?, ?)
+     ON CONFLICT(idempotency_key) DO UPDATE SET
+       user_id = excluded.user_id,
+       workspace_id = excluded.workspace_id,
+       parent_entity_type = excluded.parent_entity_type,
+       parent_entity_id = excluded.parent_entity_id,
+       priority = excluded.priority,
+       queue_status = 'pending',
+       attempt_count = 0,
+       next_retry_at = NULL,
+       last_error_code = NULL,
+       last_safe_error = NULL,
+       updated_at = excluded.updated_at`,
+    [
+      input.queueRowId,
+      input.userId,
+      input.workspaceId,
+      input.entityType,
+      input.entityId,
+      input.parentEntityType,
+      input.parentEntityId,
+      input.priority,
+      input.idempotencyKey,
+      input.createdAt,
+      now,
+    ],
+  );
+};
+
+export interface AtomicCreateNoteWithTimelineSyncInput {
+  note: NoteRecord;
+  timelineEvent: TimelineEventRecord;
+  noteQueue: AtomicSessionContentQueueInput;
+  timelineQueue: AtomicSessionContentQueueInput;
+}
+
+export const atomicCreateNoteWithTimelineSync = async (
+  input: AtomicCreateNoteWithTimelineSyncInput,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+
+  await db.withTransactionAsync(async () => {
+    await upsertNoteOnDb(db, input.note);
+    await upsertTimelineEventOnDb(db, input.timelineEvent);
+
+    await enqueueMetadataOnDb(db, {
+      queueRowId: input.noteQueue.queueRowId,
+      userId: input.note.created_by,
+      workspaceId: input.note.workspace_id,
+      entityType: "note",
+      entityId: input.note.id,
+      parentEntityType: "session",
+      parentEntityId: input.note.session_id,
+      priority: 300,
+      idempotencyKey: input.noteQueue.idempotencyKey,
+      createdAt: input.note.created_at,
+    });
+
+    await enqueueMetadataOnDb(db, {
+      queueRowId: input.timelineQueue.queueRowId,
+      userId: input.timelineEvent.created_by,
+      workspaceId: input.timelineEvent.workspace_id,
+      entityType: "timeline_event",
+      entityId: input.timelineEvent.id,
+      parentEntityType: "note",
+      parentEntityId: input.note.id,
+      priority: 400,
+      idempotencyKey: input.timelineQueue.idempotencyKey,
+      createdAt: input.timelineEvent.created_at,
+    });
+  });
+};
+
+export interface AtomicCreateBookmarkWithTimelineSyncInput {
+  bookmark: BookmarkRecord;
+  timelineEvent: TimelineEventRecord;
+  bookmarkQueue: AtomicSessionContentQueueInput;
+  timelineQueue: AtomicSessionContentQueueInput;
+}
+
+export const atomicCreateBookmarkWithTimelineSync = async (
+  input: AtomicCreateBookmarkWithTimelineSyncInput,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+
+  await db.withTransactionAsync(async () => {
+    await upsertBookmarkOnDb(db, input.bookmark);
+    await upsertTimelineEventOnDb(db, input.timelineEvent);
+
+    await enqueueMetadataOnDb(db, {
+      queueRowId: input.bookmarkQueue.queueRowId,
+      userId: input.bookmark.created_by,
+      workspaceId: input.bookmark.workspace_id,
+      entityType: "bookmark",
+      entityId: input.bookmark.id,
+      parentEntityType: "session",
+      parentEntityId: input.bookmark.session_id,
+      priority: 300,
+      idempotencyKey: input.bookmarkQueue.idempotencyKey,
+      createdAt: input.bookmark.created_at,
+    });
+
+    await enqueueMetadataOnDb(db, {
+      queueRowId: input.timelineQueue.queueRowId,
+      userId: input.timelineEvent.created_by,
+      workspaceId: input.timelineEvent.workspace_id,
+      entityType: "timeline_event",
+      entityId: input.timelineEvent.id,
+      parentEntityType: "bookmark",
+      parentEntityId: input.bookmark.id,
+      priority: 400,
+      idempotencyKey: input.timelineQueue.idempotencyKey,
+      createdAt: input.timelineEvent.created_at,
+    });
+  });
+};
+
+export interface AtomicCreateTimelineEventWithSyncInput {
+  timelineEvent: TimelineEventRecord;
+  timelineQueue: AtomicSessionContentQueueInput;
+}
+
+export const atomicCreateTimelineEventWithSync = async (
+  input: AtomicCreateTimelineEventWithSyncInput,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+
+  await db.withTransactionAsync(async () => {
+    await upsertTimelineEventOnDb(db, input.timelineEvent);
+    await enqueueMetadataOnDb(db, {
+      queueRowId: input.timelineQueue.queueRowId,
+      userId: input.timelineEvent.created_by,
+      workspaceId: input.timelineEvent.workspace_id,
+      entityType: "timeline_event",
+      entityId: input.timelineEvent.id,
+      parentEntityType: "session",
+      parentEntityId: input.timelineEvent.session_id,
+      priority: 400,
+      idempotencyKey: input.timelineQueue.idempotencyKey,
+      createdAt: input.timelineEvent.created_at,
+    });
   });
 };

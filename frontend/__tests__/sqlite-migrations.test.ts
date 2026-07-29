@@ -102,8 +102,8 @@ describe("local SQLite migration runner", () => {
 
     const result = await runMigrations(db, MIGRATIONS);
 
-    expect(LATEST_LOCAL_SCHEMA_VERSION).toBe(4);
-    expect(result).toEqual({ appliedVersions: [3, 4], finalVersion: 4 });
+    expect(LATEST_LOCAL_SCHEMA_VERSION).toBe(5);
+    expect(result).toEqual({ appliedVersions: [3, 4, 5], finalVersion: 5 });
     expect(
       state.executed.some((sql) => sql.includes("upsert:project:")),
     ).toBe(true);
@@ -114,7 +114,7 @@ describe("local SQLite migration runner", () => {
 
     const result = await runMigrations(db, MIGRATIONS);
 
-    expect(result).toEqual({ appliedVersions: [4], finalVersion: 4 });
+    expect(result).toEqual({ appliedVersions: [4, 5], finalVersion: 5 });
     expect(
       state.executed.some((sql) =>
         sql.includes("ALTER TABLE local_sessions ADD COLUMN last_synced_at"),
@@ -125,6 +125,31 @@ describe("local SQLite migration runner", () => {
     ).toBe(true);
     expect(
       state.executed.some((sql) => sql.includes("parent_entity_type")),
+    ).toBe(true);
+  });
+
+  it("adds note, bookmark, and timeline synchronization at version 5", async () => {
+    const { db, state } = createFakeDb(4);
+
+    const result = await runMigrations(db, MIGRATIONS);
+
+    expect(result).toEqual({ appliedVersions: [5], finalVersion: 5 });
+    expect(
+      state.executed.some((sql) =>
+        sql.includes("ALTER TABLE local_notes ADD COLUMN last_synced_at"),
+      ),
+    ).toBe(true);
+    expect(
+      state.executed.some((sql) => sql.includes("upsert:note:")),
+    ).toBe(true);
+    expect(
+      state.executed.some((sql) => sql.includes("upsert:bookmark:")),
+    ).toBe(true);
+    expect(
+      state.executed.some((sql) => sql.includes("upsert:timeline_event:")),
+    ).toBe(true);
+    expect(
+      state.executed.some((sql) => sql.includes("recording_started")),
     ).toBe(true);
   });
 

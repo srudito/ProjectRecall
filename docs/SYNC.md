@@ -55,13 +55,17 @@ pretend a local write succeeded.
 Metadata priorities currently are:
 
 ```text
-project: 100
-session: 200
+project:        100
+session:        200
+note/bookmark:  300
+timeline event: 400
 ```
 
 A session with a parent project is deferred until the local project is marked
-`synchronized`. Dependency deferral does not consume its normal retry budget.
-A session with no project can synchronize directly.
+`synchronized`. Notes and bookmarks are deferred until their session is
+synchronized. A note/bookmark timeline event is deferred until both its session
+and source entity are synchronized; recording lifecycle events depend only on
+the session. Dependency deferral does not consume the normal retry budget.
 
 ## Queue and UI states
 
@@ -73,7 +77,7 @@ pending -> in_progress -> removed after success
                     \-> failed after permanent failure or retry exhaustion
 ```
 
-Project and session UI states:
+Local metadata sync states (project, session, note, bookmark, and timeline):
 
 ```text
 local_only | pending | synchronizing | synchronized | failed
@@ -100,6 +104,9 @@ Deterministic metadata keys are:
 ```text
 upsert:project:<project_uuid>
 upsert:session:<session_uuid>
+upsert:note:<note_uuid>
+upsert:bookmark:<bookmark_uuid>
+upsert:timeline_event:<timeline_uuid>
 ```
 
 The queue has a unique constraint on `idempotency_key`. A newer local change
@@ -131,6 +138,21 @@ draft -> recording -> paused -> recording -> recorded
 Session synchronization includes start/stop timestamps, recorded duration,
 project association, and spoken-language preferences. Audio content itself is
 not uploaded by this pass.
+
+## Session content metadata
+
+Notes, bookmarks, and supported timeline events are now local-first on native
+and remote-backed on web. Native note/bookmark creation writes the source row,
+its timeline event, and both queue operations in one SQLite transaction.
+
+The synchronized timeline types are recording start/pause/resume/stop plus note
+and bookmark events. Media-related timeline events remain local-only until media
+metadata and private Storage synchronization are implemented.
+
+Session Detail returns local content first, refreshes cloud content in the
+background, merges it into SQLite by stable UUID, and reloads when reconciliation
+changed local data. This allows synchronized timeline content to return after an
+Expo Go reinstall.
 
 ## Workspace handling
 

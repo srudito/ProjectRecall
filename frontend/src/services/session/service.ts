@@ -1,6 +1,6 @@
-// Session service. Project and session metadata are local-first on native and
-// remote-only on web. Notes, bookmarks, timeline events, recording metadata,
-// media metadata, and binary files remain on their original local-only paths.
+// Session service. Projects, sessions, notes, bookmarks, and supported timeline
+// events are local-first on native and remote-backed on web. Recording/media
+// metadata and binary files remain local-only until the Storage milestone.
 
 import * as Crypto from "expo-crypto";
 import { Platform } from "react-native";
@@ -12,16 +12,20 @@ import {
   UploadStatus,
 } from "@/src/domain/enums";
 import {
+  atomicCreateBookmarkWithTimelineSync,
+  atomicCreateNoteWithTimelineSync,
   atomicCreateProjectWithSync,
+  atomicCreateTimelineEventWithSync,
   atomicRequeueProjectSync,
   atomicRequeueSessionSync,
   atomicUpsertSessionWithSync,
   deleteMetadataOperationsForEntity,
+  getBookmark,
+  getNote,
   getProject,
   getSession,
-  insertBookmark,
+  getTimelineEvent,
   insertMediaAsset,
-  insertNote,
   insertTimelineEvent,
   listBookmarksForSession,
   listMediaAssetsForSession,
@@ -30,8 +34,11 @@ import {
   listSessions,
   listTimelineEvents,
   softDeleteSession,
+  upsertBookmark,
+  upsertNote,
   upsertProject,
   upsertSession,
+  upsertTimelineEvent,
   type BookmarkRecord,
   type MediaAssetRecord,
   type NoteRecord,
@@ -48,6 +55,14 @@ import {
   fetchRemoteSessions,
   upsertRemoteSession,
 } from "@/src/services/supabase/session-repository";
+import {
+  fetchRemoteBookmarks,
+  fetchRemoteNotes,
+  fetchRemoteTimelineEvents,
+  upsertRemoteBookmark,
+  upsertRemoteNote,
+  upsertRemoteTimelineEvent,
+} from "@/src/services/supabase/session-content-repository";
 import { notifyMetadataSyncChanges } from "@/src/services/sync/project-sync-events";
 import { requestMetadataSync } from "@/src/services/sync/project-sync-worker";
 import { buildIdempotencyKey } from "@/src/services/upload-queue/backoff";
@@ -576,32 +591,279 @@ export const fetchSession = async (
 };
 
 // --- Notes / Bookmarks / Media --------------------------------------------
+const isUnsynchronizedContent = (record: {
+  local_sync_status: string;
+  cloud_sync_status: string;
+}): boolean =>
+  record.local_sync_status !== "synchronized" ||
+  record.cloud_sync_status !== "synchronized";
+
+const noteContentMatches = (left: NoteRecord, right: NoteRecord): boolean =>
+  left.id === right.id &&
+  left.workspace_id === right.workspace_id &&
+  left.project_id === right.project_id &&
+  left.session_id === right.session_id &&
+  left.text === right.text &&
+  left.recording_offset_ms === right.recording_offset_ms &&
+  left.created_by === right.created_by &&
+  left.deleted_at === right.deleted_at;
+
+const bookmarkContentMatches = (
+  left: BookmarkRecord,
+  right: BookmarkRecord,
+): boolean =>
+  left.id === right.id &&
+  left.workspace_id === right.workspace_id &&
+  left.project_id === right.project_id &&
+  left.session_id === right.session_id &&
+  left.label === right.label &&
+  left.recording_offset_ms === right.recording_offset_ms &&
+  left.created_by === right.created_by &&
+  left.deleted_at === right.deleted_at;
+
+const timelineContentMatches = (
+  left: TimelineEventRecord,
+  right: TimelineEventRecord,
+): boolean =>
+  left.id === right.id &&
+  left.workspace_id === right.workspace_id &&
+  left.project_id === right.project_id &&
+  left.session_id === right.session_id &&
+  left.event_type === right.event_type &&
+  left.source_entity_type === right.source_entity_type &&
+  left.source_entity_id === right.source_entity_id &&
+  left.recording_offset_ms === right.recording_offset_ms &&
+  left.created_by === right.created_by &&
+  left.created_at === right.created_at;
+
+export const mergeRemoteNotesIntoLocal = async (
+  remoteNotes: NoteRecord[],
+): Promise<boolean> => {
+  let changed = false;
+
+  for (const remote of remoteNotes) {
+    const local = await getNote(remote.id);
+    if (!local) {
+      await upsertNote(remote);
+      changed = true;
+      continue;
+    }
+
+    if (local.deleted_at != null) continue;
+
+    if (isUnsynchronizedContent(local)) {
+      const same = noteContentMatches(local, remote);
+      const cloudIsAtLeastAsNew =
+        timestampMs(remote.updated_at) >= timestampMs(local.updated_at);
+      if (!same && !cloudIsAtLeastAsNew) continue;
+
+      await upsertNote({
+        ...remote,
+        local_sync_status: "synchronized",
+        cloud_sync_status: "synchronized",
+        last_sync_error_code: null,
+        last_sync_error_message: null,
+        last_synced_at: nowIso(),
+      });
+      await deleteMetadataOperationsForEntity("note", remote.id);
+      changed = true;
+      continue;
+    }
+
+    const remoteIsNewer =
+      timestampMs(remote.updated_at) > timestampMs(local.updated_at);
+    if (remoteIsNewer || !noteContentMatches(local, remote)) {
+      await upsertNote(remote);
+      changed = true;
+    }
+  }
+
+  return changed;
+};
+
+export const mergeRemoteBookmarksIntoLocal = async (
+  remoteBookmarks: BookmarkRecord[],
+): Promise<boolean> => {
+  let changed = false;
+
+  for (const remote of remoteBookmarks) {
+    const local = await getBookmark(remote.id);
+    if (!local) {
+      await upsertBookmark(remote);
+      changed = true;
+      continue;
+    }
+
+    if (local.deleted_at != null) continue;
+
+    if (isUnsynchronizedContent(local)) {
+      const same = bookmarkContentMatches(local, remote);
+      const cloudIsAtLeastAsNew =
+        timestampMs(remote.updated_at) >= timestampMs(local.updated_at);
+      if (!same && !cloudIsAtLeastAsNew) continue;
+
+      await upsertBookmark({
+        ...remote,
+        local_sync_status: "synchronized",
+        cloud_sync_status: "synchronized",
+        last_sync_error_code: null,
+        last_sync_error_message: null,
+        last_synced_at: nowIso(),
+      });
+      await deleteMetadataOperationsForEntity("bookmark", remote.id);
+      changed = true;
+      continue;
+    }
+
+    const remoteIsNewer =
+      timestampMs(remote.updated_at) > timestampMs(local.updated_at);
+    if (remoteIsNewer || !bookmarkContentMatches(local, remote)) {
+      await upsertBookmark(remote);
+      changed = true;
+    }
+  }
+
+  return changed;
+};
+
+export const mergeRemoteTimelineIntoLocal = async (
+  remoteEvents: TimelineEventRecord[],
+): Promise<boolean> => {
+  let changed = false;
+
+  for (const remote of remoteEvents) {
+    const local = await getTimelineEvent(remote.id);
+    if (!local) {
+      await upsertTimelineEvent(remote);
+      changed = true;
+      continue;
+    }
+
+    if (isUnsynchronizedContent(local)) {
+      if (!timelineContentMatches(local, remote)) continue;
+
+      await upsertTimelineEvent({
+        ...remote,
+        local_sync_status: "synchronized",
+        cloud_sync_status: "synchronized",
+        last_sync_error_code: null,
+        last_sync_error_message: null,
+        last_synced_at: nowIso(),
+      });
+      await deleteMetadataOperationsForEntity("timeline_event", remote.id);
+      changed = true;
+      continue;
+    }
+
+    if (!timelineContentMatches(local, remote)) {
+      await upsertTimelineEvent(remote);
+      changed = true;
+    }
+  }
+
+  return changed;
+};
+
+const createPendingTimelineEvent = (
+  session: SessionRecord,
+  event: Omit<
+    TimelineEventRecord,
+    | "id"
+    | "workspace_id"
+    | "project_id"
+    | "session_id"
+    | "created_at"
+    | "local_sync_status"
+    | "cloud_sync_status"
+    | "last_sync_error_code"
+    | "last_sync_error_message"
+    | "last_synced_at"
+  >,
+): TimelineEventRecord => ({
+  id: generateId(),
+  workspace_id: session.workspace_id,
+  project_id: session.project_id,
+  session_id: session.id,
+  ...event,
+  created_at: nowIso(),
+  local_sync_status: "pending",
+  cloud_sync_status: "pending",
+  last_sync_error_code: null,
+  last_sync_error_message: null,
+  last_synced_at: null,
+});
+
+const SYNCABLE_TIMELINE_EVENTS = new Set<string>([
+  TimelineEventType.RECORDING_STARTED,
+  TimelineEventType.RECORDING_PAUSED,
+  TimelineEventType.RECORDING_RESUMED,
+  TimelineEventType.RECORDING_STOPPED,
+  TimelineEventType.NOTE_ADDED,
+  TimelineEventType.BOOKMARK_ADDED,
+]);
+
 export const addNote = async (input: {
   session: SessionRecord;
   createdBy: string;
   text: string;
   offsetMs: number;
 }): Promise<NoteRecord> => {
+  requireUuid(input.session.id, "sessionId");
+  requireUuid(input.session.workspace_id, "workspaceId");
+  requireUuid(input.createdBy, "createdBy");
+
+  const noteText = input.text.trim();
+  if (!noteText) throw new Error("Note text is required.");
+
   const now = nowIso();
   const note: NoteRecord = {
     id: generateId(),
     workspace_id: input.session.workspace_id,
     project_id: input.session.project_id,
     session_id: input.session.id,
-    text: input.text,
+    text: noteText,
     recording_offset_ms: input.offsetMs,
     created_by: input.createdBy,
     created_at: now,
     updated_at: now,
+    deleted_at: null,
+    local_sync_status: "pending",
+    cloud_sync_status: "pending",
+    last_sync_error_code: null,
+    last_sync_error_message: null,
+    last_synced_at: null,
   };
-  await insertNote(note);
-  await recordTimelineEvent(input.session, {
+  const timelineEvent = createPendingTimelineEvent(input.session, {
     event_type: TimelineEventType.NOTE_ADDED,
     source_entity_type: "note",
     source_entity_id: note.id,
     recording_offset_ms: note.recording_offset_ms,
     created_by: input.createdBy,
   });
+
+  if (Platform.OS === "web") {
+    const remoteNote = await upsertRemoteNote(note);
+    await upsertRemoteTimelineEvent(timelineEvent);
+    return remoteNote;
+  }
+
+  await atomicCreateNoteWithTimelineSync({
+    note,
+    timelineEvent,
+    noteQueue: {
+      queueRowId: generateId(),
+      idempotencyKey: buildIdempotencyKey(["upsert", "note", note.id]),
+    },
+    timelineQueue: {
+      queueRowId: generateId(),
+      idempotencyKey: buildIdempotencyKey([
+        "upsert",
+        "timeline_event",
+        timelineEvent.id,
+      ]),
+    },
+  });
+  requestMetadataSync();
   return note;
 };
 
@@ -611,26 +873,63 @@ export const addBookmark = async (input: {
   label: string;
   offsetMs: number;
 }): Promise<BookmarkRecord> => {
+  requireUuid(input.session.id, "sessionId");
+  requireUuid(input.session.workspace_id, "workspaceId");
+  requireUuid(input.createdBy, "createdBy");
+
   const now = nowIso();
   const bookmark: BookmarkRecord = {
     id: generateId(),
     workspace_id: input.session.workspace_id,
     project_id: input.session.project_id,
     session_id: input.session.id,
-    label: input.label,
+    label: input.label.trim() || "Bookmark",
     recording_offset_ms: input.offsetMs,
     created_by: input.createdBy,
     created_at: now,
     updated_at: now,
+    deleted_at: null,
+    local_sync_status: "pending",
+    cloud_sync_status: "pending",
+    last_sync_error_code: null,
+    last_sync_error_message: null,
+    last_synced_at: null,
   };
-  await insertBookmark(bookmark);
-  await recordTimelineEvent(input.session, {
+  const timelineEvent = createPendingTimelineEvent(input.session, {
     event_type: TimelineEventType.BOOKMARK_ADDED,
     source_entity_type: "bookmark",
     source_entity_id: bookmark.id,
     recording_offset_ms: bookmark.recording_offset_ms,
     created_by: input.createdBy,
   });
+
+  if (Platform.OS === "web") {
+    const remoteBookmark = await upsertRemoteBookmark(bookmark);
+    await upsertRemoteTimelineEvent(timelineEvent);
+    return remoteBookmark;
+  }
+
+  await atomicCreateBookmarkWithTimelineSync({
+    bookmark,
+    timelineEvent,
+    bookmarkQueue: {
+      queueRowId: generateId(),
+      idempotencyKey: buildIdempotencyKey([
+        "upsert",
+        "bookmark",
+        bookmark.id,
+      ]),
+    },
+    timelineQueue: {
+      queueRowId: generateId(),
+      idempotencyKey: buildIdempotencyKey([
+        "upsert",
+        "timeline_event",
+        timelineEvent.id,
+      ]),
+    },
+  });
+  requestMetadataSync();
   return bookmark;
 };
 
@@ -693,27 +992,97 @@ export const recordTimelineEvent = async (
   session: SessionRecord,
   event: Omit<
     TimelineEventRecord,
-    "id" | "workspace_id" | "project_id" | "session_id" | "created_at"
+    | "id"
+    | "workspace_id"
+    | "project_id"
+    | "session_id"
+    | "created_at"
+    | "local_sync_status"
+    | "cloud_sync_status"
+    | "last_sync_error_code"
+    | "last_sync_error_message"
+    | "last_synced_at"
   >,
 ): Promise<TimelineEventRecord> => {
-  const record: TimelineEventRecord = {
-    id: generateId(),
-    workspace_id: session.workspace_id,
-    project_id: session.project_id,
-    session_id: session.id,
-    ...event,
-    created_at: nowIso(),
-  };
-  await insertTimelineEvent(record);
+  const shouldSync = SYNCABLE_TIMELINE_EVENTS.has(event.event_type);
+  const record = createPendingTimelineEvent(session, event);
+  if (!shouldSync) {
+    record.local_sync_status = "local_only";
+    record.cloud_sync_status = "not_started";
+  }
+
+  if (Platform.OS === "web") {
+    return shouldSync ? upsertRemoteTimelineEvent(record) : record;
+  }
+
+  if (shouldSync) {
+    await atomicCreateTimelineEventWithSync({
+      timelineEvent: record,
+      timelineQueue: {
+        queueRowId: generateId(),
+        idempotencyKey: buildIdempotencyKey([
+          "upsert",
+          "timeline_event",
+          record.id,
+        ]),
+      },
+    });
+    requestMetadataSync();
+  } else {
+    await insertTimelineEvent(record);
+  }
+
   return record;
 };
 
-export const getSessionBundle = async (sessionId: string) => {
-  const [notes, bookmarks, assets, timeline] = await Promise.all([
-    listNotesForSession(sessionId),
-    listBookmarksForSession(sessionId),
-    listMediaAssetsForSession(sessionId),
-    listTimelineEvents(sessionId),
+const refreshNativeSessionContentFromCloud = async (
+  sessionId: string,
+): Promise<boolean> => {
+  const [remoteNotes, remoteBookmarks, remoteTimeline] = await Promise.all([
+    fetchRemoteNotes(sessionId),
+    fetchRemoteBookmarks(sessionId),
+    fetchRemoteTimelineEvents(sessionId),
   ]);
-  return { notes, bookmarks, assets, timeline };
+
+  const [notesChanged, bookmarksChanged, timelineChanged] = await Promise.all([
+    mergeRemoteNotesIntoLocal(remoteNotes),
+    mergeRemoteBookmarksIntoLocal(remoteBookmarks),
+    mergeRemoteTimelineIntoLocal(remoteTimeline),
+  ]);
+
+  const changed = notesChanged || bookmarksChanged || timelineChanged;
+  if (changed) notifyMetadataSyncChanges();
+  requestMetadataSync();
+  return changed;
+};
+
+export const getSessionBundle = async (sessionId: string) => {
+  requireUuid(sessionId, "sessionId");
+
+  if (Platform.OS === "web") {
+    const [notes, bookmarks, timeline] = await Promise.all([
+      fetchRemoteNotes(sessionId),
+      fetchRemoteBookmarks(sessionId),
+      fetchRemoteTimelineEvents(sessionId),
+    ]);
+    return { notes, bookmarks, assets: [] as MediaAssetRecord[], timeline };
+  }
+
+  const readLocal = async () => {
+    const [notes, bookmarks, assets, timeline] = await Promise.all([
+      listNotesForSession(sessionId),
+      listBookmarksForSession(sessionId),
+      listMediaAssetsForSession(sessionId),
+      listTimelineEvents(sessionId),
+    ]);
+    return { notes, bookmarks, assets, timeline };
+  };
+
+  const local = await readLocal();
+  void refreshNativeSessionContentFromCloud(sessionId).catch(() => {
+    // Local content remains available while offline. Pending writes stay in
+    // the durable metadata queue and are retried by the lifecycle worker.
+    requestMetadataSync();
+  });
+  return local;
 };

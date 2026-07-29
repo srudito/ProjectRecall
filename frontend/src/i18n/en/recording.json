@@ -42,7 +42,11 @@
   },
   "bookmark": {
     "defaultLabel": "Bookmark",
-    "renamePlaceholder": "Bookmark name"
+    "renamePlaceholder": "Bookmark name",
+    "added": "Bookmark added at %{time}",
+    "adding": "Adding...",
+    "duplicate": "A bookmark was just added at this moment.",
+    "unavailable": "Start or pause a recording before adding a bookmark."
   },
   "meterUnavailable": "Real audio level not available on this device",
   "recordingIndicator": "Microphone active",

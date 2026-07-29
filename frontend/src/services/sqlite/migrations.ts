@@ -352,6 +352,176 @@ const v4Ddl: readonly string[] = [
       updated_at = excluded.updated_at`,
 ];
 
+
+// Version 5: synchronize notes, bookmarks, and supported timeline events.
+// Media-related timeline events remain local-only until media metadata and
+// binary Storage synchronization are implemented.
+const v5Ddl: readonly string[] = [
+  `ALTER TABLE local_notes ADD COLUMN local_sync_status TEXT NOT NULL DEFAULT 'local_only'`,
+  `ALTER TABLE local_notes ADD COLUMN cloud_sync_status TEXT NOT NULL DEFAULT 'not_started'`,
+  `ALTER TABLE local_notes ADD COLUMN last_sync_error_code TEXT`,
+  `ALTER TABLE local_notes ADD COLUMN last_sync_error_message TEXT`,
+  `ALTER TABLE local_notes ADD COLUMN last_synced_at TEXT`,
+  `ALTER TABLE local_bookmarks ADD COLUMN local_sync_status TEXT NOT NULL DEFAULT 'local_only'`,
+  `ALTER TABLE local_bookmarks ADD COLUMN cloud_sync_status TEXT NOT NULL DEFAULT 'not_started'`,
+  `ALTER TABLE local_bookmarks ADD COLUMN last_sync_error_code TEXT`,
+  `ALTER TABLE local_bookmarks ADD COLUMN last_sync_error_message TEXT`,
+  `ALTER TABLE local_bookmarks ADD COLUMN last_synced_at TEXT`,
+  `ALTER TABLE local_timeline_events ADD COLUMN local_sync_status TEXT NOT NULL DEFAULT 'local_only'`,
+  `ALTER TABLE local_timeline_events ADD COLUMN cloud_sync_status TEXT NOT NULL DEFAULT 'not_started'`,
+  `ALTER TABLE local_timeline_events ADD COLUMN last_sync_error_code TEXT`,
+  `ALTER TABLE local_timeline_events ADD COLUMN last_sync_error_message TEXT`,
+  `ALTER TABLE local_timeline_events ADD COLUMN last_synced_at TEXT`,
+  `CREATE INDEX IF NOT EXISTS idx_notes_workspace_sync ON local_notes(workspace_id, local_sync_status, deleted_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_bookmarks_workspace_sync ON local_bookmarks(workspace_id, local_sync_status, deleted_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_timeline_workspace_sync ON local_timeline_events(workspace_id, local_sync_status, event_type)`,
+  `UPDATE local_notes
+      SET local_sync_status = 'pending',
+          cloud_sync_status = 'pending',
+          last_sync_error_code = NULL,
+          last_sync_error_message = NULL
+    WHERE deleted_at IS NULL
+      AND (local_sync_status <> 'synchronized'
+           OR cloud_sync_status <> 'synchronized')`,
+  `UPDATE local_bookmarks
+      SET local_sync_status = 'pending',
+          cloud_sync_status = 'pending',
+          last_sync_error_code = NULL,
+          last_sync_error_message = NULL
+    WHERE deleted_at IS NULL
+      AND (local_sync_status <> 'synchronized'
+           OR cloud_sync_status <> 'synchronized')`,
+  `UPDATE local_timeline_events
+      SET local_sync_status = 'pending',
+          cloud_sync_status = 'pending',
+          last_sync_error_code = NULL,
+          last_sync_error_message = NULL
+    WHERE event_type IN (
+      'recording_started','recording_paused','recording_resumed',
+      'recording_stopped','bookmark_added','note_added'
+    )
+      AND (local_sync_status <> 'synchronized'
+           OR cloud_sync_status <> 'synchronized')`,
+  `INSERT INTO local_metadata_sync_queue
+      (id, user_id, workspace_id, entity_type, entity_id, operation,
+       parent_entity_type, parent_entity_id, priority, queue_status,
+       attempt_count, next_retry_at, last_error_code, last_safe_error,
+       idempotency_key, created_at, updated_at)
+    SELECT 'note-upsert:' || id,
+           created_by,
+           workspace_id,
+           'note',
+           id,
+           'UPSERT',
+           'session',
+           session_id,
+           300,
+           'pending',
+           0,
+           NULL,
+           NULL,
+           NULL,
+           'upsert:note:' || id,
+           created_at,
+           updated_at
+      FROM local_notes
+     WHERE deleted_at IS NULL
+       AND (local_sync_status <> 'synchronized'
+            OR cloud_sync_status <> 'synchronized')
+    ON CONFLICT(idempotency_key) DO UPDATE SET
+      parent_entity_type = excluded.parent_entity_type,
+      parent_entity_id = excluded.parent_entity_id,
+      priority = excluded.priority,
+      queue_status = 'pending',
+      attempt_count = 0,
+      next_retry_at = NULL,
+      last_error_code = NULL,
+      last_safe_error = NULL,
+      updated_at = excluded.updated_at`,
+  `INSERT INTO local_metadata_sync_queue
+      (id, user_id, workspace_id, entity_type, entity_id, operation,
+       parent_entity_type, parent_entity_id, priority, queue_status,
+       attempt_count, next_retry_at, last_error_code, last_safe_error,
+       idempotency_key, created_at, updated_at)
+    SELECT 'bookmark-upsert:' || id,
+           created_by,
+           workspace_id,
+           'bookmark',
+           id,
+           'UPSERT',
+           'session',
+           session_id,
+           300,
+           'pending',
+           0,
+           NULL,
+           NULL,
+           NULL,
+           'upsert:bookmark:' || id,
+           created_at,
+           updated_at
+      FROM local_bookmarks
+     WHERE deleted_at IS NULL
+       AND (local_sync_status <> 'synchronized'
+            OR cloud_sync_status <> 'synchronized')
+    ON CONFLICT(idempotency_key) DO UPDATE SET
+      parent_entity_type = excluded.parent_entity_type,
+      parent_entity_id = excluded.parent_entity_id,
+      priority = excluded.priority,
+      queue_status = 'pending',
+      attempt_count = 0,
+      next_retry_at = NULL,
+      last_error_code = NULL,
+      last_safe_error = NULL,
+      updated_at = excluded.updated_at`,
+  `INSERT INTO local_metadata_sync_queue
+      (id, user_id, workspace_id, entity_type, entity_id, operation,
+       parent_entity_type, parent_entity_id, priority, queue_status,
+       attempt_count, next_retry_at, last_error_code, last_safe_error,
+       idempotency_key, created_at, updated_at)
+    SELECT 'timeline-upsert:' || id,
+           created_by,
+           workspace_id,
+           'timeline_event',
+           id,
+           'UPSERT',
+           CASE
+             WHEN source_entity_type = 'note' THEN 'note'
+             WHEN source_entity_type = 'bookmark' THEN 'bookmark'
+             ELSE 'session'
+           END,
+           CASE
+             WHEN source_entity_type IN ('note','bookmark') THEN source_entity_id
+             ELSE session_id
+           END,
+           400,
+           'pending',
+           0,
+           NULL,
+           NULL,
+           NULL,
+           'upsert:timeline_event:' || id,
+           created_at,
+           created_at
+      FROM local_timeline_events
+     WHERE event_type IN (
+       'recording_started','recording_paused','recording_resumed',
+       'recording_stopped','bookmark_added','note_added'
+     )
+       AND (local_sync_status <> 'synchronized'
+            OR cloud_sync_status <> 'synchronized')
+    ON CONFLICT(idempotency_key) DO UPDATE SET
+      parent_entity_type = excluded.parent_entity_type,
+      parent_entity_id = excluded.parent_entity_id,
+      priority = excluded.priority,
+      queue_status = 'pending',
+      attempt_count = 0,
+      next_retry_at = NULL,
+      last_error_code = NULL,
+      last_safe_error = NULL,
+      updated_at = excluded.updated_at`,
+];
+
 export const MIGRATIONS: readonly Migration[] = [
   {
     version: 1,
@@ -385,6 +555,15 @@ export const MIGRATIONS: readonly Migration[] = [
     description: "Session sync diagnostics + pending session backfill.",
     up: async ({ db }) => {
       for (const stmt of v4Ddl) {
+        await db.execAsync(stmt);
+      }
+    },
+  },
+  {
+    version: 5,
+    description: "Note, bookmark, and timeline synchronization.",
+    up: async ({ db }) => {
+      for (const stmt of v5Ddl) {
         await db.execAsync(stmt);
       }
     },

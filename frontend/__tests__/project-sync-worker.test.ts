@@ -4,9 +4,12 @@ import {
 } from "@/src/services/sync/project-sync-worker";
 import { ProjectSyncError } from "@/src/services/supabase/project-repository";
 import type {
+  BookmarkRecord,
   MetadataQueueRow,
+  NoteRecord,
   ProjectRecord,
   SessionRecord,
+  TimelineEventRecord,
 } from "@/src/services/sqlite/repository";
 
 const project: ProjectRecord = {
@@ -107,16 +110,32 @@ const makeDependencies = (
     ),
     getLocalProject: jest.fn(async () => project),
     getLocalSession: jest.fn(async () => ({ ...session })),
+    getLocalNote: jest.fn(async () => null),
+    getLocalBookmark: jest.fn(async () => null),
+    getLocalTimelineEvent: jest.fn(async () => null),
     updateProjectStatus: jest.fn(async () => undefined),
     updateSessionStatus: jest.fn(async () => undefined),
+    updateNoteStatus: jest.fn(async () => undefined),
+    updateBookmarkStatus: jest.fn(async () => undefined),
+    updateTimelineStatus: jest.fn(async () => undefined),
     saveLocalProject: jest.fn(async () => undefined),
     saveLocalSession: jest.fn(async () => undefined),
+    saveLocalNote: jest.fn(async (_record: NoteRecord) => undefined),
+    saveLocalBookmark: jest.fn(async (_record: BookmarkRecord) => undefined),
+    saveLocalTimelineEvent: jest.fn(
+      async (_record: TimelineEventRecord) => undefined,
+    ),
     upsertCloudProject: jest.fn(async () => ({
       ...project,
       local_sync_status: "synchronized",
       cloud_sync_status: "synchronized",
     })),
     upsertCloudSession: jest.fn(async () => ({ ...session })),
+    upsertCloudNote: jest.fn(async (record: NoteRecord) => record),
+    upsertCloudBookmark: jest.fn(async (record: BookmarkRecord) => record),
+    upsertCloudTimelineEvent: jest.fn(
+      async (record: TimelineEventRecord) => record,
+    ),
     markOperationFailed: jest.fn(async () => undefined),
     rescheduleOperation: jest.fn(async () => undefined),
     deferOperation: jest.fn(async () => undefined),

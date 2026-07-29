@@ -66,6 +66,15 @@ export default function RecordSetup() {
     }
   };
 
+  const handleBack = () => {
+    if (router.canGoBack()) {
+      router.back();
+      return;
+    }
+
+    router.replace("/(tabs)/home");
+  };
+
   const start = async () => {
     setError(null);
     if (!user?.id) {
@@ -266,7 +275,7 @@ export default function RecordSetup() {
         testID="record-setup-back-button"
         label={t("common", "actions.back")}
         variant="ghost"
-        onPress={() => router.back()}
+        onPress={handleBack}
       />
     </Screen>
   );

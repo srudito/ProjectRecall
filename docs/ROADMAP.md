@@ -4,24 +4,26 @@ Milestone 1 is still being closed in verified, dependency-ordered passes.
 
 ## Milestone 1 — Capture and cloud foundation
 
-Completed and verified:
+Completed and verified before this pass:
 
 - Supabase authentication and personal workspace creation;
 - project local-to-cloud synchronization;
-- project offline retry, stable UUID, and RLS isolation.
-
-Implemented in the current Session Sync v1 pass and awaiting real-environment
-verification:
-
+- project offline retry, stable UUID, and RLS isolation;
 - session metadata synchronization;
 - project-before-session dependency ordering;
-- session lifecycle, duration, and language-setting updates;
-- offline retry and cloud-to-local session merge.
+- session lifecycle, duration, language settings, and cloud-to-local merge.
+
+Implemented in the current Note/Bookmark/Timeline Sync v1 pass and awaiting
+real-environment verification:
+
+- note and bookmark local-to-cloud synchronization;
+- recording lifecycle and note/bookmark timeline synchronization;
+- session-before-content and source-before-timeline dependency ordering;
+- web timeline reads and native cloud-to-local restoration;
+- offline retry and stable content UUIDs.
 
 Remaining Milestone 1 work:
 
-- notes and bookmarks synchronization;
-- timeline-event synchronization;
 - recording and media metadata synchronization;
 - binary upload to private `session-assets` Storage;
 - durable cloud-aware deletion and cleanup;

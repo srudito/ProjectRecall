@@ -42,7 +42,11 @@
   },
   "bookmark": {
     "defaultLabel": "Penanda",
-    "renamePlaceholder": "Nama penanda"
+    "renamePlaceholder": "Nama penanda",
+    "added": "Penanda ditambahkan pada %{time}",
+    "adding": "Menambahkan...",
+    "duplicate": "Penanda baru saja ditambahkan pada waktu ini.",
+    "unavailable": "Mulai atau jeda rekaman sebelum menambahkan penanda."
   },
   "meterUnavailable": "Level audio nyata tidak tersedia di perangkat ini",
   "recordingIndicator": "Mikrofon aktif",

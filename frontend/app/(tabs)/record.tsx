@@ -1,14 +1,5 @@
-import { useRouter } from "expo-router";
-import { useEffect } from "react";
+import { Redirect } from "expo-router";
 
 export default function RecordTab() {
-  const router = useRouter();
-
-  // The Record tab immediately opens the recording setup modal so users
-  // always start from a clean, explicit "New session" step.
-  useEffect(() => {
-    router.replace("/record/setup");
-  }, [router]);
-
-  return null;
+  return <Redirect href="/(tabs)/home" />;
 }
