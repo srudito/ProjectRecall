@@ -4,6 +4,7 @@
 import * as SQLite from "expo-sqlite";
 
 import { openLocalDb } from "./schema";
+import { runSerializedLocalTransaction } from "./transaction";
 
 const nowIso = () => new Date().toISOString();
 
@@ -1455,7 +1456,7 @@ export const atomicCreateRecordingWithUpload = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await db.withTransactionAsync(async () => {
+  await runSerializedLocalTransaction(db, async () => {
     await upsertRecordingOnDb(db, input.recording);
     const row = input.upload;
     await db.runAsync(
@@ -1507,7 +1508,7 @@ export const atomicRequeueRecordingUpload = async (input: {
 }): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await db.withTransactionAsync(async () => {
+  await runSerializedLocalTransaction(db, async () => {
     await db.runAsync(
       `UPDATE local_recordings
           SET upload_status = 'pending',
@@ -1567,7 +1568,7 @@ export const atomicCreateMediaAssetWithUploadAndTimeline = async (
   const db = await openLocalDb();
   if (!db) return;
 
-  await db.withTransactionAsync(async () => {
+  await runSerializedLocalTransaction(db, async () => {
     await upsertMediaAssetOnDb(db, input.asset);
     await upsertTimelineEventOnDb(db, input.timelineEvent);
 
@@ -1635,7 +1636,7 @@ export const atomicRequeueMediaAssetUpload = async (input: {
   const db = await openLocalDb();
   if (!db) return;
 
-  await db.withTransactionAsync(async () => {
+  await runSerializedLocalTransaction(db, async () => {
     await db.runAsync(
       `UPDATE local_media_assets
           SET upload_status = 'pending',
@@ -1884,7 +1885,7 @@ export const claimMetadataOperation = async (
   if (!db) return null;
   const now = nowIso();
   let claimed: MetadataQueueRow | null = null;
-  await db.withTransactionAsync(async () => {
+  await runSerializedLocalTransaction(db, async () => {
     const row = (await db.getFirstAsync(
       `SELECT * FROM local_metadata_sync_queue WHERE id = ? AND queue_status = 'pending'`,
       [id],
@@ -2083,7 +2084,7 @@ export const atomicCreateProjectWithSync = async (
   const db = await openLocalDb();
   if (!db) return; // caller (web path) uses remote directly and never hits this.
   const p = input.project;
-  await db.withTransactionAsync(async () => {
+  await runSerializedLocalTransaction(db, async () => {
     await db.runAsync(
       `INSERT INTO local_projects
         (id, workspace_id, name, description, status,
@@ -2167,7 +2168,7 @@ export const atomicRequeueProjectSync = async (
   if (!db) return;
   const now = nowIso();
 
-  await db.withTransactionAsync(async () => {
+  await runSerializedLocalTransaction(db, async () => {
     await db.runAsync(
       `UPDATE local_projects
           SET local_sync_status = 'pending',
@@ -2230,7 +2231,7 @@ export const atomicUpsertSessionWithSync = async (
   if (!db) return;
   const session = input.session;
 
-  await db.withTransactionAsync(async () => {
+  await runSerializedLocalTransaction(db, async () => {
     await upsertSessionOnDb(db, session);
     const now = nowIso();
     await db.runAsync(
@@ -2285,7 +2286,7 @@ export const atomicRequeueSessionSync = async (
   if (!db) return;
   const now = nowIso();
 
-  await db.withTransactionAsync(async () => {
+  await runSerializedLocalTransaction(db, async () => {
     await db.runAsync(
       `UPDATE local_sessions
           SET local_sync_status = 'pending',
@@ -2406,7 +2407,7 @@ export const atomicCreateNoteWithTimelineSync = async (
   const db = await openLocalDb();
   if (!db) return;
 
-  await db.withTransactionAsync(async () => {
+  await runSerializedLocalTransaction(db, async () => {
     await upsertNoteOnDb(db, input.note);
     await upsertTimelineEventOnDb(db, input.timelineEvent);
 
@@ -2451,7 +2452,7 @@ export const atomicCreateBookmarkWithTimelineSync = async (
   const db = await openLocalDb();
   if (!db) return;
 
-  await db.withTransactionAsync(async () => {
+  await runSerializedLocalTransaction(db, async () => {
     await upsertBookmarkOnDb(db, input.bookmark);
     await upsertTimelineEventOnDb(db, input.timelineEvent);
 
@@ -2494,7 +2495,7 @@ export const atomicCreateTimelineEventWithSync = async (
   const db = await openLocalDb();
   if (!db) return;
 
-  await db.withTransactionAsync(async () => {
+  await runSerializedLocalTransaction(db, async () => {
     await upsertTimelineEventOnDb(db, input.timelineEvent);
     await enqueueMetadataOnDb(db, {
       queueRowId: input.timelineQueue.queueRowId,
@@ -2508,5 +2509,426 @@ export const atomicCreateTimelineEventWithSync = async (
       idempotencyKey: input.timelineQueue.idempotencyKey,
       createdAt: input.timelineEvent.created_at,
     });
+  });
+};
+
+// ============================================================================
+// Durable cloud-aware session deletion
+// ============================================================================
+
+export type SessionDeletionQueueStatus =
+  | "pending"
+  | "in_progress"
+  | "failed";
+
+export interface SessionDeletionQueueRow {
+  id: string;
+  user_id: string;
+  workspace_id: string;
+  session_id: string;
+  queue_status: SessionDeletionQueueStatus;
+  attempt_count: number;
+  next_retry_at: string | null;
+  storage_paths: string[];
+  local_file_uris: string[];
+  storage_deleted: boolean;
+  cloud_metadata_deleted: boolean;
+  local_files_deleted: boolean;
+  last_error_code: string | null;
+  last_safe_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface LocalSessionDeletionQueueRow
+  extends Omit<
+    SessionDeletionQueueRow,
+    | "storage_paths"
+    | "local_file_uris"
+    | "storage_deleted"
+    | "cloud_metadata_deleted"
+    | "local_files_deleted"
+  > {
+  storage_paths: string;
+  local_file_uris: string;
+  storage_deleted: number;
+  cloud_metadata_deleted: number;
+  local_files_deleted: number;
+}
+
+const parseSessionDeletionQueueRow = (
+  row: LocalSessionDeletionQueueRow,
+): SessionDeletionQueueRow => ({
+  ...row,
+  storage_paths: parseStringArray(row.storage_paths),
+  local_file_uris: parseStringArray(row.local_file_uris),
+  storage_deleted: row.storage_deleted === 1,
+  cloud_metadata_deleted: row.cloud_metadata_deleted === 1,
+  local_files_deleted: row.local_files_deleted === 1,
+});
+
+const uniqueNonEmptyStrings = (values: readonly string[]): string[] =>
+  [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+
+export interface PrepareSessionDeletionInput {
+  id: string;
+  userId: string;
+  workspaceId: string;
+  sessionId: string;
+  storagePaths: readonly string[];
+  localFileUris: readonly string[];
+  createdAt?: string;
+}
+
+/**
+ * Hide the session locally and persist everything needed to finish cloud and
+ * local cleanup after a restart. Existing metadata/upload operations for the
+ * session are cancelled in the same transaction so they cannot race the
+ * deletion worker.
+ */
+export const atomicPrepareSessionDeletion = async (
+  input: PrepareSessionDeletionInput,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+
+  const now = nowIso();
+  const storagePaths = uniqueNonEmptyStrings(input.storagePaths);
+  const localFileUris = uniqueNonEmptyStrings(input.localFileUris);
+
+  await runSerializedLocalTransaction(db, async () => {
+    await db.runAsync(
+      `UPDATE local_sessions
+          SET deleted_at = COALESCE(deleted_at, ?),
+              status = 'deleting',
+              updated_at = ?,
+              local_sync_status = 'local_only',
+              cloud_sync_status = 'local_only',
+              last_sync_error_code = NULL,
+              last_sync_error_message = NULL
+        WHERE id = ?`,
+      [now, now, input.sessionId],
+    );
+
+    await db.runAsync(
+      `UPDATE local_upload_queue
+          SET queue_status = 'cancelled',
+              next_retry_at = NULL,
+              last_error_code = 'SESSION_DELETION_PENDING',
+              last_safe_error = 'Upload cancelled because the session is being deleted.',
+              updated_at = ?
+        WHERE session_id = ?
+          AND queue_status IN ('pending','in_progress','failed')`,
+      [now, input.sessionId],
+    );
+
+    await db.runAsync(
+      `DELETE FROM local_metadata_sync_queue
+        WHERE (entity_type = 'session' AND entity_id = ?)
+           OR (entity_type = 'note' AND entity_id IN (
+                SELECT id FROM local_notes WHERE session_id = ?
+              ))
+           OR (entity_type = 'bookmark' AND entity_id IN (
+                SELECT id FROM local_bookmarks WHERE session_id = ?
+              ))
+           OR (entity_type = 'timeline_event' AND entity_id IN (
+                SELECT id FROM local_timeline_events WHERE session_id = ?
+              ))`,
+      [input.sessionId, input.sessionId, input.sessionId, input.sessionId],
+    );
+
+    await db.runAsync(
+      `INSERT INTO local_session_deletion_queue
+        (id, user_id, workspace_id, session_id, queue_status, attempt_count,
+         next_retry_at, storage_paths, local_file_uris, storage_deleted,
+         cloud_metadata_deleted, local_files_deleted, last_error_code,
+         last_safe_error, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'pending', 0, NULL, ?, ?, 0, 0, 0, NULL, NULL, ?, ?)
+       ON CONFLICT(session_id) DO UPDATE SET
+         user_id = excluded.user_id,
+         workspace_id = excluded.workspace_id,
+         queue_status = 'pending',
+         attempt_count = 0,
+         next_retry_at = NULL,
+         storage_paths = excluded.storage_paths,
+         local_file_uris = excluded.local_file_uris,
+         last_error_code = NULL,
+         last_safe_error = NULL,
+         updated_at = excluded.updated_at`,
+      [
+        input.id,
+        input.userId,
+        input.workspaceId,
+        input.sessionId,
+        JSON.stringify(storagePaths),
+        JSON.stringify(localFileUris),
+        input.createdAt ?? now,
+        now,
+      ],
+    );
+  });
+};
+
+export const getSessionDeletionForSession = async (
+  sessionId: string,
+): Promise<SessionDeletionQueueRow | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+  const row = (await db.getFirstAsync(
+    `SELECT *
+       FROM local_session_deletion_queue
+      WHERE session_id = ?
+      LIMIT 1`,
+    [sessionId],
+  )) as LocalSessionDeletionQueueRow | null;
+  return row ? parseSessionDeletionQueueRow(row) : null;
+};
+
+export const resetInProgressSessionDeletions = async (
+  userId: string,
+): Promise<number> => {
+  const db = await openLocalDb();
+  if (!db) return 0;
+  const result = await db.runAsync(
+    `UPDATE local_session_deletion_queue
+        SET queue_status = 'pending',
+            next_retry_at = NULL,
+            last_error_code = 'DELETE_INTERRUPTED',
+            last_safe_error = 'Cleanup was interrupted and will resume.',
+            updated_at = ?
+      WHERE user_id = ? AND queue_status = 'in_progress'`,
+    [nowIso(), userId],
+  );
+  return result.changes;
+};
+
+export const getNextEligibleSessionDeletion = async (
+  userId: string,
+  now: string,
+): Promise<SessionDeletionQueueRow | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+  const row = (await db.getFirstAsync(
+    `SELECT *
+       FROM local_session_deletion_queue
+      WHERE user_id = ?
+        AND queue_status = 'pending'
+        AND (next_retry_at IS NULL OR next_retry_at <= ?)
+      ORDER BY created_at ASC
+      LIMIT 1`,
+    [userId, now],
+  )) as LocalSessionDeletionQueueRow | null;
+  return row ? parseSessionDeletionQueueRow(row) : null;
+};
+
+export const claimSessionDeletion = async (
+  id: string,
+): Promise<SessionDeletionQueueRow | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+
+  let claimed: LocalSessionDeletionQueueRow | null = null;
+  await runSerializedLocalTransaction(db, async () => {
+    const current = (await db.getFirstAsync(
+      `SELECT * FROM local_session_deletion_queue WHERE id = ?`,
+      [id],
+    )) as LocalSessionDeletionQueueRow | null;
+    if (!current || !["pending", "failed"].includes(current.queue_status)) {
+      return;
+    }
+
+    await db.runAsync(
+      `UPDATE local_session_deletion_queue
+          SET queue_status = 'in_progress',
+              attempt_count = attempt_count + 1,
+              next_retry_at = NULL,
+              updated_at = ?
+        WHERE id = ?`,
+      [nowIso(), id],
+    );
+    claimed = (await db.getFirstAsync(
+      `SELECT * FROM local_session_deletion_queue WHERE id = ?`,
+      [id],
+    )) as LocalSessionDeletionQueueRow | null;
+  });
+
+  return claimed ? parseSessionDeletionQueueRow(claimed) : null;
+};
+
+export interface SessionDeletionProgressUpdate {
+  storage_paths?: string[];
+  local_file_uris?: string[];
+  storage_deleted?: boolean;
+  cloud_metadata_deleted?: boolean;
+  local_files_deleted?: boolean;
+  queue_status?: SessionDeletionQueueStatus;
+  next_retry_at?: string | null;
+  last_error_code?: string | null;
+  last_safe_error?: string | null;
+}
+
+export const updateSessionDeletionProgress = async (
+  id: string,
+  patch: SessionDeletionProgressUpdate,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+
+  const values: (string | number | null)[] = [];
+  const assignments: string[] = [];
+  const add = (column: string, value: string | number | null) => {
+    assignments.push(`${column} = ?`);
+    values.push(value);
+  };
+
+  if (Object.prototype.hasOwnProperty.call(patch, "storage_paths")) {
+    add(
+      "storage_paths",
+      JSON.stringify(uniqueNonEmptyStrings(patch.storage_paths ?? [])),
+    );
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "local_file_uris")) {
+    add(
+      "local_file_uris",
+      JSON.stringify(uniqueNonEmptyStrings(patch.local_file_uris ?? [])),
+    );
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "storage_deleted")) {
+    add("storage_deleted", patch.storage_deleted ? 1 : 0);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "cloud_metadata_deleted")) {
+    add("cloud_metadata_deleted", patch.cloud_metadata_deleted ? 1 : 0);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "local_files_deleted")) {
+    add("local_files_deleted", patch.local_files_deleted ? 1 : 0);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "queue_status")) {
+    add("queue_status", patch.queue_status ?? "pending");
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "next_retry_at")) {
+    add("next_retry_at", patch.next_retry_at ?? null);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "last_error_code")) {
+    add("last_error_code", patch.last_error_code ?? null);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "last_safe_error")) {
+    add("last_safe_error", patch.last_safe_error ?? null);
+  }
+  if (assignments.length === 0) return;
+
+  await db.runAsync(
+    `UPDATE local_session_deletion_queue
+        SET ${assignments.join(", ")}, updated_at = ?
+      WHERE id = ?`,
+    [...values, nowIso(), id],
+  );
+};
+
+export const rescheduleSessionDeletion = async (
+  id: string,
+  nextRetryAt: string,
+  errorCode: string,
+  safeError: string,
+): Promise<void> =>
+  updateSessionDeletionProgress(id, {
+    queue_status: "pending",
+    next_retry_at: nextRetryAt,
+    last_error_code: errorCode,
+    last_safe_error: safeError,
+  });
+
+export const markSessionDeletionFailed = async (
+  id: string,
+  errorCode: string,
+  safeError: string,
+): Promise<void> =>
+  updateSessionDeletionProgress(id, {
+    queue_status: "failed",
+    next_retry_at: null,
+    last_error_code: errorCode,
+    last_safe_error: safeError,
+  });
+
+export const deleteCompletedSessionDeletion = async (
+  id: string,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  await db.runAsync(
+    `DELETE FROM local_session_deletion_queue WHERE id = ?`,
+    [id],
+  );
+};
+
+
+export const listLocalFileUrisForSession = async (
+  sessionId: string,
+): Promise<string[]> => {
+  const db = await openLocalDb();
+  if (!db) return [];
+
+  const rows = (await db.getAllAsync(
+    `SELECT local_file_uri AS uri
+       FROM local_recordings
+      WHERE session_id = ? AND local_file_uri IS NOT NULL
+     UNION ALL
+     SELECT local_file_uri AS uri
+       FROM local_media_assets
+      WHERE session_id = ? AND local_file_uri IS NOT NULL
+     UNION ALL
+     SELECT local_file_uri AS uri
+       FROM local_upload_queue
+      WHERE session_id = ? AND local_file_uri IS NOT NULL`,
+    [sessionId, sessionId, sessionId],
+  )) as { uri: string | null }[];
+
+  return uniqueNonEmptyStrings(
+    rows.map((row) => row.uri ?? ""),
+  );
+};
+
+export const listUploadQueueForSession = async (
+  sessionId: string,
+): Promise<UploadQueueRow[]> => {
+  const db = await openLocalDb();
+  if (!db) return [];
+  return (await db.getAllAsync(
+    `SELECT *
+       FROM local_upload_queue
+      WHERE session_id = ?
+      ORDER BY created_at ASC`,
+    [sessionId],
+  )) as UploadQueueRow[];
+};
+
+/** Remove the complete local graph after cloud cleanup has succeeded. */
+export const hardDeleteLocalSessionData = async (
+  sessionId: string,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+
+  await runSerializedLocalTransaction(db, async () => {
+    await db.runAsync(
+      `DELETE FROM local_metadata_sync_queue
+        WHERE (entity_type = 'session' AND entity_id = ?)
+           OR (entity_type = 'note' AND entity_id IN (
+                SELECT id FROM local_notes WHERE session_id = ?
+              ))
+           OR (entity_type = 'bookmark' AND entity_id IN (
+                SELECT id FROM local_bookmarks WHERE session_id = ?
+              ))
+           OR (entity_type = 'timeline_event' AND entity_id IN (
+                SELECT id FROM local_timeline_events WHERE session_id = ?
+              ))`,
+      [sessionId, sessionId, sessionId, sessionId],
+    );
+    await db.runAsync(`DELETE FROM local_upload_queue WHERE session_id = ?`, [sessionId]);
+    await db.runAsync(`DELETE FROM local_timeline_events WHERE session_id = ?`, [sessionId]);
+    await db.runAsync(`DELETE FROM local_notes WHERE session_id = ?`, [sessionId]);
+    await db.runAsync(`DELETE FROM local_bookmarks WHERE session_id = ?`, [sessionId]);
+    await db.runAsync(`DELETE FROM local_media_assets WHERE session_id = ?`, [sessionId]);
+    await db.runAsync(`DELETE FROM local_recordings WHERE session_id = ?`, [sessionId]);
+    await db.runAsync(`DELETE FROM local_sessions WHERE id = ?`, [sessionId]);
   });
 };
