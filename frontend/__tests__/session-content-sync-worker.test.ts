@@ -1,5 +1,6 @@
 import type {
   BookmarkRecord,
+  MediaAssetRecord,
   MetadataQueueRow,
   NoteRecord,
   ProjectRecord,
@@ -100,6 +101,46 @@ const timelineEvent: TimelineEventRecord = {
   last_synced_at: null,
 };
 
+const mediaAsset: MediaAssetRecord = {
+  id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  workspace_id: workspaceId,
+  project_id: null,
+  session_id: sessionId,
+  added_by: userId,
+  asset_type: "image",
+  mime_type: "image/jpeg",
+  original_file_name: "pump.jpg",
+  sanitized_file_name: "pump.jpg",
+  local_file_uri: "file:///documents/pump.jpg",
+  private_storage_path:
+    `${workspaceId}/${sessionId}/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/pump.jpg`,
+  file_size: 4096,
+  duration_ms: null,
+  image_width: 1600,
+  image_height: 1200,
+  page_count: null,
+  captured_at: "2026-07-28T10:00:20.000Z",
+  recording_offset_ms: 20000,
+  user_caption: null,
+  checksum_sha256: null,
+  upload_status: "synchronized",
+  upload_error_code: null,
+  upload_error_message: null,
+  created_at: "2026-07-28T10:00:20.000Z",
+  updated_at: "2026-07-28T10:00:21.000Z",
+  deleted_at: null,
+};
+
+const mediaTimelineEvent: TimelineEventRecord = {
+  ...timelineEvent,
+  id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+  event_type: "image_added",
+  source_entity_type: "media_asset",
+  source_entity_id: mediaAsset.id,
+  recording_offset_ms: mediaAsset.recording_offset_ms,
+  created_at: mediaAsset.captured_at ?? mediaAsset.created_at,
+};
+
 const project: ProjectRecord = {
   id: "11111111-1111-4111-8111-111111111111",
   workspace_id: workspaceId,
@@ -173,6 +214,7 @@ const makeDependencies = (
     getLocalSession: jest.fn(async () => session),
     getLocalNote: jest.fn(async () => note),
     getLocalBookmark: jest.fn(async () => bookmark),
+    getLocalMediaAsset: jest.fn(async () => null),
     getLocalTimelineEvent: jest.fn(async () => timelineEvent),
     updateProjectStatus: jest.fn(async () => undefined),
     updateSessionStatus: jest.fn(async () => undefined),
@@ -307,6 +349,50 @@ describe("note, bookmark, and timeline metadata sync", () => {
     expect(result.synchronized).toBe(1);
     expect(dependencies.upsertCloudTimelineEvent).toHaveBeenCalledWith(
       timelineEvent,
+    );
+  });
+
+  it("defers an evidence timeline event until its media upload is synchronized", async () => {
+    const row = queueFor("timeline_event", mediaTimelineEvent.id);
+    const dependencies = makeDependencies(row, {
+      getLocalMediaAsset: jest.fn(async () => ({
+        ...mediaAsset,
+        upload_status: "pending",
+      })),
+      getLocalTimelineEvent: jest.fn(async () => mediaTimelineEvent),
+    });
+    const worker = createMetadataSyncWorker(dependencies);
+
+    const result = await worker.run();
+
+    expect(result.deferred).toBe(1);
+    expect(dependencies.deferOperation).toHaveBeenCalledWith(
+      row.id,
+      expect.any(String),
+      "SOURCE_MEDIA_PENDING",
+      expect.any(String),
+    );
+    expect(dependencies.upsertCloudTimelineEvent).not.toHaveBeenCalled();
+  });
+
+  it("synchronizes an evidence timeline event after its media upload", async () => {
+    const row = queueFor("timeline_event", mediaTimelineEvent.id);
+    const dependencies = makeDependencies(row, {
+      getLocalMediaAsset: jest.fn(async () => mediaAsset),
+      getLocalTimelineEvent: jest.fn(async () => mediaTimelineEvent),
+      upsertCloudTimelineEvent: jest.fn(async () => ({
+        ...mediaTimelineEvent,
+        local_sync_status: "synchronized",
+        cloud_sync_status: "synchronized",
+      })),
+    });
+    const worker = createMetadataSyncWorker(dependencies);
+
+    const result = await worker.run();
+
+    expect(result.synchronized).toBe(1);
+    expect(dependencies.upsertCloudTimelineEvent).toHaveBeenCalledWith(
+      mediaTimelineEvent,
     );
   });
 

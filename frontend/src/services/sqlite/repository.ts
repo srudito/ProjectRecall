@@ -1008,65 +1008,173 @@ export interface MediaAssetRecord {
   original_file_name: string;
   sanitized_file_name: string;
   local_file_uri: string | null;
+  private_storage_path: string | null;
   file_size: number;
   duration_ms: number | null;
   image_width: number | null;
   image_height: number | null;
+  page_count: number | null;
+  captured_at: string | null;
   recording_offset_ms: number;
   user_caption: string | null;
+  checksum_sha256: string | null;
   upload_status: string;
+  upload_error_code: string | null;
+  upload_error_message: string | null;
   created_at: string;
   updated_at: string;
+  deleted_at: string | null;
 }
 
-export const insertMediaAsset = async (r: MediaAssetRecord): Promise<void> => {
-  const db = await openLocalDb();
-  if (!db) return;
+const MEDIA_ASSET_COLUMNS = `id, workspace_id, project_id, session_id,
+  added_by, asset_type, mime_type, original_file_name, sanitized_file_name,
+  local_file_uri, private_storage_path, file_size, duration_ms, image_width,
+  image_height, page_count, captured_at, recording_offset_ms, user_caption,
+  checksum_sha256, upload_status, upload_error_code, upload_error_message,
+  created_at, updated_at, deleted_at`;
+
+const upsertMediaAssetOnDb = async (
+  db: SQLite.SQLiteDatabase,
+  asset: MediaAssetRecord,
+): Promise<void> => {
   await db.runAsync(
     `INSERT INTO local_media_assets
-      (id, workspace_id, project_id, session_id, added_by, asset_type, mime_type,
-       original_file_name, sanitized_file_name, local_file_uri, file_size, duration_ms,
-       image_width, image_height, recording_offset_ms, user_caption, upload_status,
-       created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, workspace_id, project_id, session_id, added_by, asset_type,
+       mime_type, original_file_name, sanitized_file_name, local_file_uri,
+       private_storage_path, file_size, duration_ms, image_width, image_height,
+       page_count, captured_at, recording_offset_ms, user_caption,
+       checksum_sha256, upload_status, upload_error_code, upload_error_message,
+       created_at, updated_at, deleted_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       workspace_id = excluded.workspace_id,
+       project_id = excluded.project_id,
+       session_id = excluded.session_id,
+       added_by = excluded.added_by,
+       asset_type = excluded.asset_type,
+       mime_type = excluded.mime_type,
+       original_file_name = excluded.original_file_name,
+       sanitized_file_name = excluded.sanitized_file_name,
+       local_file_uri = COALESCE(excluded.local_file_uri, local_media_assets.local_file_uri),
+       private_storage_path = excluded.private_storage_path,
+       file_size = excluded.file_size,
+       duration_ms = excluded.duration_ms,
+       image_width = excluded.image_width,
+       image_height = excluded.image_height,
+       page_count = excluded.page_count,
+       captured_at = excluded.captured_at,
+       recording_offset_ms = excluded.recording_offset_ms,
+       user_caption = excluded.user_caption,
+       checksum_sha256 = excluded.checksum_sha256,
+       upload_status = excluded.upload_status,
+       upload_error_code = excluded.upload_error_code,
+       upload_error_message = excluded.upload_error_message,
+       updated_at = excluded.updated_at,
+       deleted_at = excluded.deleted_at`,
     [
-      r.id,
-      r.workspace_id,
-      r.project_id,
-      r.session_id,
-      r.added_by,
-      r.asset_type,
-      r.mime_type,
-      r.original_file_name,
-      r.sanitized_file_name,
-      r.local_file_uri,
-      r.file_size,
-      r.duration_ms,
-      r.image_width,
-      r.image_height,
-      r.recording_offset_ms,
-      r.user_caption,
-      r.upload_status,
-      r.created_at,
-      r.updated_at,
+      asset.id,
+      asset.workspace_id,
+      asset.project_id,
+      asset.session_id,
+      asset.added_by,
+      asset.asset_type,
+      asset.mime_type,
+      asset.original_file_name,
+      asset.sanitized_file_name,
+      asset.local_file_uri,
+      asset.private_storage_path,
+      asset.file_size,
+      asset.duration_ms,
+      asset.image_width,
+      asset.image_height,
+      asset.page_count,
+      asset.captured_at,
+      asset.recording_offset_ms,
+      asset.user_caption,
+      asset.checksum_sha256,
+      asset.upload_status,
+      asset.upload_error_code,
+      asset.upload_error_message,
+      asset.created_at,
+      asset.updated_at,
+      asset.deleted_at,
     ],
   );
 };
 
-export const listMediaAssetsForSession = async (sessionId: string): Promise<MediaAssetRecord[]> => {
+export const upsertMediaAsset = async (
+  asset: MediaAssetRecord,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  await upsertMediaAssetOnDb(db, asset);
+};
+
+// Backward-compatible name retained for existing callers.
+export const insertMediaAsset = upsertMediaAsset;
+
+export const getMediaAsset = async (
+  id: string,
+): Promise<MediaAssetRecord | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+  return (await db.getFirstAsync(
+    `SELECT ${MEDIA_ASSET_COLUMNS}
+       FROM local_media_assets
+      WHERE id = ?`,
+    [id],
+  )) as MediaAssetRecord | null;
+};
+
+export const listMediaAssetsForSession = async (
+  sessionId: string,
+): Promise<MediaAssetRecord[]> => {
   const db = await openLocalDb();
   if (!db) return [];
-  const rows = (await db.getAllAsync(
-    `SELECT id, workspace_id, project_id, session_id, added_by, asset_type, mime_type,
-            original_file_name, sanitized_file_name, local_file_uri, file_size, duration_ms,
-            image_width, image_height, recording_offset_ms, user_caption, upload_status,
-            created_at, updated_at
-     FROM local_media_assets
-     WHERE session_id = ? AND deleted_at IS NULL
-     ORDER BY recording_offset_ms ASC`,
+  return (await db.getAllAsync(
+    `SELECT ${MEDIA_ASSET_COLUMNS}
+       FROM local_media_assets
+      WHERE session_id = ? AND deleted_at IS NULL
+      ORDER BY recording_offset_ms ASC, created_at ASC`,
     [sessionId],
   )) as MediaAssetRecord[];
-  return rows;
+};
+
+export interface MediaAssetUploadStatusUpdate {
+  local_file_uri?: string | null;
+  private_storage_path?: string | null;
+  file_size?: number;
+  upload_status?: string;
+  upload_error_code?: string | null;
+  upload_error_message?: string | null;
+}
+
+export const updateMediaAssetUploadStatus = async (
+  id: string,
+  patch: MediaAssetUploadStatusUpdate,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+
+  const allowedKeys: (keyof MediaAssetUploadStatusUpdate)[] = [
+    "local_file_uri",
+    "private_storage_path",
+    "file_size",
+    "upload_status",
+    "upload_error_code",
+    "upload_error_message",
+  ];
+  const entries = allowedKeys
+    .filter((key) => Object.prototype.hasOwnProperty.call(patch, key))
+    .map((key) => ({ key, value: patch[key] ?? null }));
+  if (entries.length === 0) return;
+
+  const setSql = entries.map(({ key }) => `${key} = ?`).join(", ");
+  const values = entries.map(({ value }) => value as string | number | null);
+  await db.runAsync(
+    `UPDATE local_media_assets SET ${setSql}, updated_at = ? WHERE id = ?`,
+    [...values, nowIso(), id],
+  );
 };
 
 export type UploadQueueStatus =
@@ -1440,6 +1548,177 @@ export const atomicRequeueRecordingUpload = async (input: {
         row.updated_at,
       ],
     );
+  });
+};
+
+export interface AtomicCreateMediaAssetWithUploadAndTimelineInput {
+  asset: MediaAssetRecord;
+  timelineEvent: TimelineEventRecord;
+  upload: UploadQueueRow;
+  timelineQueue: {
+    queueRowId: string;
+    idempotencyKey: string;
+  };
+}
+
+export const atomicCreateMediaAssetWithUploadAndTimeline = async (
+  input: AtomicCreateMediaAssetWithUploadAndTimelineInput,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+
+  await db.withTransactionAsync(async () => {
+    await upsertMediaAssetOnDb(db, input.asset);
+    await upsertTimelineEventOnDb(db, input.timelineEvent);
+
+    const upload = input.upload;
+    await db.runAsync(
+      `INSERT INTO local_upload_queue
+        (id, user_id, workspace_id, session_id, source_entity_type,
+         source_entity_id, local_file_uri, target_storage_path, queue_status,
+         attempt_count, next_retry_at, last_error_code, last_safe_error,
+         idempotency_key, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(idempotency_key) DO UPDATE SET
+         user_id = excluded.user_id,
+         workspace_id = excluded.workspace_id,
+         session_id = excluded.session_id,
+         source_entity_type = excluded.source_entity_type,
+         source_entity_id = excluded.source_entity_id,
+         local_file_uri = excluded.local_file_uri,
+         target_storage_path = excluded.target_storage_path,
+         queue_status = 'pending',
+         attempt_count = 0,
+         next_retry_at = NULL,
+         last_error_code = NULL,
+         last_safe_error = NULL,
+         updated_at = excluded.updated_at`,
+      [
+        upload.id,
+        upload.user_id,
+        upload.workspace_id,
+        upload.session_id,
+        upload.source_entity_type,
+        upload.source_entity_id,
+        upload.local_file_uri,
+        upload.target_storage_path,
+        upload.queue_status,
+        upload.attempt_count,
+        upload.next_retry_at,
+        upload.last_error_code,
+        upload.last_safe_error,
+        upload.idempotency_key,
+        upload.created_at,
+        upload.updated_at,
+      ],
+    );
+
+    await enqueueMetadataOnDb(db, {
+      queueRowId: input.timelineQueue.queueRowId,
+      userId: input.timelineEvent.created_by,
+      workspaceId: input.timelineEvent.workspace_id,
+      entityType: "timeline_event",
+      entityId: input.timelineEvent.id,
+      parentEntityType: "media_asset",
+      parentEntityId: input.asset.id,
+      priority: 500,
+      idempotencyKey: input.timelineQueue.idempotencyKey,
+      createdAt: input.timelineEvent.created_at,
+    });
+  });
+};
+
+export const atomicRequeueMediaAssetUpload = async (input: {
+  assetId: string;
+  upload: UploadQueueRow;
+}): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(
+      `UPDATE local_media_assets
+          SET upload_status = 'pending',
+              upload_error_code = NULL,
+              upload_error_message = NULL,
+              updated_at = ?
+        WHERE id = ?`,
+      [nowIso(), input.assetId],
+    );
+
+    const upload = input.upload;
+    await db.runAsync(
+      `INSERT INTO local_upload_queue
+        (id, user_id, workspace_id, session_id, source_entity_type,
+         source_entity_id, local_file_uri, target_storage_path, queue_status,
+         attempt_count, next_retry_at, last_error_code, last_safe_error,
+         idempotency_key, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, NULL, NULL, NULL, ?, ?, ?)
+       ON CONFLICT(idempotency_key) DO UPDATE SET
+         local_file_uri = excluded.local_file_uri,
+         target_storage_path = excluded.target_storage_path,
+         queue_status = 'pending',
+         attempt_count = 0,
+         next_retry_at = NULL,
+         last_error_code = NULL,
+         last_safe_error = NULL,
+         updated_at = excluded.updated_at`,
+      [
+        upload.id,
+        upload.user_id,
+        upload.workspace_id,
+        upload.session_id,
+        upload.source_entity_type,
+        upload.source_entity_id,
+        upload.local_file_uri,
+        upload.target_storage_path,
+        upload.idempotency_key,
+        upload.created_at,
+        upload.updated_at,
+      ],
+    );
+
+    // A permanent media failure may already have marked its timeline metadata
+    // operation as failed. Requeue those events with the binary retry so a
+    // successful upload can restore the complete cross-device timeline.
+    const timelineEvents = await db.getAllAsync<{
+      id: string;
+      workspace_id: string;
+      created_by: string;
+      created_at: string;
+    }>(
+      `SELECT id, workspace_id, created_by, created_at
+         FROM local_timeline_events
+        WHERE source_entity_type = 'media_asset'
+          AND source_entity_id = ?
+          AND event_type IN ('image_added','video_added','document_added')`,
+      [input.assetId],
+    );
+
+    for (const event of timelineEvents) {
+      await db.runAsync(
+        `UPDATE local_timeline_events
+            SET local_sync_status = 'pending',
+                cloud_sync_status = 'pending',
+                last_sync_error_code = NULL,
+                last_sync_error_message = NULL,
+                last_synced_at = NULL
+          WHERE id = ?`,
+        [event.id],
+      );
+      await enqueueMetadataOnDb(db, {
+        queueRowId: `timeline-upsert:${event.id}`,
+        userId: event.created_by,
+        workspaceId: event.workspace_id,
+        entityType: "timeline_event",
+        entityId: event.id,
+        parentEntityType: "media_asset",
+        parentEntityId: input.assetId,
+        priority: 500,
+        idempotencyKey: `upsert:timeline_event:${event.id}`,
+        createdAt: event.created_at,
+      });
+    }
   });
 };
 

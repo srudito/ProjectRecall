@@ -1,13 +1,23 @@
 import { useRouter } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
-import { Text, View } from "react-native";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Text, TouchableOpacity, View } from "react-native";
 
 import { Button } from "@/src/components/Button";
 import { Card } from "@/src/components/Card";
 import { Screen } from "@/src/components/Screen";
 import { branding } from "@/src/config/branding";
 import { useI18n } from "@/src/i18n/I18nProvider";
-import { fetchProjects, fetchSessions } from "@/src/services/session/service";
+import {
+  buildProjectLookup,
+  mergeProjectReferences,
+  projectDisplayNameForSession,
+  referencedProjectIds,
+} from "@/src/services/project/project-context";
+import {
+  fetchProjectReferences,
+  fetchProjects,
+  fetchSessions,
+} from "@/src/services/session/service";
 import type {
   ProjectRecord,
   SessionRecord,
@@ -32,6 +42,7 @@ export default function Home() {
   const { colors, spacing, typography } = useTheme();
   const user = useAuthStore((state) => state.user);
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [projectReferences, setProjectReferences] = useState<ProjectRecord[]>([]);
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
 
   const syncStatusLabel = (status: string): string => {
@@ -44,6 +55,7 @@ export default function Home() {
   const loadHomeData = useCallback(async () => {
     if (!user?.id) {
       setProjects([]);
+      setProjectReferences([]);
       setSessions([]);
       return;
     }
@@ -55,7 +67,24 @@ export default function Home() {
         fetchSessions(workspace.id),
       ]);
       setProjects(projectRows);
+      setProjectReferences(projectRows);
       setSessions(sessionRows);
+
+      const activeProjectIds = new Set(
+        projectRows.map((project) => project.id),
+      );
+      const missingReferenceIds = referencedProjectIds(sessionRows).filter(
+        (projectId) => !activeProjectIds.has(projectId),
+      );
+
+      if (missingReferenceIds.length > 0) {
+        const referenceRows = await fetchProjectReferences(
+          missingReferenceIds,
+        );
+        setProjectReferences(
+          mergeProjectReferences(projectRows, referenceRows),
+        );
+      }
     } catch {
       // Preserve already-loaded local rows during a transient offline or
       // workspace-resolution failure. User sign-out is handled by the early
@@ -73,6 +102,24 @@ export default function Home() {
         void loadHomeData();
       }),
     [loadHomeData],
+  );
+
+  const projectLookup = useMemo(
+    () => buildProjectLookup(projectReferences),
+    [projectReferences],
+  );
+
+  const projectNameForSession = useCallback(
+    (session: SessionRecord): string =>
+      projectDisplayNameForSession(session, projectLookup, {
+        noProject: t("library", "library.projectContext.noProject"),
+        unknownProject: t(
+          "library",
+          "library.projectContext.unknownProject",
+        ),
+        archived: t("library", "library.projectContext.archived"),
+      }),
+    [projectLookup, t],
   );
 
   return (
@@ -138,7 +185,18 @@ export default function Home() {
           </Text>
         ) : (
           projects.slice(0, 5).map((project) => (
-            <View key={project.id} style={{ paddingVertical: spacing.xs }}>
+            <TouchableOpacity
+              key={project.id}
+              testID={`home-project-${project.id}`}
+              accessibilityRole="button"
+              style={{ paddingVertical: spacing.xs }}
+              onPress={() =>
+                router.push({
+                  pathname: "/project/[id]",
+                  params: { id: project.id },
+                })
+              }
+            >
               <Text style={[typography.body, { color: colors.textPrimary }]}>
                 {project.name}
               </Text>
@@ -147,7 +205,7 @@ export default function Home() {
               >
                 {syncStatusLabel(project.local_sync_status)}
               </Text>
-            </View>
+            </TouchableOpacity>
           ))
         )}
       </Card>
@@ -176,6 +234,14 @@ export default function Home() {
                 }
               >
                 {session.title}
+              </Text>
+              <Text
+                testID={`home-session-project-${session.id}`}
+                style={[typography.caption, { color: colors.textSecondary }]}
+              >
+                {t("library", "library.projectContext.sessionProject", {
+                  name: projectNameForSession(session),
+                })}
               </Text>
               <Text
                 style={[typography.caption, { color: colors.textTertiary }]}

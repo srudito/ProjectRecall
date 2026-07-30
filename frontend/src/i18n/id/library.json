@@ -39,7 +39,23 @@
       "failed": "Sinkron gagal"
     },
     "retrySync": "Coba sinkronisasi lagi",
-    "projectRetryFailed": "Sinkronisasi proyek tidak dapat dimulai kembali."
+    "projectRetryFailed": "Sinkronisasi proyek tidak dapat dimulai kembali.",
+    "projectContext": {
+      "sessionProject": "Proyek: {{name}}",
+      "noProject": "Tanpa proyek",
+      "unknownProject": "Proyek tidak dikenal",
+      "active": "Aktif",
+      "archived": "Diarsipkan"
+    },
+    "projectDetail": {
+      "status": "Status",
+      "description": "Deskripsi",
+      "noDescription": "Tidak ada deskripsi",
+      "sessions": "Sesi dalam proyek ini",
+      "sessionCount": "{{count}} sesi",
+      "empty": "Belum ada sesi dalam proyek ini.",
+      "notFound": "Proyek tidak ditemukan"
+    }
   },
   "empty": {
     "sessions": "Belum ada sesi. Ketuk Rekam untuk memulai.",

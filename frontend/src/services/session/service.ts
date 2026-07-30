@@ -1,6 +1,6 @@
 // Session service. Projects, sessions, notes, bookmarks, supported timeline
-// events, and primary recording files are local-first on native and
-// remote-backed on web. Evidence/media uploads are implemented separately.
+// events, primary recordings, and image/video/document evidence are local-first
+// on native and remote-backed on web. Binary uploads use private Storage.
 
 import * as Crypto from "expo-crypto";
 import * as FileSystem from "expo-file-system/legacy";
@@ -10,14 +10,15 @@ import {
   SessionStatus,
   type SpokenLanguageMode,
   TimelineEventType,
-  UploadStatus,
 } from "@/src/domain/enums";
 import {
   atomicCreateBookmarkWithTimelineSync,
   atomicCreateNoteWithTimelineSync,
+  atomicCreateMediaAssetWithUploadAndTimeline,
   atomicCreateProjectWithSync,
   atomicCreateRecordingWithUpload,
   atomicCreateTimelineEventWithSync,
+  atomicRequeueMediaAssetUpload,
   atomicRequeueProjectSync,
   atomicRequeueRecordingUpload,
   atomicRequeueSessionSync,
@@ -25,12 +26,12 @@ import {
   deleteMetadataOperationsForEntity,
   deleteUploadOperationsForEntity,
   getBookmark,
+  getMediaAsset,
   getNote,
   getProject,
   getRecordingForSession,
   getSession,
   getTimelineEvent,
-  insertMediaAsset,
   insertTimelineEvent,
   listBookmarksForSession,
   listMediaAssetsForSession,
@@ -40,6 +41,7 @@ import {
   listTimelineEvents,
   softDeleteSession,
   upsertBookmark,
+  upsertMediaAsset,
   upsertNote,
   upsertProject,
   upsertRecording,
@@ -54,8 +56,14 @@ import {
   type TimelineEventRecord,
   type UploadQueueRow,
 } from "@/src/services/sqlite/repository";
+import { prepareMediaAssetFile } from "@/src/services/media-file-persistence";
 import { prepareStoppedRecordingFile } from "@/src/services/recording/file-persistence";
 import {
+  fetchRemoteMediaAssets,
+  upsertRemoteMediaAsset,
+} from "@/src/services/supabase/media-asset-repository";
+import {
+  fetchRemoteProject,
   fetchRemoteProjects,
   upsertRemoteProject,
 } from "@/src/services/supabase/project-repository";
@@ -80,6 +88,7 @@ import {
   upsertRemoteNote,
   upsertRemoteTimelineEvent,
 } from "@/src/services/supabase/session-content-repository";
+import { requestMediaUploadSync } from "@/src/services/sync/media-upload-worker";
 import { notifyMetadataSyncChanges } from "@/src/services/sync/project-sync-events";
 import { requestMetadataSync } from "@/src/services/sync/project-sync-worker";
 import { requestRecordingUploadSync } from "@/src/services/sync/recording-upload-worker";
@@ -292,6 +301,58 @@ export const fetchProjects = async (
     // fails. The project worker retains safe diagnostics for queued writes.
   });
   return localProjects;
+};
+
+export const fetchProject = async (
+  projectId: string,
+): Promise<ProjectRecord | null> => {
+  requireUuid(projectId, "projectId");
+
+  if (Platform.OS === "web") {
+    return fetchRemoteProject(projectId);
+  }
+
+  const local = await getProject(projectId);
+  if (local?.deleted_at != null) return null;
+
+  if (local) {
+    void fetchRemoteProject(projectId)
+      .then(async (remote) => {
+        if (!remote) return;
+        const changed = await mergeRemoteProjectsIntoLocal([remote]);
+        if (changed) notifyMetadataSyncChanges();
+      })
+      .catch(() => {
+        // Keep the locally cached project available while offline.
+      });
+    return local;
+  }
+
+  try {
+    const remote = await fetchRemoteProject(projectId);
+    if (!remote || remote.deleted_at != null) return null;
+    await upsertProject(remote);
+    return remote;
+  } catch {
+    return null;
+  }
+};
+
+export const fetchProjectReferences = async (
+  projectIds: string[],
+): Promise<ProjectRecord[]> => {
+  const uniqueIds = [...new Set(projectIds)];
+  const rows = await Promise.all(
+    uniqueIds.map(async (projectId) => {
+      try {
+        return await fetchProject(projectId);
+      } catch {
+        return null;
+      }
+    }),
+  );
+
+  return rows.filter((project): project is ProjectRecord => project != null);
 };
 
 // --- Session ---------------------------------------------------------------
@@ -919,6 +980,184 @@ export const retryRecordingUpload = async (input: {
   return pending;
 };
 
+// --- Evidence/media files --------------------------------------------------
+const mediaAssetStoragePath = (
+  workspaceId: string,
+  sessionId: string,
+  assetId: string,
+  fileName: string,
+): string => `${workspaceId}/${sessionId}/${assetId}/${fileName}`;
+
+const mediaUploadQueueRow = (input: {
+  asset: MediaAssetRecord;
+  userId: string;
+}): UploadQueueRow => {
+  const now = nowIso();
+  const targetStoragePath =
+    input.asset.private_storage_path ??
+    mediaAssetStoragePath(
+      input.asset.workspace_id,
+      input.asset.session_id,
+      input.asset.id,
+      input.asset.sanitized_file_name,
+    );
+
+  return {
+    id: generateId(),
+    user_id: input.userId,
+    workspace_id: input.asset.workspace_id,
+    session_id: input.asset.session_id,
+    source_entity_type: "media_asset",
+    source_entity_id: input.asset.id,
+    local_file_uri: input.asset.local_file_uri ?? "",
+    target_storage_path: targetStoragePath,
+    queue_status: "pending",
+    attempt_count: 0,
+    next_retry_at: null,
+    last_error_code: null,
+    last_safe_error: null,
+    idempotency_key: buildIdempotencyKey([
+      "upload",
+      "media_asset",
+      input.asset.id,
+    ]),
+    created_at: now,
+    updated_at: now,
+  };
+};
+
+const mediaAssetContentMatches = (
+  left: MediaAssetRecord,
+  right: MediaAssetRecord,
+): boolean =>
+  left.id === right.id &&
+  left.workspace_id === right.workspace_id &&
+  left.project_id === right.project_id &&
+  left.session_id === right.session_id &&
+  left.added_by === right.added_by &&
+  left.asset_type === right.asset_type &&
+  left.mime_type === right.mime_type &&
+  left.original_file_name === right.original_file_name &&
+  left.sanitized_file_name === right.sanitized_file_name &&
+  left.private_storage_path === right.private_storage_path &&
+  left.file_size === right.file_size &&
+  left.duration_ms === right.duration_ms &&
+  left.image_width === right.image_width &&
+  left.image_height === right.image_height &&
+  left.page_count === right.page_count &&
+  left.captured_at === right.captured_at &&
+  left.recording_offset_ms === right.recording_offset_ms &&
+  left.user_caption === right.user_caption &&
+  left.checksum_sha256 === right.checksum_sha256 &&
+  left.upload_status === right.upload_status &&
+  left.deleted_at === right.deleted_at;
+
+export const mergeRemoteMediaAssetsIntoLocal = async (
+  remoteAssets: MediaAssetRecord[],
+): Promise<boolean> => {
+  let changed = false;
+
+  for (const remote of remoteAssets) {
+    const local = await getMediaAsset(remote.id);
+    if (!local) {
+      await upsertMediaAsset(remote);
+      changed = true;
+      continue;
+    }
+
+    const remoteIsSynchronized = remote.upload_status === "synchronized";
+    const localHasPendingWrite =
+      local.upload_status === "pending" || local.upload_status === "uploading";
+    if (localHasPendingWrite && !remoteIsSynchronized) continue;
+
+    const merged: MediaAssetRecord = {
+      ...remote,
+      local_file_uri: local.local_file_uri ?? remote.local_file_uri,
+    };
+    const contentChanged =
+      !mediaAssetContentMatches(local, merged) ||
+      local.local_file_uri !== merged.local_file_uri ||
+      local.upload_error_code !== merged.upload_error_code ||
+      local.upload_error_message !== merged.upload_error_message;
+    if (!contentChanged) continue;
+
+    await upsertMediaAsset(merged);
+    if (remoteIsSynchronized) {
+      await deleteUploadOperationsForEntity("media_asset", remote.id);
+    }
+    changed = true;
+  }
+
+  return changed;
+};
+
+export const resolveMediaAssetUri = async (
+  asset: MediaAssetRecord,
+): Promise<string | null> => {
+  if (Platform.OS !== "web" && asset.local_file_uri) {
+    try {
+      const info = await FileSystem.getInfoAsync(asset.local_file_uri);
+      if (info.exists) return asset.local_file_uri;
+    } catch {
+      // Fall back to a short-lived signed URL below.
+    }
+  }
+
+  if (!asset.private_storage_path) return null;
+  return createSignedSessionAssetUrl({ path: asset.private_storage_path });
+};
+
+export const retryMediaAssetUpload = async (input: {
+  asset: MediaAssetRecord;
+  userId: string;
+}): Promise<MediaAssetRecord> => {
+  requireUuid(input.asset.id, "assetId");
+  requireUuid(input.asset.workspace_id, "workspaceId");
+  requireUuid(input.asset.session_id, "sessionId");
+  requireUuid(input.userId, "userId");
+
+  const localFileUri = input.asset.local_file_uri;
+  if (!localFileUri) {
+    throw new Error("The local evidence file is no longer available.");
+  }
+
+  const pending: MediaAssetRecord = {
+    ...input.asset,
+    upload_status: "pending",
+    upload_error_code: null,
+    upload_error_message: null,
+    updated_at: nowIso(),
+  };
+
+  if (Platform.OS === "web") {
+    const path =
+      pending.private_storage_path ??
+      mediaAssetStoragePath(
+        pending.workspace_id,
+        pending.session_id,
+        pending.id,
+        pending.sanitized_file_name,
+      );
+    await uploadPrivateSessionAsset({
+      path,
+      fileUri: localFileUri,
+      mimeType: pending.mime_type,
+    });
+    return upsertRemoteMediaAsset({
+      ...pending,
+      private_storage_path: path,
+      upload_status: "synchronized",
+      updated_at: nowIso(),
+    });
+  }
+
+  const upload = mediaUploadQueueRow({ asset: pending, userId: input.userId });
+  await atomicRequeueMediaAssetUpload({ assetId: pending.id, upload });
+  notifyMetadataSyncChanges();
+  requestMediaUploadSync();
+  return pending;
+};
+
 // --- Notes / Bookmarks / Media --------------------------------------------
 const isUnsynchronizedContent = (record: {
   local_sync_status: string;
@@ -1129,6 +1368,9 @@ const SYNCABLE_TIMELINE_EVENTS = new Set<string>([
   TimelineEventType.RECORDING_STOPPED,
   TimelineEventType.NOTE_ADDED,
   TimelineEventType.BOOKMARK_ADDED,
+  TimelineEventType.IMAGE_ADDED,
+  TimelineEventType.VIDEO_ADDED,
+  TimelineEventType.DOCUMENT_ADDED,
 ]);
 
 export const addNote = async (input: {
@@ -1268,51 +1510,126 @@ export const addMediaAsset = async (input: {
   assetType: "image" | "video" | "document";
   mimeType: string;
   originalFileName: string;
-  sanitizedFileName: string;
-  localFileUri: string | null;
-  fileSize: number;
+  sourceFileUri: string;
+  reportedFileSize: number;
   durationMs?: number | null;
   imageWidth?: number | null;
   imageHeight?: number | null;
+  pageCount?: number | null;
   offsetMs: number;
   userCaption?: string | null;
 }): Promise<MediaAssetRecord> => {
+  requireUuid(input.session.id, "sessionId");
+  requireUuid(input.session.workspace_id, "workspaceId");
+  requireUuid(input.addedBy, "addedBy");
+
+  const assetId = generateId();
+  const prepared = await prepareMediaAssetFile({
+    assetId,
+    sessionId: input.session.id,
+    sourceUri: input.sourceFileUri,
+    mimeType: input.mimeType,
+    originalFileName: input.originalFileName,
+    reportedFileSize: input.reportedFileSize,
+    assetType: input.assetType,
+  });
   const now = nowIso();
+  const path = mediaAssetStoragePath(
+    input.session.workspace_id,
+    input.session.id,
+    assetId,
+    prepared.sanitizedFileName,
+  );
   const asset: MediaAssetRecord = {
-    id: generateId(),
+    id: assetId,
     workspace_id: input.session.workspace_id,
     project_id: input.session.project_id,
     session_id: input.session.id,
     added_by: input.addedBy,
     asset_type: input.assetType,
-    mime_type: input.mimeType,
-    original_file_name: input.originalFileName,
-    sanitized_file_name: input.sanitizedFileName,
-    local_file_uri: input.localFileUri,
-    file_size: input.fileSize,
+    mime_type: prepared.mimeType,
+    original_file_name: prepared.originalFileName,
+    sanitized_file_name: prepared.sanitizedFileName,
+    local_file_uri: prepared.localFileUri,
+    private_storage_path: path,
+    file_size: prepared.fileSize,
     duration_ms: input.durationMs ?? null,
     image_width: input.imageWidth ?? null,
     image_height: input.imageHeight ?? null,
-    recording_offset_ms: input.offsetMs,
-    user_caption: input.userCaption ?? null,
-    upload_status: UploadStatus.LOCAL_ONLY,
+    page_count: input.pageCount ?? null,
+    captured_at: now,
+    recording_offset_ms: Math.max(0, Math.round(input.offsetMs)),
+    user_caption: input.userCaption?.trim() || null,
+    checksum_sha256: null,
+    upload_status: Platform.OS === "web" ? "uploading" : "pending",
+    upload_error_code: null,
+    upload_error_message: null,
     created_at: now,
     updated_at: now,
+    deleted_at: null,
   };
-  await insertMediaAsset(asset);
   const eventType =
     input.assetType === "image"
       ? TimelineEventType.IMAGE_ADDED
       : input.assetType === "video"
         ? TimelineEventType.VIDEO_ADDED
         : TimelineEventType.DOCUMENT_ADDED;
-  await recordTimelineEvent(input.session, {
+  const timelineEvent = createPendingTimelineEvent(input.session, {
     event_type: eventType,
     source_entity_type: "media_asset",
     source_entity_id: asset.id,
     recording_offset_ms: asset.recording_offset_ms,
     created_by: input.addedBy,
   });
+
+  if (Platform.OS === "web") {
+    let uploading = await upsertRemoteMediaAsset(asset);
+    try {
+      await uploadPrivateSessionAsset({
+        path,
+        fileUri: prepared.localFileUri,
+        mimeType: prepared.mimeType,
+      });
+      uploading = await upsertRemoteMediaAsset({
+        ...uploading,
+        private_storage_path: path,
+        upload_status: "synchronized",
+        upload_error_code: null,
+        upload_error_message: null,
+        updated_at: nowIso(),
+      });
+      await upsertRemoteTimelineEvent(timelineEvent);
+      notifyMetadataSyncChanges();
+      return uploading;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      void upsertRemoteMediaAsset({
+        ...uploading,
+        upload_status: "failed",
+        upload_error_code: "UPLOAD_FAILED",
+        upload_error_message: message,
+        updated_at: nowIso(),
+      }).catch(() => {});
+      throw error;
+    }
+  }
+
+  const upload = mediaUploadQueueRow({ asset, userId: input.addedBy });
+  await atomicCreateMediaAssetWithUploadAndTimeline({
+    asset,
+    timelineEvent,
+    upload,
+    timelineQueue: {
+      queueRowId: generateId(),
+      idempotencyKey: buildIdempotencyKey([
+        "upsert",
+        "timeline_event",
+        timelineEvent.id,
+      ]),
+    },
+  });
+  notifyMetadataSyncChanges();
+  requestMediaUploadSync();
   return asset;
 };
 
@@ -1367,21 +1684,27 @@ export const recordTimelineEvent = async (
 const refreshNativeSessionContentFromCloud = async (
   sessionId: string,
 ): Promise<boolean> => {
-  const [remoteNotes, remoteBookmarks, remoteTimeline] = await Promise.all([
-    fetchRemoteNotes(sessionId),
-    fetchRemoteBookmarks(sessionId),
-    fetchRemoteTimelineEvents(sessionId),
-  ]);
+  const [remoteNotes, remoteBookmarks, remoteAssets, remoteTimeline] =
+    await Promise.all([
+      fetchRemoteNotes(sessionId),
+      fetchRemoteBookmarks(sessionId),
+      fetchRemoteMediaAssets(sessionId),
+      fetchRemoteTimelineEvents(sessionId),
+    ]);
 
-  const [notesChanged, bookmarksChanged, timelineChanged] = await Promise.all([
-    mergeRemoteNotesIntoLocal(remoteNotes),
-    mergeRemoteBookmarksIntoLocal(remoteBookmarks),
-    mergeRemoteTimelineIntoLocal(remoteTimeline),
-  ]);
+  const [notesChanged, bookmarksChanged, assetsChanged, timelineChanged] =
+    await Promise.all([
+      mergeRemoteNotesIntoLocal(remoteNotes),
+      mergeRemoteBookmarksIntoLocal(remoteBookmarks),
+      mergeRemoteMediaAssetsIntoLocal(remoteAssets),
+      mergeRemoteTimelineIntoLocal(remoteTimeline),
+    ]);
 
-  const changed = notesChanged || bookmarksChanged || timelineChanged;
+  const changed =
+    notesChanged || bookmarksChanged || assetsChanged || timelineChanged;
   if (changed) notifyMetadataSyncChanges();
   requestMetadataSync();
+  requestMediaUploadSync();
   return changed;
 };
 
@@ -1389,12 +1712,13 @@ export const getSessionBundle = async (sessionId: string) => {
   requireUuid(sessionId, "sessionId");
 
   if (Platform.OS === "web") {
-    const [notes, bookmarks, timeline] = await Promise.all([
+    const [notes, bookmarks, assets, timeline] = await Promise.all([
       fetchRemoteNotes(sessionId),
       fetchRemoteBookmarks(sessionId),
+      fetchRemoteMediaAssets(sessionId),
       fetchRemoteTimelineEvents(sessionId),
     ]);
-    return { notes, bookmarks, assets: [] as MediaAssetRecord[], timeline };
+    return { notes, bookmarks, assets, timeline };
   }
 
   const readLocal = async () => {

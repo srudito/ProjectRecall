@@ -7,28 +7,33 @@ Milestone 1 is still being closed in verified, dependency-ordered passes.
 Completed and verified before this pass:
 
 - Supabase authentication and personal workspace creation;
-- project local-to-cloud synchronization;
-- project offline retry, stable UUID, and RLS isolation;
-- session metadata synchronization;
-- project-before-session dependency ordering;
-- session lifecycle, duration, language settings, and cloud-to-local merge.
+- project and session local-to-cloud synchronization;
+- dependency-ordered offline retry with stable UUIDs;
+- session lifecycle, duration, language settings, and cloud-to-local merge;
+- note, bookmark, and recording/timeline-event synchronization;
+- web timeline reads and native cloud-to-local restoration;
+- durable primary recording metadata and private audio Storage upload;
+- signed audio playback, Wi-Fi-only upload, reinstall recovery, and Storage RLS
+  smoke tests.
 
-Implemented in the current Note/Bookmark/Timeline Sync v1 pass and awaiting
+Implemented in the current Evidence Storage Sync v1 pass and awaiting
 real-environment verification:
 
-- note and bookmark local-to-cloud synchronization;
-- recording lifecycle and note/bookmark timeline synchronization;
-- session-before-content and source-before-timeline dependency ordering;
-- web timeline reads and native cloud-to-local restoration;
-- offline retry and stable content UUIDs.
+- durable local persistence for image, video, and document evidence;
+- media metadata synchronization to `public.media_assets`;
+- private binary upload to `session-assets`;
+- session-before-evidence and evidence-before-timeline dependency ordering;
+- signed image/video/document restoration on web and native;
+- offline retry, Wi-Fi-only behavior, and stable media UUIDs/Storage paths.
 
 Remaining Milestone 1 work:
 
-- recording and media metadata synchronization;
-- binary upload to private `session-assets` Storage;
-- durable cloud-aware deletion and cleanup;
+- audio-attachment evidence and post-recording Add Evidence UI;
+- cloud-aware session/recording/evidence deletion and orphan cleanup;
 - remaining playback, timeline-seek, onboarding, and edit-flow gaps;
-- Android development-build verification.
+- Android development-build verification, including picker interruptions and
+  background recording;
+- authentication hardening/social login before public beta.
 
 ## Milestone 2 — Batch transcription
 

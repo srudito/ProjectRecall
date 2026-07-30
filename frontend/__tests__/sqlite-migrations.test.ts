@@ -102,8 +102,8 @@ describe("local SQLite migration runner", () => {
 
     const result = await runMigrations(db, MIGRATIONS);
 
-    expect(LATEST_LOCAL_SCHEMA_VERSION).toBe(6);
-    expect(result).toEqual({ appliedVersions: [3, 4, 5, 6], finalVersion: 6 });
+    expect(LATEST_LOCAL_SCHEMA_VERSION).toBe(7);
+    expect(result).toEqual({ appliedVersions: [3, 4, 5, 6, 7], finalVersion: 7 });
     expect(
       state.executed.some((sql) => sql.includes("upsert:project:")),
     ).toBe(true);
@@ -114,7 +114,7 @@ describe("local SQLite migration runner", () => {
 
     const result = await runMigrations(db, MIGRATIONS);
 
-    expect(result).toEqual({ appliedVersions: [4, 5, 6], finalVersion: 6 });
+    expect(result).toEqual({ appliedVersions: [4, 5, 6, 7], finalVersion: 7 });
     expect(
       state.executed.some((sql) =>
         sql.includes("ALTER TABLE local_sessions ADD COLUMN last_synced_at"),
@@ -133,7 +133,7 @@ describe("local SQLite migration runner", () => {
 
     const result = await runMigrations(db, MIGRATIONS);
 
-    expect(result).toEqual({ appliedVersions: [5, 6], finalVersion: 6 });
+    expect(result).toEqual({ appliedVersions: [5, 6, 7], finalVersion: 7 });
     expect(
       state.executed.some((sql) =>
         sql.includes("ALTER TABLE local_notes ADD COLUMN last_synced_at"),
@@ -158,7 +158,7 @@ describe("local SQLite migration runner", () => {
 
     const result = await runMigrations(db, MIGRATIONS);
 
-    expect(result).toEqual({ appliedVersions: [6], finalVersion: 6 });
+    expect(result).toEqual({ appliedVersions: [6, 7], finalVersion: 7 });
     expect(
       state.executed.some((sql) =>
         sql.includes("idx_recordings_session_unique"),
@@ -169,6 +169,24 @@ describe("local SQLite migration runner", () => {
     ).toBe(true);
     expect(
       state.executed.some((sql) => sql.includes("local_upload_queue")),
+    ).toBe(true);
+  });
+
+
+  it("adds media evidence upload and timeline synchronization at version 7", async () => {
+    const { db, state } = createFakeDb(6);
+
+    const result = await runMigrations(db, MIGRATIONS);
+
+    expect(result).toEqual({ appliedVersions: [7], finalVersion: 7 });
+    expect(
+      state.executed.some((sql) => sql.includes("upload:media_asset:")),
+    ).toBe(true);
+    expect(
+      state.executed.some((sql) => sql.includes("SOURCE_MEDIA") || sql.includes("media_asset")),
+    ).toBe(true);
+    expect(
+      state.executed.some((sql) => sql.includes("image_added")),
     ).toBe(true);
   });
 

@@ -1,5 +1,5 @@
 import { useFocusEffect, useRouter } from "expo-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FlatList,
   Text,
@@ -13,7 +13,14 @@ import { Field } from "@/src/components/Field";
 import { Screen } from "@/src/components/Screen";
 import { useI18n } from "@/src/i18n/I18nProvider";
 import {
+  buildProjectLookup,
+  mergeProjectReferences,
+  projectDisplayNameForSession,
+  referencedProjectIds,
+} from "@/src/services/project/project-context";
+import {
   createProject,
+  fetchProjectReferences,
   fetchProjects,
   fetchSessions,
   retryProjectSync,
@@ -57,6 +64,7 @@ export default function Library() {
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [projectReferences, setProjectReferences] = useState<ProjectRecord[]>([]);
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
   const [creatingProject, setCreatingProject] = useState(false);
   const [submittingProject, setSubmittingProject] = useState(false);
@@ -74,6 +82,7 @@ export default function Library() {
   const refresh = useCallback(async () => {
     if (!user?.id) {
       setProjects([]);
+      setProjectReferences([]);
       setSessions([]);
       setProjectError(null);
       return;
@@ -88,7 +97,24 @@ export default function Library() {
       ]);
 
       setProjects(projectRows);
+      setProjectReferences(projectRows);
       setSessions(sessionRows);
+
+      const activeProjectIds = new Set(
+        projectRows.map((project) => project.id),
+      );
+      const missingReferenceIds = referencedProjectIds(sessionRows).filter(
+        (projectId) => !activeProjectIds.has(projectId),
+      );
+
+      if (missingReferenceIds.length > 0) {
+        const referenceRows = await fetchProjectReferences(
+          missingReferenceIds,
+        );
+        setProjectReferences(
+          mergeProjectReferences(projectRows, referenceRows),
+        );
+      }
     } catch {
       setProjectError(
         t("library", "library.projectLoadFailed"),
@@ -108,6 +134,24 @@ export default function Library() {
     });
   }, [refresh]);
 
+  const projectLookup = useMemo(
+    () => buildProjectLookup(projectReferences),
+    [projectReferences],
+  );
+
+  const projectNameForSession = useCallback(
+    (session: SessionRecord): string =>
+      projectDisplayNameForSession(session, projectLookup, {
+        noProject: t("library", "library.projectContext.noProject"),
+        unknownProject: t(
+          "library",
+          "library.projectContext.unknownProject",
+        ),
+        archived: t("library", "library.projectContext.archived"),
+      }),
+    [projectLookup, t],
+  );
+
   const filteredSessions = sessions.filter((session) => {
     const selectedStatus = FILTER_TO_STATUS[filter];
 
@@ -118,12 +162,12 @@ export default function Library() {
 
     const normalizedQuery = query.trim().toLowerCase();
 
+    const projectName = projectNameForSession(session).toLowerCase();
     const passesSearch =
       normalizedQuery.length === 0
         ? true
-        : session.title
-            .toLowerCase()
-            .includes(normalizedQuery);
+        : session.title.toLowerCase().includes(normalizedQuery) ||
+          projectName.includes(normalizedQuery);
 
     return passesFilter && passesSearch;
   });
@@ -165,6 +209,9 @@ export default function Library() {
 
         return [project, ...withoutDuplicate];
       });
+      setProjectReferences((current) =>
+        mergeProjectReferences(current, [project]),
+      );
 
       setNewName("");
       setCreatingProject(false);
@@ -559,37 +606,45 @@ const renderFilters = () => {
 
             return (
               <Card
-                testID={`library-project-${item.id}`}
                 style={{
                   marginBottom: spacing.sm,
                 }}
               >
-                <Text
-                  style={[
-                    typography.bodyMedium,
-                    {
-                      color: colors.textPrimary,
-                    },
-                  ]}
+                <TouchableOpacity
+                  testID={`library-project-${item.id}`}
+                  accessibilityRole="button"
+                  onPress={() =>
+                    router.push({
+                      pathname: "/project/[id]",
+                      params: { id: item.id },
+                    })
+                  }
                 >
-                  {item.name}
-                </Text>
-
-                {item.description ? (
                   <Text
                     style={[
-                      typography.caption,
+                      typography.bodyMedium,
                       {
-                        color:
-                          colors.textTertiary,
-                        marginTop:
-                          spacing.xxs,
+                        color: colors.textPrimary,
                       },
                     ]}
                   >
-                    {item.description}
+                    {item.name}
                   </Text>
-                ) : null}
+
+                  {item.description ? (
+                    <Text
+                      style={[
+                        typography.caption,
+                        {
+                          color: colors.textTertiary,
+                          marginTop: spacing.xxs,
+                        },
+                      ]}
+                    >
+                      {item.description}
+                    </Text>
+                  ) : null}
+                </TouchableOpacity>
 
                 <Text
                   testID={`library-project-sync-status-${item.id}`}
@@ -624,9 +679,7 @@ const renderFilters = () => {
                       loading={isRetrying}
                       disabled={retryInProgress}
                       onPress={() => {
-                        void retryFailedProject(
-                          item,
-                        );
+                        void retryFailedProject(item);
                       }}
                     />
                   </View>
@@ -703,6 +756,21 @@ const renderFilters = () => {
               ]}
             >
               {item.title}
+            </Text>
+
+            <Text
+              testID={`library-session-project-${item.id}`}
+              style={[
+                typography.caption,
+                {
+                  color: colors.textSecondary,
+                  marginTop: spacing.xxs,
+                },
+              ]}
+            >
+              {t("library", "library.projectContext.sessionProject", {
+                name: projectNameForSession(item),
+              })}
             </Text>
 
             <Text

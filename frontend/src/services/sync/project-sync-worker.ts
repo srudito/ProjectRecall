@@ -6,6 +6,7 @@ import {
   deferMetadataOperationForDependency,
   deleteCompletedMetadataOperation,
   getBookmark,
+  getMediaAsset,
   getNextEligibleMetadataOperation,
   getNote,
   getProject,
@@ -26,6 +27,7 @@ import {
   upsertTimelineEvent,
   type BookmarkRecord,
   type ContentSyncStatusUpdate,
+  type MediaAssetRecord,
   type MetadataQueueRow,
   type NoteRecord,
   type ProjectRecord,
@@ -84,6 +86,7 @@ export interface MetadataSyncWorkerDependencies {
   getLocalSession: (id: string) => Promise<SessionRecord | null>;
   getLocalNote: (id: string) => Promise<NoteRecord | null>;
   getLocalBookmark: (id: string) => Promise<BookmarkRecord | null>;
+  getLocalMediaAsset: (id: string) => Promise<MediaAssetRecord | null>;
   getLocalTimelineEvent: (id: string) => Promise<TimelineEventRecord | null>;
   updateProjectStatus: typeof updateProjectSyncStatus;
   updateSessionStatus: typeof updateSessionSyncStatus;
@@ -138,6 +141,7 @@ const defaultDependencies: MetadataSyncWorkerDependencies = {
   getLocalSession: getSession,
   getLocalNote: getNote,
   getLocalBookmark: getBookmark,
+  getLocalMediaAsset: getMediaAsset,
   getLocalTimelineEvent: getTimelineEvent,
   updateProjectStatus: updateProjectSyncStatus,
   updateSessionStatus: updateSessionSyncStatus,
@@ -659,6 +663,40 @@ export const createMetadataSyncWorker = (
         dependencies.updateTimelineStatus,
         "SOURCE_BOOKMARK_PENDING",
         "Waiting for the bookmark to synchronize first.",
+      );
+    }
+
+    if (event.source_entity_type === "media_asset") {
+      const asset = await dependencies.getLocalMediaAsset(
+        event.source_entity_id,
+      );
+      if (!asset || asset.deleted_at != null) {
+        return failOperation(
+          claimed,
+          result,
+          dependencies.updateTimelineStatus,
+          "LOCAL_SOURCE_MEDIA_NOT_FOUND",
+          "The timeline evidence file is not available locally.",
+        );
+      }
+      if (asset.upload_status === "synchronized") {
+        return "ready";
+      }
+      if (asset.upload_status === "failed") {
+        return failOperation(
+          claimed,
+          result,
+          dependencies.updateTimelineStatus,
+          "SOURCE_MEDIA_SYNC_FAILED",
+          "Synchronize the evidence file before retrying its timeline event.",
+        );
+      }
+      return deferOperation(
+        claimed,
+        result,
+        dependencies.updateTimelineStatus,
+        "SOURCE_MEDIA_PENDING",
+        "Waiting for the evidence file to synchronize first.",
       );
     }
 

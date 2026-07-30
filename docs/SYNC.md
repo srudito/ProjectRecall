@@ -2,20 +2,19 @@
 
 ## Current implementation boundary
 
-Milestone 1 currently provides durable local-to-cloud metadata synchronization
-for:
+Milestone 1 currently provides durable local-to-cloud synchronization for:
 
-- projects;
-- sessions.
+- projects and sessions;
+- notes, bookmarks, and supported timeline events;
+- primary recording metadata and private audio files;
+- image, video, and document evidence metadata and private files.
 
-The following still use their original local-only or file-queue paths:
+The remaining synchronization gaps are:
 
-- recording metadata;
-- notes;
-- bookmarks;
-- timeline events;
-- media metadata;
-- audio, image, video, and document binaries.
+- audio-attachment evidence;
+- post-recording evidence capture UI;
+- cloud-aware deletion and orphan cleanup;
+- resumable upload and numeric progress hardening.
 
 ## Native metadata lifecycle
 
@@ -35,7 +34,8 @@ Failed projects and sessions can be requeued from the UI.
 The worker is requested when:
 
 - authentication becomes ready;
-- a project or session is created or changed;
+- a project, session, note, bookmark, or timeline event is created or changed;
+- a recording or evidence upload becomes eligible;
 - the application becomes active;
 - connectivity returns;
 - cloud data is refreshed.
@@ -55,17 +55,20 @@ pretend a local write succeeded.
 Metadata priorities currently are:
 
 ```text
-project:        100
-session:        200
-note/bookmark:  300
-timeline event: 400
+project:                    100
+session:                    200
+note/bookmark:              300
+recording/content timeline: 400
+evidence timeline:          500
 ```
 
 A session with a parent project is deferred until the local project is marked
 `synchronized`. Notes and bookmarks are deferred until their session is
 synchronized. A note/bookmark timeline event is deferred until both its session
-and source entity are synchronized; recording lifecycle events depend only on
-the session. Dependency deferral does not consume the normal retry budget.
+and source entity are synchronized. Recording lifecycle events depend on the
+session. Image/video/document timeline events wait until both the session and
+their `media_asset` binary/metadata upload are synchronized. Dependency
+deferral does not consume the normal retry budget.
 
 ## Queue and UI states
 
@@ -136,8 +139,9 @@ draft -> recording -> paused -> recording -> recorded
 ```
 
 Session synchronization includes start/stop timestamps, recorded duration,
-project association, and spoken-language preferences. Audio content itself is
-not uploaded by this pass.
+project association, and spoken-language preferences. The primary recording is
+persisted separately, uploaded to private Storage, and represented by one
+stable `public.recordings` row per session.
 
 ## Session content metadata
 
@@ -145,9 +149,9 @@ Notes, bookmarks, and supported timeline events are now local-first on native
 and remote-backed on web. Native note/bookmark creation writes the source row,
 its timeline event, and both queue operations in one SQLite transaction.
 
-The synchronized timeline types are recording start/pause/resume/stop plus note
-and bookmark events. Media-related timeline events remain local-only until media
-metadata and private Storage synchronization are implemented.
+The synchronized timeline types are recording start/pause/resume/stop, note,
+bookmark, image, video, and document events. Evidence timeline events are
+finalized only after the source media asset is synchronized.
 
 Session Detail returns local content first, refreshes cloud content in the
 background, merges it into SQLite by stable UUID, and reloads when reconciliation
@@ -163,12 +167,21 @@ filters.
 
 ## Binary upload queue
 
-`local_upload_queue` remains dedicated to recordings, images, videos, and
-documents. It is separate from `local_metadata_sync_queue`; metadata operations
-do not have a file URI or storage path.
+`local_upload_queue` is dedicated to recording and evidence binaries. It is
+separate from `local_metadata_sync_queue`; metadata operations do not have a
+file URI or Storage path.
 
-Binary upload to the private `session-assets` bucket remains a later Milestone 1
-closure task.
+Two filtered workers currently process:
+
+```text
+source_entity_type = recording
+source_entity_type = media_asset
+```
+
+Both workers are user-scoped, mutually exclusive, honor Wi-Fi-only settings,
+reuse stable UUIDs/paths, and upload to the private `session-assets` bucket.
+Standard Upload is currently used; resumable TUS is a later hardening step for
+large or unstable transfers.
 
 ## Deletion boundary
 
@@ -183,5 +196,7 @@ as fully removed yet.
   operations resume when the app is launched again.
 - Native synchronization requires Expo Go or an Android development build; web
   preview validates only the direct remote path.
-- Metadata synchronization does not imply that recording or evidence files are
-  stored in Supabase Storage.
+- Synchronized recording/evidence metadata should be considered fully restored
+  only after the matching private Storage object is present.
+- Browser blob URLs are temporary; failed web uploads cannot resume after a
+  reload.

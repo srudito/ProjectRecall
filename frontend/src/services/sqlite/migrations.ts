@@ -571,6 +571,115 @@ const v6Ddl: readonly string[] = [
       updated_at = excluded.updated_at`,
 ];
 
+// Version 7: media evidence metadata, private Storage queue, and timeline sync.
+const v7Ddl: readonly string[] = [
+  `CREATE INDEX IF NOT EXISTS idx_media_workspace_upload ON local_media_assets(workspace_id, upload_status, updated_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_media_session_offset ON local_media_assets(session_id, recording_offset_ms, created_at)`,
+  `UPDATE local_media_assets
+      SET private_storage_path = COALESCE(
+            private_storage_path,
+            workspace_id || '/' || session_id || '/' || id || '/' || sanitized_file_name
+          ),
+          upload_status = CASE
+            WHEN local_file_uri IS NOT NULL AND upload_status IN ('local_only','failed') THEN 'pending'
+            ELSE upload_status
+          END,
+          upload_error_code = CASE
+            WHEN local_file_uri IS NOT NULL AND upload_status IN ('local_only','failed') THEN NULL
+            ELSE upload_error_code
+          END,
+          upload_error_message = CASE
+            WHEN local_file_uri IS NOT NULL AND upload_status IN ('local_only','failed') THEN NULL
+            ELSE upload_error_message
+          END
+    WHERE deleted_at IS NULL`,
+  `INSERT INTO local_upload_queue
+      (id, user_id, workspace_id, session_id, source_entity_type,
+       source_entity_id, local_file_uri, target_storage_path, queue_status,
+       attempt_count, next_retry_at, last_error_code, last_safe_error,
+       idempotency_key, created_at, updated_at)
+    SELECT 'media-upload:' || id,
+           added_by,
+           workspace_id,
+           session_id,
+           'media_asset',
+           id,
+           local_file_uri,
+           COALESCE(
+             private_storage_path,
+             workspace_id || '/' || session_id || '/' || id || '/' || sanitized_file_name
+           ),
+           'pending',
+           0,
+           NULL,
+           NULL,
+           NULL,
+           'upload:media_asset:' || id,
+           created_at,
+           updated_at
+      FROM local_media_assets
+     WHERE deleted_at IS NULL
+       AND local_file_uri IS NOT NULL
+       AND upload_status IN ('pending','local_only','failed')
+    ON CONFLICT(idempotency_key) DO UPDATE SET
+      local_file_uri = excluded.local_file_uri,
+      target_storage_path = excluded.target_storage_path,
+      queue_status = 'pending',
+      attempt_count = 0,
+      next_retry_at = NULL,
+      last_error_code = NULL,
+      last_safe_error = NULL,
+      updated_at = excluded.updated_at`,
+  `UPDATE local_timeline_events
+      SET local_sync_status = 'pending',
+          cloud_sync_status = 'pending',
+          last_sync_error_code = NULL,
+          last_sync_error_message = NULL
+    WHERE event_type IN ('image_added','video_added','document_added')
+      AND source_entity_type = 'media_asset'
+      AND source_entity_id IS NOT NULL
+      AND (local_sync_status <> 'synchronized'
+           OR cloud_sync_status <> 'synchronized')`,
+  `INSERT INTO local_metadata_sync_queue
+      (id, user_id, workspace_id, entity_type, entity_id, operation,
+       parent_entity_type, parent_entity_id, priority, queue_status,
+       attempt_count, next_retry_at, last_error_code, last_safe_error,
+       idempotency_key, created_at, updated_at)
+    SELECT 'timeline-upsert:' || id,
+           created_by,
+           workspace_id,
+           'timeline_event',
+           id,
+           'UPSERT',
+           'media_asset',
+           source_entity_id,
+           500,
+           'pending',
+           0,
+           NULL,
+           NULL,
+           NULL,
+           'upsert:timeline_event:' || id,
+           created_at,
+           created_at
+      FROM local_timeline_events
+     WHERE event_type IN ('image_added','video_added','document_added')
+       AND source_entity_type = 'media_asset'
+       AND source_entity_id IS NOT NULL
+       AND (local_sync_status <> 'synchronized'
+            OR cloud_sync_status <> 'synchronized')
+    ON CONFLICT(idempotency_key) DO UPDATE SET
+      parent_entity_type = excluded.parent_entity_type,
+      parent_entity_id = excluded.parent_entity_id,
+      priority = excluded.priority,
+      queue_status = 'pending',
+      attempt_count = 0,
+      next_retry_at = NULL,
+      last_error_code = NULL,
+      last_safe_error = NULL,
+      updated_at = excluded.updated_at`,
+];
+
 export const MIGRATIONS: readonly Migration[] = [
   {
     version: 1,
@@ -622,6 +731,15 @@ export const MIGRATIONS: readonly Migration[] = [
     description: "Recording metadata and private Storage upload queue.",
     up: async ({ db }) => {
       for (const stmt of v6Ddl) {
+        await db.execAsync(stmt);
+      }
+    },
+  },
+  {
+    version: 7,
+    description: "Media evidence metadata, private Storage upload, and timeline sync.",
+    up: async ({ db }) => {
+      for (const stmt of v7Ddl) {
         await db.execAsync(stmt);
       }
     },

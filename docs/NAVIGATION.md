@@ -39,3 +39,16 @@ Screens gated by feature flags (currently ALL false, therefore hidden):
 No non-functional menu is exposed for any of the above. When a flag becomes
 true, the corresponding route file will be added and the tab bar / menus
 adjusted accordingly.
+
+## Project context navigation
+
+Project and session navigation is bidirectional:
+
+```text
+Library project card -> Project Detail -> Session Detail
+Library session card -> Session Detail -> Project Detail
+```
+
+Session cards and Session Overview resolve project names from the stable
+`sessions.project_id -> projects.id` relationship. Project names are not copied
+into session rows.

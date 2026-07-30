@@ -53,13 +53,14 @@ export interface AudioRecorderAdapter {
 
   prepareToRecordAsync(options?: unknown): Promise<void>;
 
-  record(options?: unknown): void;
+  record(options?: unknown): void | Promise<void>;
 
   pause(): void;
 
   stop(): Promise<void>;
 
   getStatus?(): {
+    canRecord?: boolean;
     durationMillis?: number;
     isRecording?: boolean;
     metering?: number;
@@ -121,6 +122,14 @@ export const createRecordingController = (): RecordingController => {
   const listeners = new Set<
     (snapshot: RecordingSnapshot) => void
   >();
+
+  let startOperation: Promise<void> | null = null;
+  let resumeOperation: Promise<void> | null = null;
+
+  const sleep = (milliseconds: number): Promise<void> =>
+    new Promise((resolve) => {
+      setTimeout(resolve, milliseconds);
+    });
 
   const getRecorderStatus = () => {
     try {
@@ -221,7 +230,75 @@ export const createRecordingController = (): RecordingController => {
     }
   };
 
-  const start = async (): Promise<void> => {
+  const waitForRecorderStatus = async (
+    predicate: (status: ReturnType<typeof getRecorderStatus>) => boolean,
+    timeoutMs = 1000,
+  ): Promise<boolean> => {
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      if (predicate(getRecorderStatus())) {
+        return true;
+      }
+
+      await sleep(25);
+    }
+
+    return predicate(getRecorderStatus());
+  };
+
+  const activateRecorder = async (): Promise<void> => {
+    if (!recorder) {
+      throw new Error("Audio recorder is not ready");
+    }
+
+    const before = getRecorderStatus();
+
+    // A duplicate caller can arrive while the first native call has already
+    // started recording but before the JavaScript state transition is emitted.
+    if (before?.isRecording) {
+      return;
+    }
+
+    if (before?.canRecord === false) {
+      throw new Error("Audio recorder is not prepared");
+    }
+
+    const invokeRecord = async (): Promise<void> => {
+      await Promise.resolve(recorder?.record());
+    };
+
+    try {
+      await invokeRecord();
+    } catch (cause) {
+      // Android MediaRecorder can reject a start during a short native-state
+      // race. Never call record twice blindly: re-check the native state first
+      // and retry only once while the recorder is still prepared.
+      await sleep(75);
+
+      const afterFailure = getRecorderStatus();
+      if (afterFailure?.isRecording) {
+        return;
+      }
+
+      if (afterFailure?.canRecord !== true) {
+        throw cause;
+      }
+
+      await invokeRecord();
+    }
+
+    const recordingStarted = await waitForRecorderStatus(
+      (status) => status?.isRecording === true,
+      750,
+    );
+
+    if (!recordingStarted) {
+      throw new Error("Audio recorder did not enter the recording state");
+    }
+  };
+
+  const performStart = async (): Promise<void> => {
     if (!ExpoAudio || !recorder) {
       throw new AppError(
         ErrorCode.MICROPHONE_UNAVAILABLE,
@@ -270,7 +347,16 @@ export const createRecordingController = (): RecordingController => {
 
       await recorder.prepareToRecordAsync();
 
-      recorder.record();
+      const prepared = await waitForRecorderStatus(
+        (status) => status?.canRecord === true,
+        750,
+      );
+
+      if (!prepared) {
+        throw new Error("Audio recorder did not become ready");
+      }
+
+      await activateRecorder();
 
       tracker.reset();
       tracker.start();
@@ -285,12 +371,30 @@ export const createRecordingController = (): RecordingController => {
         message: String(cause),
       };
 
-      transition(RecordingEvent.PREPARE_FAILED);
+      if (state === RecordingState.PREPARING) {
+        transition(RecordingEvent.PREPARE_FAILED);
+      } else {
+        emit();
+      }
 
       throw new AppError(
         ErrorCode.RECORDING_PREPARE_FAILED,
         String(cause),
       );
+    }
+  };
+
+  const start = async (): Promise<void> => {
+    if (startOperation) {
+      return startOperation;
+    }
+
+    startOperation = performStart();
+
+    try {
+      await startOperation;
+    } finally {
+      startOperation = null;
     }
   };
 
@@ -322,7 +426,7 @@ export const createRecordingController = (): RecordingController => {
     }
   };
 
-  const resume = async (): Promise<void> => {
+  const performResume = async (): Promise<void> => {
     if (
       !recorder ||
       state !== RecordingState.PAUSED
@@ -331,7 +435,7 @@ export const createRecordingController = (): RecordingController => {
     }
 
     try {
-      recorder.record();
+      await activateRecorder();
       tracker.resume();
 
       transition(RecordingEvent.RESUME);
@@ -347,6 +451,20 @@ export const createRecordingController = (): RecordingController => {
         ErrorCode.RECORDING_RESUME_FAILED,
         String(cause),
       );
+    }
+  };
+
+  const resume = async (): Promise<void> => {
+    if (resumeOperation) {
+      return resumeOperation;
+    }
+
+    resumeOperation = performResume();
+
+    try {
+      await resumeOperation;
+    } finally {
+      resumeOperation = null;
     }
   };
 

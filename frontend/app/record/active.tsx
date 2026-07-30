@@ -2,9 +2,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
-import * as FileSystem from "expo-file-system/legacy";
-import * as Crypto from "expo-crypto";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal, Platform, Pressable, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 
 import { Button } from "@/src/components/Button";
@@ -26,7 +24,6 @@ import {
 import { listBookmarksForSession } from "@/src/services/sqlite/repository";
 import type { SessionRecord } from "@/src/services/sqlite/repository";
 import { SessionStatus, TimelineEventType } from "@/src/domain/enums";
-import { throwIfInvalid } from "@/src/services/files/validation";
 import { isDuplicateBookmark } from "@/src/services/session/duplicate-prevention";
 import { useRecordingStore } from "@/src/stores/recording-store";
 import { useAuthStore } from "@/src/stores/auth-store";
@@ -54,6 +51,7 @@ export default function ActiveRecording() {
   const [meter, setMeter] = useState<number | null>(null);
   const [bookmarkPending, setBookmarkPending] = useState(false);
   const [bookmarkFeedback, setBookmarkFeedback] = useState<string | null>(null);
+  const autoStartSessionIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     const unsub = bind();
@@ -116,9 +114,17 @@ export default function ActiveRecording() {
         snapshot.state === RecordingState.SAVED ||
         snapshot.state === RecordingState.FAILED;
 
-      // Auto-start a fresh recorder lifecycle for every new session. Terminal
-      // states belong to the previous session and are reset by controller.start().
-      if (s && canStartNewRecording) {
+      // Auto-start exactly once for each session. React development builds can
+      // run mount effects more than once; without this guard two concurrent
+      // calls can both reach the same native MediaRecorder and the second
+      // AudioRecorder.record() call is rejected with IllegalStateException.
+      if (
+        s &&
+        canStartNewRecording &&
+        autoStartSessionIdRef.current !== s.id
+      ) {
+        autoStartSessionIdRef.current = s.id;
+
         try {
           await controller.start();
           const started = await markSessionRecording(s);
@@ -131,6 +137,8 @@ export default function ActiveRecording() {
             created_by: userId,
           });
         } catch (e) {
+          // Allow an explicit retry after a failed native start.
+          autoStartSessionIdRef.current = null;
           setStatusMsg(String(e));
         }
       }
@@ -364,43 +372,38 @@ export default function ActiveRecording() {
     await ingestAsset({ uri: asset.uri, mime: asset.mimeType ?? "application/pdf", fileName: asset.name, size: asset.size ?? 0, kind: "document" });
   };
 
-  const ingestAsset = async (input: { uri: string; mime: string; fileName: string; size: number; kind: "image" | "video" | "document"; width?: number; height?: number; durationMs?: number }) => {
+  const ingestAsset = async (input: {
+    uri: string;
+    mime: string;
+    fileName: string;
+    size: number;
+    kind: "image" | "video" | "document";
+    width?: number;
+    height?: number;
+    durationMs?: number;
+  }) => {
     if (!session || !userId) {
       if (!userId) setStatusMsg(t("errors", "AUTH_SESSION_EXPIRED"));
       return;
     }
+
     try {
-      const validation = throwIfInvalid({
-        mimeType: input.mime,
-        fileName: input.fileName,
-        fileSize: input.size,
-        assetType: input.kind,
-      });
-      // Copy into app-controlled directory.
-      const dir = `${FileSystem.documentDirectory}sessions/${session.id}/assets/`;
-      await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
-      const localUri = `${dir}${await Crypto.randomUUID()}_${validation.sanitizedFileName}`;
-      try {
-        await FileSystem.copyAsync({ from: input.uri, to: localUri });
-      } catch {
-        // Some pickers already give us a stable local uri; keep original if copy fails.
-      }
       await addMediaAsset({
         session,
         addedBy: userId,
         assetType: input.kind,
         mimeType: input.mime,
         originalFileName: input.fileName,
-        sanitizedFileName: validation.sanitizedFileName,
-        localFileUri: localUri,
-        fileSize: input.size,
+        sourceFileUri: input.uri,
+        reportedFileSize: input.size,
         durationMs: input.durationMs ?? null,
         imageWidth: input.width ?? null,
         imageHeight: input.height ?? null,
         offsetMs: controller.getSnapshot().offsetMs,
       });
-    } catch (e) {
-      setStatusMsg(String(e));
+      setStatusMsg(null);
+    } catch (error) {
+      setStatusMsg(error instanceof Error ? error.message : String(error));
     }
   };
 

@@ -6,15 +6,17 @@ import { useAuthStore } from "@/src/stores/auth-store";
 
 import { subscribeMetadataSyncChanges } from "./project-sync-events";
 import { requestMetadataSync } from "./project-sync-worker";
+import { requestMediaUploadSync } from "./media-upload-worker";
 import { requestRecordingUploadSync } from "./recording-upload-worker";
 
 const requestAllSync = (): void => {
   requestMetadataSync();
   requestRecordingUploadSync();
+  requestMediaUploadSync();
 };
 
 /**
- * Starts the native metadata and recording-upload workers at lifecycle
+ * Starts the native metadata, recording-upload, and evidence-upload workers at lifecycle
  * boundaries that can make queued work eligible again. Web operations go
  * directly to Supabase and therefore do not use the local SQLite queues.
  */
@@ -61,6 +63,7 @@ export function ProjectSyncCoordinator() {
     return subscribeMetadataSyncChanges(() => {
       if (useAuthStore.getState().user?.id) {
         requestRecordingUploadSync();
+        requestMediaUploadSync();
       }
     });
   }, []);

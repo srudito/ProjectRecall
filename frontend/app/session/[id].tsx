@@ -5,12 +5,14 @@ import { ScrollView, Text, TouchableOpacity, View } from "react-native";
 import { Button } from "@/src/components/Button";
 import { Card } from "@/src/components/Card";
 import { Screen } from "@/src/components/Screen";
+import { SessionEvidenceAsset } from "@/src/components/SessionEvidenceAsset";
 import { SessionRecordingPanel } from "@/src/components/SessionRecordingPanel";
 import { useI18n } from "@/src/i18n/I18nProvider";
 import { TimelineEventType } from "@/src/domain/enums";
 import { sortTimeline } from "@/src/services/timeline/ordering";
 import {
   deleteSession,
+  fetchProject,
   fetchSession,
   getSessionBundle,
   retrySessionSync,
@@ -19,6 +21,7 @@ import type {
   BookmarkRecord,
   MediaAssetRecord,
   NoteRecord,
+  ProjectRecord,
   SessionRecord,
   TimelineEventRecord,
 } from "@/src/services/sqlite/repository";
@@ -82,6 +85,7 @@ export default function SessionDetail() {
   const { t } = useI18n();
   const { colors, spacing, typography } = useTheme();
   const [session, setSession] = useState<SessionRecord | null>(null);
+  const [project, setProject] = useState<ProjectRecord | null>(null);
   const [tab, setTab] = useState<"overview" | "timeline" | "evidence">("overview");
   const [timeline, setTimeline] = useState<CombinedTimeline[]>([]);
   const [notes, setNotes] = useState<NoteRecord[]>([]);
@@ -95,6 +99,12 @@ export default function SessionDetail() {
     const sessionId = String(id);
     const loadedSession = await fetchSession(sessionId);
     setSession(loadedSession);
+
+    if (loadedSession?.project_id) {
+      setProject(await fetchProject(loadedSession.project_id));
+    } else {
+      setProject(null);
+    }
 
     const bundle = await getSessionBundle(sessionId);
     setNotes(bundle.notes);
@@ -135,6 +145,21 @@ export default function SessionDetail() {
 
     router.replace("/(tabs)/library");
   };
+
+const onOpenProject = () => {
+  const projectId = session?.project_id;
+
+  if (!projectId) {
+    return;
+  }
+
+  router.push({
+    pathname: "/project/[id]",
+    params: {
+      id: projectId,
+    },
+  });
+};
 
   const onRetrySync = async () => {
     if (!session || retryingSync) return;
@@ -215,6 +240,32 @@ export default function SessionDetail() {
       {tab === "overview" ? (
         <>
           <Card testID="session-overview">
+          <Text style={[typography.caption, { color: colors.textTertiary }]}>
+            {t("session", "overview.project")}
+          </Text>
+          {session.project_id ? (
+            <TouchableOpacity
+              testID="session-project-link"
+              accessibilityRole="button"
+              onPress={onOpenProject}
+              style={{ paddingVertical: spacing.xxs }}
+            >
+              <Text style={[typography.bodyMedium, { color: colors.accent }]}>
+                {project?.name ??
+                  t("library", "library.projectContext.unknownProject")}
+              </Text>
+              {project?.status === "archived" ? (
+                <Text style={[typography.caption, { color: colors.textTertiary }]}>
+                  {t("library", "library.projectContext.archived")}
+                </Text>
+              ) : null}
+            </TouchableOpacity>
+          ) : (
+            <Text style={[typography.body, { color: colors.textPrimary }]}>
+              {t("library", "library.projectContext.noProject")}
+            </Text>
+          )}
+          <View style={{ height: spacing.md }} />
           <Text style={[typography.caption, { color: colors.textTertiary }]}>{t("session", "overview.duration")}</Text>
           <Text style={[typography.headline, { color: colors.textPrimary }]}>
             {formatDurationMs(session.total_recorded_duration_ms)}
@@ -303,13 +354,18 @@ export default function SessionDetail() {
             <Text style={[typography.caption, { color: colors.textTertiary }]}>{t("common", "status.empty")}</Text>
           ) : (
             <>
-              {assets.map((a) => (
-                <View key={a.id} style={{ paddingVertical: spacing.xs }}>
-                  <Text style={[typography.bodyMedium, { color: colors.textPrimary }]}>{a.original_file_name}</Text>
-                  <Text style={[typography.caption, { color: colors.textTertiary }]}>
-                    {a.asset_type} • {formatDurationMs(a.recording_offset_ms)}
-                  </Text>
-                </View>
+              {assets.map((asset) => (
+                <SessionEvidenceAsset
+                  key={asset.id}
+                  asset={asset}
+                  onUpdated={(updated) => {
+                    setAssets((current) =>
+                      current.map((item) =>
+                        item.id === updated.id ? updated : item,
+                      ),
+                    );
+                  }}
+                />
               ))}
               {notes.map((n) => (
                 <View key={n.id} style={{ paddingVertical: spacing.xs }}>

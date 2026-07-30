@@ -39,7 +39,23 @@
       "failed": "Sync failed"
     },
     "retrySync": "Retry synchronization",
-    "projectRetryFailed": "The project synchronization could not be restarted."
+    "projectRetryFailed": "The project synchronization could not be restarted.",
+    "projectContext": {
+      "sessionProject": "Project: {{name}}",
+      "noProject": "No project",
+      "unknownProject": "Unknown project",
+      "active": "Active",
+      "archived": "Archived"
+    },
+    "projectDetail": {
+      "status": "Status",
+      "description": "Description",
+      "noDescription": "No description",
+      "sessions": "Sessions in this project",
+      "sessionCount": "{{count}} sessions",
+      "empty": "No sessions belong to this project yet.",
+      "notFound": "Project not found"
+    }
   },
   "empty": {
     "sessions": "No sessions yet. Tap Record to capture your first one.",

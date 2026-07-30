@@ -111,6 +111,7 @@ const makeDependencies = (
     getLocalSession: jest.fn(async () => session),
     getLocalNote: jest.fn(async () => null),
     getLocalBookmark: jest.fn(async () => null),
+    getLocalMediaAsset: jest.fn(async () => null),
     getLocalTimelineEvent: jest.fn(async () => null),
     updateProjectStatus: jest.fn(async () => undefined),
     updateSessionStatus: jest.fn(async () => undefined),
