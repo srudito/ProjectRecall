@@ -65,5 +65,22 @@
       "failed": "Unggah gagal",
       "cancelled": "Unggah dibatalkan"
     }
+  },
+  "evidence": {
+    "open": "Buka dengan aman",
+    "openUnavailable": "File ini tidak dapat dibuka pada perangkat ini.",
+    "previewUnavailable": "Pratinjau aman sementara tidak tersedia. Buka kembali sesi untuk meminta tautan baru.",
+    "retry": "Coba lagi unggah bukti",
+    "status": {
+      "local_only": "Tersimpan di perangkat ini",
+      "pending": "Menunggu diunggah",
+      "uploading": "Sedang mengunggah",
+      "synchronized": "Tersimpan aman di cloud",
+      "failed": "Unggah gagal",
+      "cancelled": "Unggah dibatalkan"
+    },
+    "offlineUnavailable": "File ini belum tersedia di perangkat ini. Sambungkan internet lalu coba lagi.",
+    "viewerUnavailable": "Tidak ada aplikasi yang kompatibel untuk membuka file ini.",
+    "openFailed": "File ini tidak dapat dibuka. Silakan coba lagi."
   }
 }

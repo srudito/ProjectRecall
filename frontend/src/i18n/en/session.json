@@ -65,5 +65,22 @@
       "failed": "Upload failed",
       "cancelled": "Upload cancelled"
     }
+  },
+  "evidence": {
+    "open": "Open securely",
+    "openUnavailable": "This file cannot be opened on this device.",
+    "previewUnavailable": "A secure preview is temporarily unavailable. Reopen the session to request a new link.",
+    "retry": "Retry evidence upload",
+    "status": {
+      "local_only": "Saved on this device",
+      "pending": "Waiting to upload",
+      "uploading": "Uploading",
+      "synchronized": "Stored securely in the cloud",
+      "failed": "Upload failed",
+      "cancelled": "Upload cancelled"
+    },
+    "offlineUnavailable": "This file is not available on this device yet. Connect to the internet and try again.",
+    "viewerUnavailable": "No compatible application is installed to open this file.",
+    "openFailed": "This file could not be opened. Please try again."
   }
 }
