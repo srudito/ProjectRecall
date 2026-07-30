@@ -51,5 +51,19 @@
     "noteAdded": "Note",
     "bookmarkAdded": "Bookmark",
     "empty": "Timeline is empty."
+  },
+  "recording": {
+    "title": "Recording",
+    "empty": "No recording file is available for this session yet.",
+    "playbackUnavailable": "Playback is temporarily unavailable. Reopen the session to request a new secure link.",
+    "retry": "Retry recording upload",
+    "status": {
+      "local_only": "Saved on this device",
+      "pending": "Waiting to upload",
+      "uploading": "Uploading",
+      "synchronized": "Stored securely in the cloud",
+      "failed": "Upload failed",
+      "cancelled": "Upload cancelled"
+    }
   }
 }

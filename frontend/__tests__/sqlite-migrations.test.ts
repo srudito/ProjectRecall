@@ -102,8 +102,8 @@ describe("local SQLite migration runner", () => {
 
     const result = await runMigrations(db, MIGRATIONS);
 
-    expect(LATEST_LOCAL_SCHEMA_VERSION).toBe(5);
-    expect(result).toEqual({ appliedVersions: [3, 4, 5], finalVersion: 5 });
+    expect(LATEST_LOCAL_SCHEMA_VERSION).toBe(6);
+    expect(result).toEqual({ appliedVersions: [3, 4, 5, 6], finalVersion: 6 });
     expect(
       state.executed.some((sql) => sql.includes("upsert:project:")),
     ).toBe(true);
@@ -114,7 +114,7 @@ describe("local SQLite migration runner", () => {
 
     const result = await runMigrations(db, MIGRATIONS);
 
-    expect(result).toEqual({ appliedVersions: [4, 5], finalVersion: 5 });
+    expect(result).toEqual({ appliedVersions: [4, 5, 6], finalVersion: 6 });
     expect(
       state.executed.some((sql) =>
         sql.includes("ALTER TABLE local_sessions ADD COLUMN last_synced_at"),
@@ -133,7 +133,7 @@ describe("local SQLite migration runner", () => {
 
     const result = await runMigrations(db, MIGRATIONS);
 
-    expect(result).toEqual({ appliedVersions: [5], finalVersion: 5 });
+    expect(result).toEqual({ appliedVersions: [5, 6], finalVersion: 6 });
     expect(
       state.executed.some((sql) =>
         sql.includes("ALTER TABLE local_notes ADD COLUMN last_synced_at"),
@@ -150,6 +150,25 @@ describe("local SQLite migration runner", () => {
     ).toBe(true);
     expect(
       state.executed.some((sql) => sql.includes("recording_started")),
+    ).toBe(true);
+  });
+
+  it("adds durable recording upload support at version 6", async () => {
+    const { db, state } = createFakeDb(5);
+
+    const result = await runMigrations(db, MIGRATIONS);
+
+    expect(result).toEqual({ appliedVersions: [6], finalVersion: 6 });
+    expect(
+      state.executed.some((sql) =>
+        sql.includes("idx_recordings_session_unique"),
+      ),
+    ).toBe(true);
+    expect(
+      state.executed.some((sql) => sql.includes("upload:recording:")),
+    ).toBe(true);
+    expect(
+      state.executed.some((sql) => sql.includes("local_upload_queue")),
     ).toBe(true);
   });
 

@@ -522,6 +522,55 @@ const v5Ddl: readonly string[] = [
       updated_at = excluded.updated_at`,
 ];
 
+
+// Version 6: durable recording metadata and private Storage upload queue.
+const v6Ddl: readonly string[] = [
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_recordings_session_unique ON local_recordings(session_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_recordings_workspace_upload ON local_recordings(workspace_id, upload_status, updated_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_upload_queue_next ON local_upload_queue(queue_status, next_retry_at, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_upload_queue_entity ON local_upload_queue(source_entity_type, source_entity_id)`,
+  `UPDATE local_recordings
+      SET upload_status = 'pending',
+          upload_error_code = NULL,
+          upload_error_message = NULL
+    WHERE local_file_uri IS NOT NULL
+      AND upload_status IN ('local_only','failed')`,
+  `INSERT INTO local_upload_queue
+      (id, user_id, workspace_id, session_id, source_entity_type,
+       source_entity_id, local_file_uri, target_storage_path, queue_status,
+       attempt_count, next_retry_at, last_error_code, last_safe_error,
+       idempotency_key, created_at, updated_at)
+    SELECT 'recording-upload:' || r.id,
+           s.created_by,
+           r.workspace_id,
+           r.session_id,
+           'recording',
+           r.id,
+           r.local_file_uri,
+           r.workspace_id || '/' || r.session_id || '/' || r.id || '/' || r.original_file_name,
+           'pending',
+           0,
+           NULL,
+           NULL,
+           NULL,
+           'upload:recording:' || r.id,
+           r.created_at,
+           r.updated_at
+      FROM local_recordings r
+      JOIN local_sessions s ON s.id = r.session_id
+     WHERE r.local_file_uri IS NOT NULL
+       AND r.upload_status IN ('pending','local_only','failed')
+    ON CONFLICT(idempotency_key) DO UPDATE SET
+      local_file_uri = excluded.local_file_uri,
+      target_storage_path = excluded.target_storage_path,
+      queue_status = 'pending',
+      attempt_count = 0,
+      next_retry_at = NULL,
+      last_error_code = NULL,
+      last_safe_error = NULL,
+      updated_at = excluded.updated_at`,
+];
+
 export const MIGRATIONS: readonly Migration[] = [
   {
     version: 1,
@@ -564,6 +613,15 @@ export const MIGRATIONS: readonly Migration[] = [
     description: "Note, bookmark, and timeline synchronization.",
     up: async ({ db }) => {
       for (const stmt of v5Ddl) {
+        await db.execAsync(stmt);
+      }
+    },
+  },
+  {
+    version: 6,
+    description: "Recording metadata and private Storage upload queue.",
+    up: async ({ db }) => {
+      for (const stmt of v6Ddl) {
         await db.execAsync(stmt);
       }
     },

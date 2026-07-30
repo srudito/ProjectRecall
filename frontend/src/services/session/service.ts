@@ -1,8 +1,9 @@
-// Session service. Projects, sessions, notes, bookmarks, and supported timeline
-// events are local-first on native and remote-backed on web. Recording/media
-// metadata and binary files remain local-only until the Storage milestone.
+// Session service. Projects, sessions, notes, bookmarks, supported timeline
+// events, and primary recording files are local-first on native and
+// remote-backed on web. Evidence/media uploads are implemented separately.
 
 import * as Crypto from "expo-crypto";
+import * as FileSystem from "expo-file-system/legacy";
 import { Platform } from "react-native";
 
 import {
@@ -15,14 +16,18 @@ import {
   atomicCreateBookmarkWithTimelineSync,
   atomicCreateNoteWithTimelineSync,
   atomicCreateProjectWithSync,
+  atomicCreateRecordingWithUpload,
   atomicCreateTimelineEventWithSync,
   atomicRequeueProjectSync,
+  atomicRequeueRecordingUpload,
   atomicRequeueSessionSync,
   atomicUpsertSessionWithSync,
   deleteMetadataOperationsForEntity,
+  deleteUploadOperationsForEntity,
   getBookmark,
   getNote,
   getProject,
+  getRecordingForSession,
   getSession,
   getTimelineEvent,
   insertMediaAsset,
@@ -37,19 +42,31 @@ import {
   upsertBookmark,
   upsertNote,
   upsertProject,
+  upsertRecording,
   upsertSession,
   upsertTimelineEvent,
   type BookmarkRecord,
   type MediaAssetRecord,
   type NoteRecord,
   type ProjectRecord,
+  type RecordingRecord,
   type SessionRecord,
   type TimelineEventRecord,
+  type UploadQueueRow,
 } from "@/src/services/sqlite/repository";
+import { prepareStoppedRecordingFile } from "@/src/services/recording/file-persistence";
 import {
   fetchRemoteProjects,
   upsertRemoteProject,
 } from "@/src/services/supabase/project-repository";
+import {
+  fetchRemoteRecordingForSession,
+  upsertRemoteRecording,
+} from "@/src/services/supabase/recording-repository";
+import {
+  createSignedSessionAssetUrl,
+  uploadPrivateSessionAsset,
+} from "@/src/services/supabase/session-assets";
 import {
   fetchRemoteSession,
   fetchRemoteSessions,
@@ -65,6 +82,7 @@ import {
 } from "@/src/services/supabase/session-content-repository";
 import { notifyMetadataSyncChanges } from "@/src/services/sync/project-sync-events";
 import { requestMetadataSync } from "@/src/services/sync/project-sync-worker";
+import { requestRecordingUploadSync } from "@/src/services/sync/recording-upload-worker";
 import { buildIdempotencyKey } from "@/src/services/upload-queue/backoff";
 
 const generateId = () => Crypto.randomUUID();
@@ -588,6 +606,317 @@ export const fetchSession = async (
   } catch {
     return null;
   }
+};
+
+// --- Primary recording file -------------------------------------------------
+const recordingStoragePath = (
+  workspaceId: string,
+  sessionId: string,
+  recordingId: string,
+  fileName: string,
+): string => `${workspaceId}/${sessionId}/${recordingId}/${fileName}`;
+
+const recordingUploadQueueRow = (input: {
+  recording: RecordingRecord;
+  userId: string;
+}): UploadQueueRow => {
+  const now = nowIso();
+  const targetStoragePath =
+    input.recording.private_storage_path ??
+    recordingStoragePath(
+      input.recording.workspace_id,
+      input.recording.session_id,
+      input.recording.id,
+      input.recording.original_file_name,
+    );
+
+  return {
+    id: generateId(),
+    user_id: input.userId,
+    workspace_id: input.recording.workspace_id,
+    session_id: input.recording.session_id,
+    source_entity_type: "recording",
+    source_entity_id: input.recording.id,
+    local_file_uri: input.recording.local_file_uri ?? "",
+    target_storage_path: targetStoragePath,
+    queue_status: "pending",
+    attempt_count: 0,
+    next_retry_at: null,
+    last_error_code: null,
+    last_safe_error: null,
+    idempotency_key: buildIdempotencyKey([
+      "upload",
+      "recording",
+      input.recording.id,
+    ]),
+    created_at: now,
+    updated_at: now,
+  };
+};
+
+const recordingContentMatches = (
+  left: RecordingRecord,
+  right: RecordingRecord,
+): boolean =>
+  left.id === right.id &&
+  left.workspace_id === right.workspace_id &&
+  left.project_id === right.project_id &&
+  left.session_id === right.session_id &&
+  left.private_storage_path === right.private_storage_path &&
+  left.mime_type === right.mime_type &&
+  left.original_file_name === right.original_file_name &&
+  left.file_size === right.file_size &&
+  left.duration_ms === right.duration_ms &&
+  left.recording_format === right.recording_format &&
+  left.checksum_sha256 === right.checksum_sha256 &&
+  left.upload_status === right.upload_status;
+
+export const mergeRemoteRecordingIntoLocal = async (
+  remote: RecordingRecord,
+): Promise<boolean> => {
+  const local = await getRecordingForSession(remote.session_id);
+
+  if (!local) {
+    await upsertRecording(remote);
+    return true;
+  }
+
+  const remoteIsSynchronized = remote.upload_status === "synchronized";
+  const localHasPendingWrite =
+    local.upload_status === "pending" || local.upload_status === "uploading";
+
+  if (localHasPendingWrite && !remoteIsSynchronized) {
+    return false;
+  }
+
+  const merged: RecordingRecord = {
+    ...remote,
+    local_file_uri: local.local_file_uri ?? remote.local_file_uri,
+  };
+
+  const changed =
+    !recordingContentMatches(local, merged) ||
+    local.local_file_uri !== merged.local_file_uri ||
+    local.upload_error_code !== merged.upload_error_code ||
+    local.upload_error_message !== merged.upload_error_message;
+
+  if (!changed) return false;
+
+  await upsertRecording(merged);
+  if (remoteIsSynchronized) {
+    await deleteUploadOperationsForEntity("recording", remote.id);
+  }
+  return true;
+};
+
+export interface SaveStoppedRecordingInput {
+  session: SessionRecord;
+  createdBy: string;
+  sourceFileUri: string;
+  durationMs: number;
+  reportedFileSize: number;
+}
+
+/**
+ * Persist the recorder output and enqueue its private Storage upload. Native
+ * copies the cache output to the application document directory first. Web
+ * uploads immediately because blob URLs do not survive a page reload.
+ */
+export const saveStoppedRecording = async (
+  input: SaveStoppedRecordingInput,
+): Promise<RecordingRecord> => {
+  requireUuid(input.session.id, "sessionId");
+  requireUuid(input.session.workspace_id, "workspaceId");
+  requireUuid(input.createdBy, "createdBy");
+
+  const existing = await getRecordingForSession(input.session.id);
+  const recordingId = existing?.id ?? generateId();
+  const prepared = await prepareStoppedRecordingFile({
+    recordingId,
+    sessionId: input.session.id,
+    sourceUri: input.sourceFileUri,
+    reportedFileSize: input.reportedFileSize,
+  });
+  const now = nowIso();
+  const path = recordingStoragePath(
+    input.session.workspace_id,
+    input.session.id,
+    recordingId,
+    prepared.originalFileName,
+  );
+
+  const recording: RecordingRecord = {
+    id: recordingId,
+    workspace_id: input.session.workspace_id,
+    project_id: input.session.project_id,
+    session_id: input.session.id,
+    local_file_uri: prepared.localFileUri,
+    private_storage_path: path,
+    mime_type: prepared.mimeType,
+    original_file_name: prepared.originalFileName,
+    file_size: prepared.fileSize,
+    duration_ms: Math.max(0, Math.round(input.durationMs)),
+    recording_format: prepared.recordingFormat,
+    checksum_sha256: null,
+    upload_status: Platform.OS === "web" ? "uploading" : "pending",
+    upload_error_code: null,
+    upload_error_message: null,
+    created_at: existing?.created_at ?? now,
+    updated_at: now,
+  };
+
+  if (Platform.OS === "web") {
+    let uploading = await upsertRemoteRecording(recording);
+    try {
+      await uploadPrivateSessionAsset({
+        path,
+        fileUri: prepared.localFileUri,
+        mimeType: prepared.mimeType,
+      });
+      uploading = await upsertRemoteRecording({
+        ...uploading,
+        private_storage_path: path,
+        upload_status: "synchronized",
+        upload_error_code: null,
+        upload_error_message: null,
+        updated_at: nowIso(),
+      });
+      notifyMetadataSyncChanges();
+      return uploading;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      void upsertRemoteRecording({
+        ...uploading,
+        upload_status: "failed",
+        upload_error_code: "UPLOAD_FAILED",
+        upload_error_message: message,
+        updated_at: nowIso(),
+      }).catch(() => {});
+      throw error;
+    }
+  }
+
+  const queueRow = recordingUploadQueueRow({
+    recording,
+    userId: input.createdBy,
+  });
+  await atomicCreateRecordingWithUpload({ recording, upload: queueRow });
+  notifyMetadataSyncChanges();
+  requestRecordingUploadSync();
+  return recording;
+};
+
+const refreshNativeRecordingFromCloud = async (
+  sessionId: string,
+): Promise<void> => {
+  try {
+    const remote = await fetchRemoteRecordingForSession(sessionId);
+    if (!remote) return;
+    const changed = await mergeRemoteRecordingIntoLocal(remote);
+    if (changed) notifyMetadataSyncChanges();
+  } finally {
+    requestRecordingUploadSync();
+  }
+};
+
+export const fetchRecordingForSession = async (
+  sessionId: string,
+): Promise<RecordingRecord | null> => {
+  requireUuid(sessionId, "sessionId");
+
+  if (Platform.OS === "web") {
+    return fetchRemoteRecordingForSession(sessionId);
+  }
+
+  const local = await getRecordingForSession(sessionId);
+  if (local) {
+    void refreshNativeRecordingFromCloud(sessionId).catch(() => {
+      requestRecordingUploadSync();
+    });
+    return local;
+  }
+
+  try {
+    const remote = await fetchRemoteRecordingForSession(sessionId);
+    if (!remote) return null;
+    await upsertRecording(remote);
+    return remote;
+  } catch {
+    return null;
+  }
+};
+
+export const resolveRecordingPlaybackUri = async (
+  recording: RecordingRecord,
+): Promise<string | null> => {
+  if (Platform.OS !== "web" && recording.local_file_uri) {
+    try {
+      const info = await FileSystem.getInfoAsync(recording.local_file_uri);
+      if (info.exists) return recording.local_file_uri;
+    } catch {
+      // Fall back to a signed cloud URL below.
+    }
+  }
+
+  if (!recording.private_storage_path) return null;
+  return createSignedSessionAssetUrl({
+    path: recording.private_storage_path,
+  });
+};
+
+export const retryRecordingUpload = async (input: {
+  recording: RecordingRecord;
+  userId: string;
+}): Promise<RecordingRecord> => {
+  requireUuid(input.recording.id, "recordingId");
+  requireUuid(input.recording.workspace_id, "workspaceId");
+  requireUuid(input.recording.session_id, "sessionId");
+  requireUuid(input.userId, "userId");
+
+  const localFileUri = input.recording.local_file_uri;
+  if (!localFileUri) {
+    throw new Error("The local recording file is no longer available.");
+  }
+
+  const pending: RecordingRecord = {
+    ...input.recording,
+    upload_status: "pending",
+    upload_error_code: null,
+    upload_error_message: null,
+    updated_at: nowIso(),
+  };
+
+  if (Platform.OS === "web") {
+    await uploadPrivateSessionAsset({
+      path:
+        pending.private_storage_path ??
+        recordingStoragePath(
+          pending.workspace_id,
+          pending.session_id,
+          pending.id,
+          pending.original_file_name,
+        ),
+      fileUri: localFileUri,
+      mimeType: pending.mime_type,
+    });
+    return upsertRemoteRecording({
+      ...pending,
+      upload_status: "synchronized",
+      updated_at: nowIso(),
+    });
+  }
+
+  const upload = recordingUploadQueueRow({
+    recording: pending,
+    userId: input.userId,
+  });
+  await atomicRequeueRecordingUpload({
+    recordingId: pending.id,
+    upload,
+  });
+  notifyMetadataSyncChanges();
+  requestRecordingUploadSync();
+  return pending;
 };
 
 // --- Notes / Bookmarks / Media --------------------------------------------

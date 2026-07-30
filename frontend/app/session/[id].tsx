@@ -5,6 +5,7 @@ import { ScrollView, Text, TouchableOpacity, View } from "react-native";
 import { Button } from "@/src/components/Button";
 import { Card } from "@/src/components/Card";
 import { Screen } from "@/src/components/Screen";
+import { SessionRecordingPanel } from "@/src/components/SessionRecordingPanel";
 import { useI18n } from "@/src/i18n/I18nProvider";
 import { TimelineEventType } from "@/src/domain/enums";
 import { sortTimeline } from "@/src/services/timeline/ordering";
@@ -212,7 +213,8 @@ export default function SessionDetail() {
       <Text style={[typography.title, { color: colors.textPrimary, marginBottom: spacing.md }]}>{session.title}</Text>
       {renderTabs()}
       {tab === "overview" ? (
-        <Card testID="session-overview">
+        <>
+          <Card testID="session-overview">
           <Text style={[typography.caption, { color: colors.textTertiary }]}>{t("session", "overview.duration")}</Text>
           <Text style={[typography.headline, { color: colors.textPrimary }]}>
             {formatDurationMs(session.total_recorded_duration_ms)}
@@ -261,7 +263,9 @@ export default function SessionDetail() {
               style={{ marginTop: spacing.xs }}
             />
           ) : null}
-        </Card>
+          </Card>
+          <SessionRecordingPanel session={session} />
+        </>
       ) : null}
 
       {tab === "timeline" ? (

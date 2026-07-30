@@ -51,5 +51,19 @@
     "noteAdded": "Catatan",
     "bookmarkAdded": "Penanda",
     "empty": "Linimasa masih kosong."
+  },
+  "recording": {
+    "title": "Rekaman",
+    "empty": "Belum ada file rekaman untuk sesi ini.",
+    "playbackUnavailable": "Pemutaran sementara tidak tersedia. Buka kembali sesi untuk meminta tautan aman baru.",
+    "retry": "Coba unggah rekaman lagi",
+    "status": {
+      "local_only": "Tersimpan di perangkat ini",
+      "pending": "Menunggu diunggah",
+      "uploading": "Sedang mengunggah",
+      "synchronized": "Tersimpan aman di cloud",
+      "failed": "Unggah gagal",
+      "cancelled": "Unggah dibatalkan"
+    }
   }
 }

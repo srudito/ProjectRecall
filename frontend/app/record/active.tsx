@@ -20,6 +20,7 @@ import {
   markSessionRecording,
   markSessionStopped,
   recordTimelineEvent,
+  saveStoppedRecording,
   setSessionStatus,
 } from "@/src/services/session/service";
 import { listBookmarksForSession } from "@/src/services/sqlite/repository";
@@ -185,16 +186,50 @@ export default function ActiveRecording() {
     }
     try {
       const result = await controller.stop();
-      const finalOffset = result?.durationMs ?? controller.getSnapshot().offsetMs;
+      if (!result) {
+        throw new Error("The recording file was not created.");
+      }
+
+      const finalOffset = result.durationMs;
       const stopped = await markSessionStopped(session, finalOffset);
-      await recordTimelineEvent(stopped, {
-        event_type: TimelineEventType.RECORDING_STOPPED,
-        source_entity_type: "recording",
-        source_entity_id: null,
-        recording_offset_ms: finalOffset,
-        created_by: userId,
+      setSession(stopped);
+
+      let recordingId: string | null = null;
+      let recordingError: unknown = null;
+
+      try {
+        const recording = await saveStoppedRecording({
+          session: stopped,
+          createdBy: userId,
+          sourceFileUri: result.fileUri,
+          durationMs: result.durationMs,
+          reportedFileSize: result.fileSize,
+        });
+        recordingId = recording.id;
+      } catch (error) {
+        recordingError = error;
+      }
+
+      try {
+        // The microphone has already stopped, so preserve the session lifecycle
+        // even if durable file persistence or cloud upload initialization fails.
+        await recordTimelineEvent(stopped, {
+          event_type: TimelineEventType.RECORDING_STOPPED,
+          source_entity_type: recordingId ? "recording" : null,
+          source_entity_id: recordingId,
+          recording_offset_ms: finalOffset,
+          created_by: userId,
+        });
+      } catch (timelineError) {
+        if (!recordingError) throw timelineError;
+      }
+
+      if (recordingError) throw recordingError;
+
+      router.replace({
+        pathname: "/record/review",
+        params: { sessionId: stopped.id },
       });
-      router.replace({ pathname: "/record/review", params: { sessionId: stopped.id } });
     } catch (e) {
       setStatusMsg(String(e));
     }

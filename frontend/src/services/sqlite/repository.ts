@@ -834,6 +834,169 @@ export const updateTimelineEventSyncStatus = (
   patch: ContentSyncStatusUpdate,
 ): Promise<void> => updateContentSyncStatus("local_timeline_events", id, patch);
 
+
+// ============================================================================
+// Recording metadata and binary upload queue
+// ============================================================================
+
+export interface RecordingRecord {
+  id: string;
+  workspace_id: string;
+  project_id: string | null;
+  session_id: string;
+  local_file_uri: string | null;
+  private_storage_path: string | null;
+  mime_type: string;
+  original_file_name: string;
+  file_size: number;
+  duration_ms: number;
+  recording_format: string;
+  checksum_sha256: string | null;
+  upload_status: string;
+  upload_error_code: string | null;
+  upload_error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+const RECORDING_COLUMNS = `id, workspace_id, project_id, session_id,
+  local_file_uri, private_storage_path, mime_type, original_file_name,
+  file_size, duration_ms, recording_format, checksum_sha256, upload_status,
+  upload_error_code, upload_error_message, created_at, updated_at`;
+
+const upsertRecordingOnDb = async (
+  db: SQLite.SQLiteDatabase,
+  record: RecordingRecord,
+): Promise<void> => {
+  await db.runAsync(
+    `INSERT INTO local_recordings
+      (id, workspace_id, project_id, session_id, local_file_uri,
+       private_storage_path, mime_type, original_file_name, file_size,
+       duration_ms, recording_format, checksum_sha256, upload_status,
+       upload_error_code, upload_error_message, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(session_id) DO UPDATE SET
+       id = excluded.id,
+       workspace_id = excluded.workspace_id,
+       project_id = excluded.project_id,
+       local_file_uri = COALESCE(excluded.local_file_uri, local_recordings.local_file_uri),
+       private_storage_path = excluded.private_storage_path,
+       mime_type = excluded.mime_type,
+       original_file_name = excluded.original_file_name,
+       file_size = excluded.file_size,
+       duration_ms = excluded.duration_ms,
+       recording_format = excluded.recording_format,
+       checksum_sha256 = excluded.checksum_sha256,
+       upload_status = excluded.upload_status,
+       upload_error_code = excluded.upload_error_code,
+       upload_error_message = excluded.upload_error_message,
+       updated_at = excluded.updated_at`,
+    [
+      record.id,
+      record.workspace_id,
+      record.project_id,
+      record.session_id,
+      record.local_file_uri,
+      record.private_storage_path,
+      record.mime_type,
+      record.original_file_name,
+      record.file_size,
+      record.duration_ms,
+      record.recording_format,
+      record.checksum_sha256,
+      record.upload_status,
+      record.upload_error_code,
+      record.upload_error_message,
+      record.created_at,
+      record.updated_at,
+    ],
+  );
+};
+
+export const upsertRecording = async (
+  record: RecordingRecord,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  await upsertRecordingOnDb(db, record);
+};
+
+export const getRecording = async (
+  id: string,
+): Promise<RecordingRecord | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+  return (await db.getFirstAsync(
+    `SELECT ${RECORDING_COLUMNS} FROM local_recordings WHERE id = ?`,
+    [id],
+  )) as RecordingRecord | null;
+};
+
+export const getRecordingForSession = async (
+  sessionId: string,
+): Promise<RecordingRecord | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+  return (await db.getFirstAsync(
+    `SELECT ${RECORDING_COLUMNS}
+       FROM local_recordings
+      WHERE session_id = ?
+      LIMIT 1`,
+    [sessionId],
+  )) as RecordingRecord | null;
+};
+
+export const listRecordingsForWorkspace = async (
+  workspaceId: string,
+): Promise<RecordingRecord[]> => {
+  const db = await openLocalDb();
+  if (!db) return [];
+  return (await db.getAllAsync(
+    `SELECT ${RECORDING_COLUMNS}
+       FROM local_recordings
+      WHERE workspace_id = ?
+      ORDER BY updated_at DESC`,
+    [workspaceId],
+  )) as RecordingRecord[];
+};
+
+export interface RecordingUploadStatusUpdate {
+  local_file_uri?: string | null;
+  private_storage_path?: string | null;
+  file_size?: number;
+  upload_status?: string;
+  upload_error_code?: string | null;
+  upload_error_message?: string | null;
+}
+
+export const updateRecordingUploadStatus = async (
+  id: string,
+  patch: RecordingUploadStatusUpdate,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+
+  const allowedKeys: (keyof RecordingUploadStatusUpdate)[] = [
+    "local_file_uri",
+    "private_storage_path",
+    "file_size",
+    "upload_status",
+    "upload_error_code",
+    "upload_error_message",
+  ];
+  const entries = allowedKeys
+    .filter((key) => Object.prototype.hasOwnProperty.call(patch, key))
+    .map((key) => ({ key, value: patch[key] ?? null }));
+  if (entries.length === 0) return;
+
+  const setSql = entries.map(({ key }) => `${key} = ?`).join(", ");
+  const values = entries.map(({ value }) => value as string | number | null);
+  await db.runAsync(
+    `UPDATE local_recordings SET ${setSql}, updated_at = ? WHERE id = ?`,
+    [...values, nowIso(), id],
+  );
+};
+
 export interface MediaAssetRecord {
   id: string;
   workspace_id: string;
@@ -906,6 +1069,12 @@ export const listMediaAssetsForSession = async (sessionId: string): Promise<Medi
   return rows;
 };
 
+export type UploadQueueStatus =
+  | "pending"
+  | "in_progress"
+  | "failed"
+  | "cancelled";
+
 export interface UploadQueueRow {
   id: string;
   user_id: string;
@@ -915,7 +1084,7 @@ export interface UploadQueueRow {
   source_entity_id: string;
   local_file_uri: string;
   target_storage_path: string;
-  queue_status: string;
+  queue_status: UploadQueueStatus;
   attempt_count: number;
   next_retry_at: string | null;
   last_error_code: string | null;
@@ -925,67 +1094,353 @@ export interface UploadQueueRow {
   updated_at: string;
 }
 
-export const enqueueUpload = async (r: UploadQueueRow): Promise<void> => {
+export const enqueueUpload = async (row: UploadQueueRow): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
   await db.runAsync(
-    `INSERT OR IGNORE INTO local_upload_queue
+    `INSERT INTO local_upload_queue
       (id, user_id, workspace_id, session_id, source_entity_type, source_entity_id,
        local_file_uri, target_storage_path, queue_status, attempt_count, next_retry_at,
        last_error_code, last_safe_error, idempotency_key, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(idempotency_key) DO UPDATE SET
+       user_id = excluded.user_id,
+       workspace_id = excluded.workspace_id,
+       session_id = excluded.session_id,
+       source_entity_type = excluded.source_entity_type,
+       source_entity_id = excluded.source_entity_id,
+       local_file_uri = excluded.local_file_uri,
+       target_storage_path = excluded.target_storage_path,
+       queue_status = 'pending',
+       attempt_count = 0,
+       next_retry_at = NULL,
+       last_error_code = NULL,
+       last_safe_error = NULL,
+       updated_at = excluded.updated_at`,
     [
-      r.id,
-      r.user_id,
-      r.workspace_id,
-      r.session_id,
-      r.source_entity_type,
-      r.source_entity_id,
-      r.local_file_uri,
-      r.target_storage_path,
-      r.queue_status,
-      r.attempt_count,
-      r.next_retry_at,
-      r.last_error_code,
-      r.last_safe_error,
-      r.idempotency_key,
-      r.created_at,
-      r.updated_at,
+      row.id,
+      row.user_id,
+      row.workspace_id,
+      row.session_id,
+      row.source_entity_type,
+      row.source_entity_id,
+      row.local_file_uri,
+      row.target_storage_path,
+      row.queue_status,
+      row.attempt_count,
+      row.next_retry_at,
+      row.last_error_code,
+      row.last_safe_error,
+      row.idempotency_key,
+      row.created_at,
+      row.updated_at,
     ],
   );
 };
 
-export const listQueueByStatus = async (status: string): Promise<UploadQueueRow[]> => {
+export const listQueueByStatus = async (
+  status: UploadQueueStatus,
+): Promise<UploadQueueRow[]> => {
   const db = await openLocalDb();
   if (!db) return [];
-  const rows = (await db.getAllAsync(
-    `SELECT * FROM local_upload_queue WHERE queue_status = ? ORDER BY created_at ASC`,
+  return (await db.getAllAsync(
+    `SELECT * FROM local_upload_queue
+      WHERE queue_status = ?
+      ORDER BY created_at ASC`,
     [status],
   )) as UploadQueueRow[];
-  return rows;
 };
 
 export const listAllQueue = async (): Promise<UploadQueueRow[]> => {
   const db = await openLocalDb();
   if (!db) return [];
-  const rows = (await db.getAllAsync(`SELECT * FROM local_upload_queue ORDER BY created_at ASC`)) as UploadQueueRow[];
-  return rows;
+  return (await db.getAllAsync(
+    `SELECT * FROM local_upload_queue ORDER BY created_at ASC`,
+  )) as UploadQueueRow[];
 };
 
-export const updateQueueRecord = async (
+export const getNextEligibleUploadOperation = async (
+  userId: string,
+  now: string,
+  sourceEntityType?: string,
+): Promise<UploadQueueRow | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+
+  if (sourceEntityType) {
+    return (await db.getFirstAsync(
+      `SELECT *
+         FROM local_upload_queue
+        WHERE user_id = ?
+          AND source_entity_type = ?
+          AND queue_status = 'pending'
+          AND (next_retry_at IS NULL OR next_retry_at <= ?)
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1`,
+      [userId, sourceEntityType, now],
+    )) as UploadQueueRow | null;
+  }
+
+  return (await db.getFirstAsync(
+    `SELECT *
+       FROM local_upload_queue
+      WHERE user_id = ?
+        AND queue_status = 'pending'
+        AND (next_retry_at IS NULL OR next_retry_at <= ?)
+      ORDER BY created_at ASC, id ASC
+      LIMIT 1`,
+    [userId, now],
+  )) as UploadQueueRow | null;
+};
+
+export const claimUploadOperation = async (
   id: string,
-  updates: Partial<Pick<UploadQueueRow, "queue_status" | "attempt_count" | "next_retry_at" | "last_error_code" | "last_safe_error">>,
+): Promise<UploadQueueRow | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+  const now = nowIso();
+  const result = await db.runAsync(
+    `UPDATE local_upload_queue
+        SET queue_status = 'in_progress',
+            attempt_count = attempt_count + 1,
+            updated_at = ?
+      WHERE id = ? AND queue_status = 'pending'`,
+    [now, id],
+  );
+  if (result.changes !== 1) return null;
+  return (await db.getFirstAsync(
+    `SELECT * FROM local_upload_queue WHERE id = ?`,
+    [id],
+  )) as UploadQueueRow | null;
+};
+
+export const rescheduleUploadOperation = async (
+  id: string,
+  nextRetryAt: string,
+  errorCode: string,
+  safeError: string,
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  const keys = Object.keys(updates);
-  if (keys.length === 0) return;
-  const setSql = keys.map((k) => `${k} = ?`).join(", ");
-  const values = keys.map((k) => (updates as any)[k]);
   await db.runAsync(
-    `UPDATE local_upload_queue SET ${setSql}, updated_at = ? WHERE id = ?`,
-    [...values, nowIso(), id],
+    `UPDATE local_upload_queue
+        SET queue_status = 'pending',
+            next_retry_at = ?,
+            last_error_code = ?,
+            last_safe_error = ?,
+            updated_at = ?
+      WHERE id = ?`,
+    [nextRetryAt, errorCode, safeError, nowIso(), id],
   );
+};
+
+export const markUploadOperationFailed = async (
+  id: string,
+  errorCode: string,
+  safeError: string,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  await db.runAsync(
+    `UPDATE local_upload_queue
+        SET queue_status = 'failed',
+            next_retry_at = NULL,
+            last_error_code = ?,
+            last_safe_error = ?,
+            updated_at = ?
+      WHERE id = ?`,
+    [errorCode, safeError, nowIso(), id],
+  );
+};
+
+export const deleteCompletedUploadOperation = async (
+  id: string,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  await db.runAsync(`DELETE FROM local_upload_queue WHERE id = ?`, [id]);
+};
+
+export const deleteUploadOperationsForEntity = async (
+  sourceEntityType: string,
+  sourceEntityId: string,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  await db.runAsync(
+    `DELETE FROM local_upload_queue
+      WHERE source_entity_type = ? AND source_entity_id = ?`,
+    [sourceEntityType, sourceEntityId],
+  );
+};
+
+export const resetInProgressUploadOperations = async (
+  userId: string,
+  sourceEntityType?: string,
+): Promise<number> => {
+  const db = await openLocalDb();
+  if (!db) return 0;
+
+  if (sourceEntityType) {
+    const result = await db.runAsync(
+      `UPDATE local_upload_queue
+          SET queue_status = 'pending',
+              next_retry_at = NULL,
+              updated_at = ?
+        WHERE user_id = ?
+          AND source_entity_type = ?
+          AND queue_status = 'in_progress'`,
+      [nowIso(), userId, sourceEntityType],
+    );
+    return result.changes;
+  }
+
+  const result = await db.runAsync(
+    `UPDATE local_upload_queue
+        SET queue_status = 'pending',
+            next_retry_at = NULL,
+            updated_at = ?
+      WHERE user_id = ?
+        AND queue_status = 'in_progress'`,
+    [nowIso(), userId],
+  );
+  return result.changes;
+};
+
+export const requeueUploadOperationForEntity = async (
+  sourceEntityType: string,
+  sourceEntityId: string,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  await db.runAsync(
+    `UPDATE local_upload_queue
+        SET queue_status = 'pending',
+            attempt_count = 0,
+            next_retry_at = NULL,
+            last_error_code = NULL,
+            last_safe_error = NULL,
+            updated_at = ?
+      WHERE source_entity_type = ? AND source_entity_id = ?`,
+    [nowIso(), sourceEntityType, sourceEntityId],
+  );
+};
+
+export const countPendingUploads = async (): Promise<number> => {
+  const db = await openLocalDb();
+  if (!db) return 0;
+  const row = (await db.getFirstAsync(
+    `SELECT COUNT(*) AS n
+       FROM local_upload_queue
+      WHERE queue_status IN ('pending','in_progress')`,
+  )) as { n: number } | null;
+  return row?.n ?? 0;
+};
+
+export interface AtomicCreateRecordingWithUploadInput {
+  recording: RecordingRecord;
+  upload: UploadQueueRow;
+}
+
+export const atomicCreateRecordingWithUpload = async (
+  input: AtomicCreateRecordingWithUploadInput,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  await db.withTransactionAsync(async () => {
+    await upsertRecordingOnDb(db, input.recording);
+    const row = input.upload;
+    await db.runAsync(
+      `INSERT INTO local_upload_queue
+        (id, user_id, workspace_id, session_id, source_entity_type,
+         source_entity_id, local_file_uri, target_storage_path, queue_status,
+         attempt_count, next_retry_at, last_error_code, last_safe_error,
+         idempotency_key, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(idempotency_key) DO UPDATE SET
+         user_id = excluded.user_id,
+         workspace_id = excluded.workspace_id,
+         session_id = excluded.session_id,
+         source_entity_type = excluded.source_entity_type,
+         source_entity_id = excluded.source_entity_id,
+         local_file_uri = excluded.local_file_uri,
+         target_storage_path = excluded.target_storage_path,
+         queue_status = 'pending',
+         attempt_count = 0,
+         next_retry_at = NULL,
+         last_error_code = NULL,
+         last_safe_error = NULL,
+         updated_at = excluded.updated_at`,
+      [
+        row.id,
+        row.user_id,
+        row.workspace_id,
+        row.session_id,
+        row.source_entity_type,
+        row.source_entity_id,
+        row.local_file_uri,
+        row.target_storage_path,
+        row.queue_status,
+        row.attempt_count,
+        row.next_retry_at,
+        row.last_error_code,
+        row.last_safe_error,
+        row.idempotency_key,
+        row.created_at,
+        row.updated_at,
+      ],
+    );
+  });
+};
+
+export const atomicRequeueRecordingUpload = async (input: {
+  recordingId: string;
+  upload: UploadQueueRow;
+}): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(
+      `UPDATE local_recordings
+          SET upload_status = 'pending',
+              upload_error_code = NULL,
+              upload_error_message = NULL,
+              updated_at = ?
+        WHERE id = ?`,
+      [nowIso(), input.recordingId],
+    );
+    const row = input.upload;
+    await db.runAsync(
+      `INSERT INTO local_upload_queue
+        (id, user_id, workspace_id, session_id, source_entity_type,
+         source_entity_id, local_file_uri, target_storage_path, queue_status,
+         attempt_count, next_retry_at, last_error_code, last_safe_error,
+         idempotency_key, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, NULL, NULL, NULL, ?, ?, ?)
+       ON CONFLICT(idempotency_key) DO UPDATE SET
+         local_file_uri = excluded.local_file_uri,
+         target_storage_path = excluded.target_storage_path,
+         queue_status = 'pending',
+         attempt_count = 0,
+         next_retry_at = NULL,
+         last_error_code = NULL,
+         last_safe_error = NULL,
+         updated_at = excluded.updated_at`,
+      [
+        row.id,
+        row.user_id,
+        row.workspace_id,
+        row.session_id,
+        row.source_entity_type,
+        row.source_entity_id,
+        row.local_file_uri,
+        row.target_storage_path,
+        row.idempotency_key,
+        row.created_at,
+        row.updated_at,
+      ],
+    );
+  });
 };
 
 export const setPreference = async (key: string, value: unknown): Promise<void> => {

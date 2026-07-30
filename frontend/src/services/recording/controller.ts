@@ -265,6 +265,7 @@ export const createRecordingController = (): RecordingController => {
       await ExpoAudio.setAudioModeAsync({
         allowsRecording: true,
         playsInSilentMode: true,
+        allowsBackgroundRecording: true,
       });
 
       await recorder.prepareToRecordAsync();

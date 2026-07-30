@@ -60,7 +60,8 @@
       [
         "expo-audio",
         {
-          "microphonePermission": "Record audio when you tap Record."
+          "microphonePermission": "Record audio when you tap Record.",
+          "enableBackgroundRecording": true
         }
       ],
       "expo-sqlite",

@@ -58,3 +58,25 @@ Milestone 1 stores `checksum_sha256 = NULL` on both recordings and media assets
 because computing a checksum by loading a large file entirely into JS memory is
 unsafe. A follow-up milestone will stream the file through a native hash while
 uploading.
+
+## Durable recording file and cloud playback
+
+After Stop, native builds copy the recorder output into the app document
+folder before the original cache URI can be purged. One local recording row and
+one upload operation are committed atomically. The audio remains playable from
+the local URI while upload is pending.
+
+The synchronized object is stored in private bucket `session-assets` under:
+
+```text
+{workspace_id}/{session_id}/{recording_id}/{file_name}
+```
+
+The cloud `recordings.local_file_uri` value is always `NULL`. Session Detail
+uses a native local file when present and otherwise requests a short-lived
+signed URL. This permits playback after reinstall without making recordings
+public.
+
+Upload progress is currently represented by honest state labels rather than a
+fabricated percentage. See `RECORDING_STORAGE_SYNC_V1_TEST.md` for online,
+offline, reinstall, retry, and RLS checks.

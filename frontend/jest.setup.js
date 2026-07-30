@@ -17,14 +17,20 @@ jest.mock("expo-sqlite", () => ({
   })),
 }));
 
-jest.mock("expo-file-system", () => ({
-  documentDirectory: "/tmp/",
+const mockFileSystem = {
+  cacheDirectory: "/tmp/cache/",
+  documentDirectory: "/tmp/documents/",
   getInfoAsync: jest.fn(async () => ({ exists: true, size: 0 })),
   copyAsync: jest.fn(async () => undefined),
   deleteAsync: jest.fn(async () => undefined),
   makeDirectoryAsync: jest.fn(async () => undefined),
+  uploadAsync: jest.fn(async () => ({ status: 200, body: "{}", headers: {} })),
+  FileSystemUploadType: { BINARY_CONTENT: 0, MULTIPART: 1 },
   EncodingType: { Base64: "base64" },
-}));
+};
+
+jest.mock("expo-file-system", () => mockFileSystem);
+jest.mock("expo-file-system/legacy", () => mockFileSystem);
 
 jest.mock("expo-crypto", () => ({
   randomUUID: jest.fn(() => "00000000-0000-0000-0000-000000000000"),

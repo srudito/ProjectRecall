@@ -4,12 +4,19 @@ import { AppState, Platform } from "react-native";
 
 import { useAuthStore } from "@/src/stores/auth-store";
 
+import { subscribeMetadataSyncChanges } from "./project-sync-events";
 import { requestMetadataSync } from "./project-sync-worker";
+import { requestRecordingUploadSync } from "./recording-upload-worker";
+
+const requestAllSync = (): void => {
+  requestMetadataSync();
+  requestRecordingUploadSync();
+};
 
 /**
- * Starts the native metadata worker at lifecycle boundaries that can make
- * pending project or session work eligible again. Web operations go directly
- * to Supabase and therefore do not use the local SQLite queue.
+ * Starts the native metadata and recording-upload workers at lifecycle
+ * boundaries that can make queued work eligible again. Web operations go
+ * directly to Supabase and therefore do not use the local SQLite queues.
  */
 export function ProjectSyncCoordinator() {
   const initialized = useAuthStore((state) => state.initialized);
@@ -17,7 +24,7 @@ export function ProjectSyncCoordinator() {
 
   useEffect(() => {
     if (Platform.OS === "web" || !initialized || !userId) return;
-    requestMetadataSync();
+    requestAllSync();
   }, [initialized, userId]);
 
   useEffect(() => {
@@ -25,7 +32,7 @@ export function ProjectSyncCoordinator() {
 
     const subscription = AppState.addEventListener("change", (state) => {
       if (state === "active" && useAuthStore.getState().user?.id) {
-        requestMetadataSync();
+        requestAllSync();
       }
     });
 
@@ -39,11 +46,23 @@ export function ProjectSyncCoordinator() {
       const online =
         state.isConnected !== false && state.isInternetReachable !== false;
       if (online && useAuthStore.getState().user?.id) {
-        requestMetadataSync();
+        requestAllSync();
       }
     });
 
     return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+
+    // A session may become eligible for binary upload immediately after its
+    // metadata worker reaches the synchronized state.
+    return subscribeMetadataSyncChanges(() => {
+      if (useAuthStore.getState().user?.id) {
+        requestRecordingUploadSync();
+      }
+    });
   }, []);
 
   return null;

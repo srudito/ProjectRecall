@@ -10,6 +10,7 @@ import { appLanguages, displayLanguageName } from "@/src/i18n/languages";
 import { useI18n } from "@/src/i18n/I18nProvider";
 import { signOut } from "@/src/services/supabase/auth";
 import { getPreference, setPreference } from "@/src/services/sqlite/repository";
+import { requestRecordingUploadSync } from "@/src/services/sync/recording-upload-worker";
 import { useAuthStore } from "@/src/stores/auth-store";
 import { useTheme } from "@/src/theme/ThemeProvider";
 
@@ -32,6 +33,7 @@ export default function Profile() {
   const toggleWifi = async (v: boolean) => {
     setWifiOnly(v);
     await setPreference(WIFI_ONLY_KEY, v);
+    requestRecordingUploadSync();
   };
 
   const doSignOut = async () => {
