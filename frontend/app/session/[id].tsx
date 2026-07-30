@@ -1,5 +1,4 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
 import { Alert, Platform, ScrollView, Text, TouchableOpacity, View } from "react-native";
 
 import { Button } from "@/src/components/Button";
@@ -29,6 +28,13 @@ import { subscribeMetadataSyncChanges } from "@/src/services/sync/project-sync-e
 import { useAuthStore } from "@/src/stores/auth-store";
 import { useTheme } from "@/src/theme/ThemeProvider";
 import { formatDurationMs } from "@/src/utils/format";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import { useNetInfo } from "@react-native-community/netinfo";
 
 type CombinedTimeline = TimelineEventRecord & { label: string };
 
@@ -83,6 +89,7 @@ const buildLabel = (
 export default function SessionDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const network = useNetInfo();
   const { t } = useI18n();
   const { colors, spacing, typography } = useTheme();
   const userId = useAuthStore((state) => state.user?.id ?? null);
@@ -96,12 +103,18 @@ export default function SessionDetail() {
   const [retryingSync, setRetryingSync] = useState(false);
   const [syncActionError, setSyncActionError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const deletingRef = useRef(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const loadSession = useCallback(async () => {
     if (!id) return;
     const sessionId = String(id);
     const loadedSession = await fetchSession(sessionId);
+
+    if (!loadedSession && deletingRef.current) {
+       return;
+    }
+
     setSession(loadedSession);
 
     if (loadedSession?.project_id) {
@@ -151,22 +164,33 @@ export default function SessionDetail() {
     if (!session || !userId || deleting) return;
 
     setDeleting(true);
+    deletingRef.current = true;
     setDeleteError(null);
     try {
-      const result = await deleteSession({
-        session,
-        requestedBy: userId,
-      });
+const result = await deleteSession({
+  session,
+  requestedBy: userId,
+});
 
-      if (result.state === "pending_cloud_cleanup") {
-        showDeletionNotice(
-          t("session", "actions.cleanupPendingTitle"),
-          t("session", "actions.cleanupPendingBody"),
-        );
-      }
+router.replace("/(tabs)/library");
+
+const isDefinitelyOffline =
+  network.isConnected === false ||
+  network.isInternetReachable === false;
+
+if (
+  result.state === "pending_cloud_cleanup" &&
+  isDefinitelyOffline
+) {
+  showDeletionNotice(
+    t("session", "actions.cleanupPendingTitle"),
+    t("session", "actions.cleanupPendingBody"),
+  );
+}
 
       router.replace("/(tabs)/library");
     } catch {
+      deletingRef.current = false;
       setDeleteError(t("session", "actions.deleteFailed"));
       setDeleting(false);
     }
