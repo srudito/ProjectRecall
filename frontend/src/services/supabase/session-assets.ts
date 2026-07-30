@@ -191,3 +191,94 @@ export const createSignedSessionAssetUrl = async (input: {
   }
   return response.data.signedUrl;
 };
+
+const validatePathSegment = (value: string, label: string): void => {
+  if (
+    value.length === 0 ||
+    value === "." ||
+    value === ".." ||
+    value.includes("/") ||
+    value.includes("\\")
+  ) {
+    throw new RecordingSyncError(
+      "REMOTE_VALIDATION_ERROR",
+      `The ${label} used for Storage cleanup is invalid.`,
+      { retryable: false, status: 400 },
+    );
+  }
+};
+
+const uniquePaths = (paths: readonly string[]): string[] =>
+  [...new Set(paths.map((path) => path.trim()).filter(Boolean))];
+
+/**
+ * Discover every object below a session prefix. This catches files whose
+ * database metadata was never committed after an interrupted upload.
+ */
+export const listPrivateSessionAssetPaths = async (input: {
+  workspaceId: string;
+  sessionId: string;
+  client?: SupabaseClient;
+}): Promise<string[]> => {
+  validatePathSegment(input.workspaceId, "workspace id");
+  validatePathSegment(input.sessionId, "session id");
+  const { client } = await requireAuthenticatedClient(input.client);
+  const root = `${input.workspaceId}/${input.sessionId}`;
+  const discovered: string[] = [];
+
+  const walk = async (prefix: string, depth: number): Promise<void> => {
+    if (depth > 4) return;
+    let offset = 0;
+    const limit = 1000;
+
+    while (true) {
+      const response = await client.storage
+        .from(SESSION_ASSETS_BUCKET)
+        .list(prefix, {
+          limit,
+          offset,
+          sortBy: { column: "name", order: "asc" },
+        });
+      if (response.error) {
+        throw normalizeRecordingSyncError(response.error);
+      }
+
+      const rows = response.data ?? [];
+      for (const row of rows) {
+        const path = `${prefix}/${row.name}`;
+        if (row.id) {
+          discovered.push(path);
+        } else {
+          await walk(path, depth + 1);
+        }
+      }
+
+      if (rows.length < limit) break;
+      offset += limit;
+    }
+  };
+
+  await walk(root, 0);
+  return uniquePaths(discovered);
+};
+
+/** Delete known session objects in API-safe batches. Missing paths are safe. */
+export const removePrivateSessionAssets = async (input: {
+  paths: readonly string[];
+  client?: SupabaseClient;
+}): Promise<void> => {
+  const paths = uniquePaths(input.paths);
+  if (paths.length === 0) return;
+  paths.forEach(validateStoragePath);
+  const { client } = await requireAuthenticatedClient(input.client);
+
+  for (let index = 0; index < paths.length; index += 1000) {
+    const batch = paths.slice(index, index + 1000);
+    const response = await client.storage
+      .from(SESSION_ASSETS_BUCKET)
+      .remove(batch);
+    if (response.error) {
+      throw normalizeRecordingSyncError(response.error);
+    }
+  }
+};

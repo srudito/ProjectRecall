@@ -79,5 +79,10 @@ using a development build. Expo Go is not sufficient for any item.
 
 ## Deletion
 
-- [ ] Delete a session — recording, evidence, notes, bookmarks, cloud objects removed
+- [ ] Delete confirmation can be cancelled without changing the session
+- [ ] Delete a session — recording, evidence, notes, bookmarks, timeline, and cloud objects removed
+- [ ] Delete while offline — session hides immediately and cleanup resumes after reconnect
+- [ ] Delete while binary upload is in progress — no object or metadata is recreated
+- [ ] Orphan object below the session prefix is removed
 - [ ] Cloud deletion partial failure surfaces as "cloud cleanup pending"
+- [ ] Deleted session does not return after Expo Go reinstall

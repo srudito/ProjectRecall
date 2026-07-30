@@ -148,6 +148,7 @@ const makeDependencies = (
     updateRecordingStatus: jest.fn(async () => undefined),
     saveLocalRecording: jest.fn(async () => undefined),
     uploadAsset: jest.fn(async () => undefined),
+    removeUploadedAsset: jest.fn(async () => undefined),
     upsertCloudRecording: jest.fn(async (value: RecordingRecord) => ({
       ...value,
       local_file_uri: null,
@@ -304,6 +305,31 @@ describe("recording upload worker", () => {
       expect.stringContaining("saved locally"),
     );
     expect(dependencies.markOperationFailed).not.toHaveBeenCalled();
+  });
+
+
+  it("removes a just-uploaded object when the session is deleted mid-upload", async () => {
+    let sessionReadCount = 0;
+    const dependencies = makeDependencies({
+      getLocalSession: jest.fn(async () => {
+        sessionReadCount += 1;
+        return sessionReadCount === 1
+          ? session
+          : { ...session, deleted_at: "2026-07-30T10:00:13.000Z" };
+      }),
+    });
+    const worker = createRecordingUploadWorker(dependencies);
+
+    const result = await worker.run();
+
+    expect(result.cancelled).toBe(1);
+    expect(dependencies.removeUploadedAsset).toHaveBeenCalledWith(
+      queueRow.target_storage_path,
+    );
+    expect(dependencies.upsertCloudRecording).not.toHaveBeenCalled();
+    expect(dependencies.deleteCompletedOperation).toHaveBeenCalledWith(
+      queueRow.id,
+    );
   });
 
   it("returns one shared run while the worker is already active", async () => {

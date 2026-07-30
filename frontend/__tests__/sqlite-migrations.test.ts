@@ -102,8 +102,8 @@ describe("local SQLite migration runner", () => {
 
     const result = await runMigrations(db, MIGRATIONS);
 
-    expect(LATEST_LOCAL_SCHEMA_VERSION).toBe(7);
-    expect(result).toEqual({ appliedVersions: [3, 4, 5, 6, 7], finalVersion: 7 });
+    expect(LATEST_LOCAL_SCHEMA_VERSION).toBe(8);
+    expect(result).toEqual({ appliedVersions: [3, 4, 5, 6, 7, 8], finalVersion: 8 });
     expect(
       state.executed.some((sql) => sql.includes("upsert:project:")),
     ).toBe(true);
@@ -114,7 +114,7 @@ describe("local SQLite migration runner", () => {
 
     const result = await runMigrations(db, MIGRATIONS);
 
-    expect(result).toEqual({ appliedVersions: [4, 5, 6, 7], finalVersion: 7 });
+    expect(result).toEqual({ appliedVersions: [4, 5, 6, 7, 8], finalVersion: 8 });
     expect(
       state.executed.some((sql) =>
         sql.includes("ALTER TABLE local_sessions ADD COLUMN last_synced_at"),
@@ -133,7 +133,7 @@ describe("local SQLite migration runner", () => {
 
     const result = await runMigrations(db, MIGRATIONS);
 
-    expect(result).toEqual({ appliedVersions: [5, 6, 7], finalVersion: 7 });
+    expect(result).toEqual({ appliedVersions: [5, 6, 7, 8], finalVersion: 8 });
     expect(
       state.executed.some((sql) =>
         sql.includes("ALTER TABLE local_notes ADD COLUMN last_synced_at"),
@@ -158,7 +158,7 @@ describe("local SQLite migration runner", () => {
 
     const result = await runMigrations(db, MIGRATIONS);
 
-    expect(result).toEqual({ appliedVersions: [6, 7], finalVersion: 7 });
+    expect(result).toEqual({ appliedVersions: [6, 7, 8], finalVersion: 8 });
     expect(
       state.executed.some((sql) =>
         sql.includes("idx_recordings_session_unique"),
@@ -178,7 +178,7 @@ describe("local SQLite migration runner", () => {
 
     const result = await runMigrations(db, MIGRATIONS);
 
-    expect(result).toEqual({ appliedVersions: [7], finalVersion: 7 });
+    expect(result).toEqual({ appliedVersions: [7, 8], finalVersion: 8 });
     expect(
       state.executed.some((sql) => sql.includes("upload:media_asset:")),
     ).toBe(true);
@@ -187,6 +187,32 @@ describe("local SQLite migration runner", () => {
     ).toBe(true);
     expect(
       state.executed.some((sql) => sql.includes("image_added")),
+    ).toBe(true);
+  });
+
+
+  it("adds durable cloud-aware session deletion at version 8", async () => {
+    const { db, state } = createFakeDb(7);
+
+    const result = await runMigrations(db, MIGRATIONS);
+
+    expect(result).toEqual({ appliedVersions: [8], finalVersion: 8 });
+    expect(
+      state.executed.some((sql) =>
+        sql.includes("CREATE TABLE IF NOT EXISTS local_session_deletion_queue"),
+      ),
+    ).toBe(true);
+    expect(
+      state.executed.some(
+        (sql) =>
+          sql.includes("UPDATE local_upload_queue") &&
+          sql.includes("queue_status = 'cancelled'"),
+      ),
+    ).toBe(true);
+    expect(
+      state.executed.some((sql) =>
+        sql.includes("session-delete:"),
+      ),
     ).toBe(true);
   });
 

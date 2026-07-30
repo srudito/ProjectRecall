@@ -38,7 +38,11 @@
     "editLanguages": "Edit expected languages",
     "delete": "Delete session",
     "deleteConfirmTitle": "Delete this session?",
-    "deleteConfirmBody": "Recording, evidence, notes, bookmarks, timeline, and cloud copies will be removed."
+    "deleteConfirmBody": "Recording, evidence, notes, bookmarks, timeline, and cloud copies will be removed.",
+    "deleting": "Deleting…",
+    "deleteFailed": "The session could not be deleted. Please try again.",
+    "cleanupPendingTitle": "Session removed",
+    "cleanupPendingBody": "The session is hidden from this device. Cloud files will be removed automatically when the connection is available."
   },
   "timeline": {
     "recordingStarted": "Recording started",

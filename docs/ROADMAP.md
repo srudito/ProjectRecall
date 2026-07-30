@@ -16,8 +16,7 @@ Completed and verified before this pass:
 - signed audio playback, Wi-Fi-only upload, reinstall recovery, and Storage RLS
   smoke tests.
 
-Implemented in the current Evidence Storage Sync v1 pass and awaiting
-real-environment verification:
+Completed and verified in Evidence Storage Sync v1:
 
 - durable local persistence for image, video, and document evidence;
 - media metadata synchronization to `public.media_assets`;
@@ -26,10 +25,19 @@ real-environment verification:
 - signed image/video/document restoration on web and native;
 - offline retry, Wi-Fi-only behavior, and stable media UUIDs/Storage paths.
 
+Implemented in the current Cloud-Aware Deletion v1 pass and awaiting
+real-environment verification:
+
+- durable offline session deletion queue;
+- recording, note, bookmark, timeline, and evidence database cleanup;
+- private Storage prefix deletion and orphan discovery;
+- local recording/evidence file cleanup;
+- restart-safe partial-deletion recovery.
+
 Remaining Milestone 1 work:
 
 - audio-attachment evidence and post-recording Add Evidence UI;
-- cloud-aware session/recording/evidence deletion and orphan cleanup;
+- project-level deletion and cleanup management UI;
 - remaining playback, timeline-seek, onboarding, and edit-flow gaps;
 - Android development-build verification, including picker interruptions and
   background recording;

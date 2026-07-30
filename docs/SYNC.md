@@ -13,7 +13,7 @@ The remaining synchronization gaps are:
 
 - audio-attachment evidence;
 - post-recording evidence capture UI;
-- cloud-aware deletion and orphan cleanup;
+- project-level deletion;
 - resumable upload and numeric progress hardening.
 
 ## Native metadata lifecycle
@@ -183,12 +183,28 @@ reuse stable UUIDs/paths, and upload to the private `session-assets` bucket.
 Standard Upload is currently used; resumable TUS is a later hardening step for
 large or unstable transfers.
 
-## Deletion boundary
+## Cloud-aware session deletion
 
-Project and session cloud-aware deletion is not complete. Local session deletion
-hides the row and removes pending session UPSERT operations. Cloud rows and
-binary objects require a later durable deletion queue and must not be described
-as fully removed yet.
+Native deletion hides a session immediately and writes one durable
+`local_session_deletion_queue` job. Pending metadata and binary uploads for that
+session are cancelled so they cannot recreate content while cleanup is in
+progress.
+
+Cleanup order is:
+
+```text
+private Storage objects
+-> cloud session row and database cascades
+-> local files and session directory
+-> local SQLite graph
+```
+
+Before Storage removal, the worker recursively lists the full
+`{workspace_id}/{session_id}` prefix to discover orphan objects left by partial
+uploads. Progress flags make the job restart-safe. Web performs the same ordered
+cleanup synchronously because it has no SQLite queue.
+
+Project-level deletion remains outside the current boundary.
 
 ## Background limitations
 

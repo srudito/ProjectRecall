@@ -65,3 +65,16 @@ Every accepted upload passes `services/files/validation.ts`:
 - The mobile app suppresses tokens via console safety (LogBox suppressed in
   preview, sensitive data never `console.log`ged).
 - No note, document, image, video, or audio content is ever logged.
+
+## Deletion security
+
+- Session deletion uses the signed-in user's normal JWT; the mobile bundle does
+  not use a service-role key.
+- Private Storage objects are removed before the session database row so the
+  existing workspace-membership policy can still authorize cleanup.
+- The deletion worker is scoped by `user_id` and refuses a claimed job owned by
+  another signed-in user.
+- Upload workers re-check the parent session after binary upload and remove a
+  just-uploaded object if deletion started during the upload.
+- User-isolation testing must verify that User B cannot delete User A's session
+  row, list its Storage prefix, or remove its objects.

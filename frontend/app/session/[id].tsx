@@ -1,6 +1,6 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
-import { ScrollView, Text, TouchableOpacity, View } from "react-native";
+import { Alert, Platform, ScrollView, Text, TouchableOpacity, View } from "react-native";
 
 import { Button } from "@/src/components/Button";
 import { Card } from "@/src/components/Card";
@@ -26,6 +26,7 @@ import type {
   TimelineEventRecord,
 } from "@/src/services/sqlite/repository";
 import { subscribeMetadataSyncChanges } from "@/src/services/sync/project-sync-events";
+import { useAuthStore } from "@/src/stores/auth-store";
 import { useTheme } from "@/src/theme/ThemeProvider";
 import { formatDurationMs } from "@/src/utils/format";
 
@@ -84,6 +85,7 @@ export default function SessionDetail() {
   const router = useRouter();
   const { t } = useI18n();
   const { colors, spacing, typography } = useTheme();
+  const userId = useAuthStore((state) => state.user?.id ?? null);
   const [session, setSession] = useState<SessionRecord | null>(null);
   const [project, setProject] = useState<ProjectRecord | null>(null);
   const [tab, setTab] = useState<"overview" | "timeline" | "evidence">("overview");
@@ -93,6 +95,8 @@ export default function SessionDetail() {
   const [assets, setAssets] = useState<MediaAssetRecord[]>([]);
   const [retryingSync, setRetryingSync] = useState(false);
   const [syncActionError, setSyncActionError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const loadSession = useCallback(async () => {
     if (!id) return;
@@ -131,10 +135,72 @@ export default function SessionDetail() {
     });
   }, [loadSession]);
 
-  const onDelete = async () => {
-    if (!session) return;
-    await deleteSession(session);
-    router.replace("/(tabs)/library");
+  const showDeletionNotice = (title: string, message: string) => {
+    if (Platform.OS === "web") {
+      const alertFn = (globalThis as {
+        alert?: (text: string) => void;
+      }).alert;
+      alertFn?.(`${title}\n\n${message}`);
+      return;
+    }
+
+    Alert.alert(title, message);
+  };
+
+  const performDelete = async () => {
+    if (!session || !userId || deleting) return;
+
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const result = await deleteSession({
+        session,
+        requestedBy: userId,
+      });
+
+      if (result.state === "pending_cloud_cleanup") {
+        showDeletionNotice(
+          t("session", "actions.cleanupPendingTitle"),
+          t("session", "actions.cleanupPendingBody"),
+        );
+      }
+
+      router.replace("/(tabs)/library");
+    } catch {
+      setDeleteError(t("session", "actions.deleteFailed"));
+      setDeleting(false);
+    }
+  };
+
+  const onDelete = () => {
+    if (!session || !userId || deleting) return;
+
+    const title = t("session", "actions.deleteConfirmTitle");
+    const message = t("session", "actions.deleteConfirmBody");
+
+    if (Platform.OS === "web") {
+      const confirmFn = (globalThis as {
+        confirm?: (text: string) => boolean;
+      }).confirm;
+      if (confirmFn?.(`${title}\n\n${message}`) ?? false) {
+        void performDelete();
+      }
+      return;
+    }
+
+    Alert.alert(title, message, [
+      {
+        text: t("common", "actions.cancel"),
+        style: "cancel",
+      },
+      {
+        text: t("common", "actions.delete"),
+        style: "destructive",
+        onPress: () => {
+          void performDelete();
+        },
+      },
+    ]);
   };
 
   const onBack = () => {
@@ -389,17 +455,36 @@ const onOpenProject = () => {
       ) : null}
 
       <View style={{ height: spacing.lg }} />
+      {deleteError ? (
+        <Text
+          testID="session-delete-error"
+          accessibilityRole="alert"
+          style={[
+            typography.caption,
+            { color: colors.recording, marginBottom: spacing.sm },
+          ]}
+        >
+          {deleteError}
+        </Text>
+      ) : null}
       <Button
         testID="session-delete-button"
-        label={t("session", "actions.delete")}
+        label={
+          deleting
+            ? t("session", "actions.deleting")
+            : t("session", "actions.delete")
+        }
         variant="danger"
         onPress={onDelete}
+        loading={deleting}
+        disabled={deleting || !userId}
       />
       <Button
         testID="session-back-button"
         label={t("common", "actions.back")}
         variant="ghost"
         onPress={onBack}
+        disabled={deleting}
       />
     </Screen>
   );

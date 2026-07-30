@@ -680,6 +680,63 @@ const v7Ddl: readonly string[] = [
       updated_at = excluded.updated_at`,
 ];
 
+// Version 8: durable cloud-aware session deletion and orphan cleanup queue.
+const v8Ddl: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS local_session_deletion_queue (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    session_id TEXT NOT NULL UNIQUE,
+    queue_status TEXT NOT NULL DEFAULT 'pending',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_retry_at TEXT,
+    storage_paths TEXT NOT NULL DEFAULT '[]',
+    local_file_uris TEXT NOT NULL DEFAULT '[]',
+    storage_deleted INTEGER NOT NULL DEFAULT 0,
+    cloud_metadata_deleted INTEGER NOT NULL DEFAULT 0,
+    local_files_deleted INTEGER NOT NULL DEFAULT 0,
+    last_error_code TEXT,
+    last_safe_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_session_delete_next
+     ON local_session_deletion_queue(queue_status, next_retry_at, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_session_delete_user
+     ON local_session_deletion_queue(user_id, queue_status)`,
+  `UPDATE local_upload_queue
+      SET queue_status = 'cancelled',
+          updated_at = CURRENT_TIMESTAMP
+    WHERE session_id IN (
+      SELECT id FROM local_sessions WHERE deleted_at IS NOT NULL
+    )
+      AND queue_status IN ('pending','in_progress','failed')`,
+  `INSERT INTO local_session_deletion_queue
+      (id, user_id, workspace_id, session_id, queue_status, attempt_count,
+       next_retry_at, storage_paths, local_file_uris, storage_deleted,
+       cloud_metadata_deleted, local_files_deleted, last_error_code,
+       last_safe_error, created_at, updated_at)
+    SELECT 'session-delete:' || s.id,
+           s.created_by,
+           s.workspace_id,
+           s.id,
+           'pending',
+           0,
+           NULL,
+           '[]',
+           '[]',
+           0,
+           0,
+           0,
+           NULL,
+           NULL,
+           COALESCE(s.deleted_at, s.updated_at),
+           s.updated_at
+      FROM local_sessions s
+     WHERE s.deleted_at IS NOT NULL
+    ON CONFLICT(session_id) DO NOTHING`,
+];
+
 export const MIGRATIONS: readonly Migration[] = [
   {
     version: 1,
@@ -740,6 +797,15 @@ export const MIGRATIONS: readonly Migration[] = [
     description: "Media evidence metadata, private Storage upload, and timeline sync.",
     up: async ({ db }) => {
       for (const stmt of v7Ddl) {
+        await db.execAsync(stmt);
+      }
+    },
+  },
+  {
+    version: 8,
+    description: "Cloud-aware session deletion and orphan cleanup queue.",
+    up: async ({ db }) => {
+      for (const stmt of v8Ddl) {
         await db.execAsync(stmt);
       }
     },

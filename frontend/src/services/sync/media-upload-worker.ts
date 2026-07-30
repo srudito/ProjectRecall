@@ -24,7 +24,10 @@ import {
   type MediaAssetSyncError,
   upsertRemoteMediaAsset,
 } from "@/src/services/supabase/media-asset-repository";
-import { uploadPrivateSessionAsset } from "@/src/services/supabase/session-assets";
+import {
+  removePrivateSessionAssets,
+  uploadPrivateSessionAsset,
+} from "@/src/services/supabase/session-assets";
 import { nextBackoffMs, shouldGiveUp } from "@/src/services/upload-queue/backoff";
 import { useAuthStore } from "@/src/stores/auth-store";
 
@@ -45,6 +48,7 @@ export interface MediaUploadRunResult {
   retried: number;
   deferred: number;
   failed: number;
+  cancelled: number;
 }
 
 export interface MediaUploadWorkerDependencies {
@@ -67,6 +71,7 @@ export interface MediaUploadWorkerDependencies {
     fileUri: string;
     mimeType: string;
   }) => Promise<void>;
+  removeUploadedAsset: (path: string) => Promise<void>;
   upsertCloudAsset: (asset: MediaAssetRecord) => Promise<MediaAssetRecord>;
   rescheduleOperation: (
     id: string,
@@ -110,6 +115,8 @@ const defaultDependencies = (): MediaUploadWorkerDependencies => ({
   updateAssetStatus: updateMediaAssetUploadStatus,
   saveLocalAsset: upsertMediaAsset,
   uploadAsset: (input) => uploadPrivateSessionAsset(input),
+  removeUploadedAsset: (path) =>
+    removePrivateSessionAssets({ paths: [path] }),
   upsertCloudAsset: (asset) => upsertRemoteMediaAsset(asset),
   rescheduleOperation: rescheduleUploadOperation,
   markOperationFailed: markUploadOperationFailed,
@@ -131,6 +138,7 @@ const emptyResult = (
   retried: 0,
   deferred: 0,
   failed: 0,
+  cancelled: 0,
 });
 
 const isOnline = (state: NetInfoState): boolean =>
@@ -226,15 +234,36 @@ export const createMediaUploadWorker = (
 
       const session = await dependencies.getLocalSession(asset.session_id);
       if (!session || session.deleted_at != null) {
-        const code = "PARENT_SESSION_NOT_FOUND";
-        const message = "The evidence session is not available.";
-        await dependencies.markOperationFailed(claimed.id, code, message);
-        await dependencies.updateAssetStatus(asset.id, {
-          upload_status: "failed",
-          upload_error_code: code,
-          upload_error_message: message,
-        });
-        result.failed += 1;
+        try {
+          await dependencies.removeUploadedAsset(claimed.target_storage_path);
+          await dependencies.deleteCompletedOperation(claimed.id);
+          await dependencies.updateAssetStatus(asset.id, {
+            upload_status: "cancelled",
+            upload_error_code: "SESSION_DELETION_PENDING",
+            upload_error_message:
+              "Upload cancelled because the session is being deleted.",
+          });
+          result.cancelled += 1;
+          dependencies.notifyChanged();
+        } catch (error) {
+          const normalized = normalizeUnknown(error);
+          if (normalized.retryable) {
+            await dependencies.rescheduleOperation(
+              claimed.id,
+              nextRetryAt(dependencies, claimed.attempt_count),
+              normalized.code,
+              normalized.message,
+            );
+            result.retried += 1;
+            break;
+          }
+          await dependencies.markOperationFailed(
+            claimed.id,
+            normalized.code,
+            normalized.message,
+          );
+          result.failed += 1;
+        }
         continue;
       }
 
@@ -299,6 +328,25 @@ export const createMediaUploadWorker = (
           fileUri: asset.local_file_uri,
           mimeType: asset.mime_type,
         });
+
+        const latestSession = await dependencies.getLocalSession(
+          asset.session_id,
+        );
+        if (!latestSession || latestSession.deleted_at != null) {
+          await dependencies.removeUploadedAsset(
+            claimed.target_storage_path,
+          );
+          await dependencies.deleteCompletedOperation(claimed.id);
+          await dependencies.updateAssetStatus(asset.id, {
+            upload_status: "cancelled",
+            upload_error_code: "SESSION_DELETION_PENDING",
+            upload_error_message:
+              "Upload cancelled because the session is being deleted.",
+          });
+          result.cancelled += 1;
+          dependencies.notifyChanged();
+          continue;
+        }
 
         const cloudInput: MediaAssetRecord = {
           ...asset,

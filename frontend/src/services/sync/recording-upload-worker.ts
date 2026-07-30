@@ -25,7 +25,10 @@ import {
   type RecordingSyncError,
   upsertRemoteRecording,
 } from "@/src/services/supabase/recording-repository";
-import { uploadPrivateSessionAsset } from "@/src/services/supabase/session-assets";
+import {
+  removePrivateSessionAssets,
+  uploadPrivateSessionAsset,
+} from "@/src/services/supabase/session-assets";
 import { nextBackoffMs, shouldGiveUp } from "@/src/services/upload-queue/backoff";
 import { useAuthStore } from "@/src/stores/auth-store";
 
@@ -45,6 +48,7 @@ export interface RecordingUploadRunResult {
   retried: number;
   deferred: number;
   failed: number;
+  cancelled: number;
 }
 
 export interface RecordingUploadWorkerDependencies {
@@ -70,6 +74,7 @@ export interface RecordingUploadWorkerDependencies {
     fileUri: string;
     mimeType: string;
   }) => Promise<void>;
+  removeUploadedAsset: (path: string) => Promise<void>;
   upsertCloudRecording: (
     recording: RecordingRecord,
   ) => Promise<RecordingRecord>;
@@ -114,6 +119,8 @@ const defaultDependencies = (): RecordingUploadWorkerDependencies => ({
   updateRecordingStatus: updateRecordingUploadStatus,
   saveLocalRecording: upsertRecording,
   uploadAsset: (input) => uploadPrivateSessionAsset(input),
+  removeUploadedAsset: (path) =>
+    removePrivateSessionAssets({ paths: [path] }),
   upsertCloudRecording: (recording) => upsertRemoteRecording(recording),
   rescheduleOperation: rescheduleUploadOperation,
   markOperationFailed: markUploadOperationFailed,
@@ -134,6 +141,7 @@ const emptyResult = (
   retried: 0,
   deferred: 0,
   failed: 0,
+  cancelled: 0,
 });
 
 const isOnline = (state: NetInfoState): boolean =>
@@ -227,15 +235,36 @@ export const createRecordingUploadWorker = (
 
       const session = await dependencies.getLocalSession(recording.session_id);
       if (!session || session.deleted_at != null) {
-        const code = "PARENT_SESSION_NOT_FOUND";
-        const message = "The recording session is not available.";
-        await dependencies.markOperationFailed(claimed.id, code, message);
-        await dependencies.updateRecordingStatus(recording.id, {
-          upload_status: "failed",
-          upload_error_code: code,
-          upload_error_message: message,
-        });
-        result.failed += 1;
+        try {
+          await dependencies.removeUploadedAsset(claimed.target_storage_path);
+          await dependencies.deleteCompletedOperation(claimed.id);
+          await dependencies.updateRecordingStatus(recording.id, {
+            upload_status: "cancelled",
+            upload_error_code: "SESSION_DELETION_PENDING",
+            upload_error_message:
+              "Upload cancelled because the session is being deleted.",
+          });
+          result.cancelled += 1;
+          dependencies.notifyChanged();
+        } catch (error) {
+          const normalized = normalizeUnknown(error);
+          if (normalized.retryable) {
+            await dependencies.rescheduleOperation(
+              claimed.id,
+              nextRetryAt(dependencies, claimed.attempt_count),
+              normalized.code,
+              normalized.message,
+            );
+            result.retried += 1;
+            break;
+          }
+          await dependencies.markOperationFailed(
+            claimed.id,
+            normalized.code,
+            normalized.message,
+          );
+          result.failed += 1;
+        }
         continue;
       }
 
@@ -299,6 +328,25 @@ export const createRecordingUploadWorker = (
           fileUri: recording.local_file_uri,
           mimeType: recording.mime_type,
         });
+
+        const latestSession = await dependencies.getLocalSession(
+          recording.session_id,
+        );
+        if (!latestSession || latestSession.deleted_at != null) {
+          await dependencies.removeUploadedAsset(
+            claimed.target_storage_path,
+          );
+          await dependencies.deleteCompletedOperation(claimed.id);
+          await dependencies.updateRecordingStatus(recording.id, {
+            upload_status: "cancelled",
+            upload_error_code: "SESSION_DELETION_PENDING",
+            upload_error_message:
+              "Upload cancelled because the session is being deleted.",
+          });
+          result.cancelled += 1;
+          dependencies.notifyChanged();
+          continue;
+        }
 
         const cloudInput: RecordingRecord = {
           ...recording,

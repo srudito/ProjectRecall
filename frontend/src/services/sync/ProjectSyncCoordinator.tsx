@@ -8,8 +8,10 @@ import { subscribeMetadataSyncChanges } from "./project-sync-events";
 import { requestMetadataSync } from "./project-sync-worker";
 import { requestMediaUploadSync } from "./media-upload-worker";
 import { requestRecordingUploadSync } from "./recording-upload-worker";
+import { requestSessionDeletionSync } from "./session-deletion-worker";
 
 const requestAllSync = (): void => {
+  requestSessionDeletionSync();
   requestMetadataSync();
   requestRecordingUploadSync();
   requestMediaUploadSync();

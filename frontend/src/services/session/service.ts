@@ -18,6 +18,7 @@ import {
   atomicCreateProjectWithSync,
   atomicCreateRecordingWithUpload,
   atomicCreateTimelineEventWithSync,
+  atomicPrepareSessionDeletion,
   atomicRequeueMediaAssetUpload,
   atomicRequeueProjectSync,
   atomicRequeueRecordingUpload,
@@ -31,6 +32,7 @@ import {
   getProject,
   getRecordingForSession,
   getSession,
+  getSessionDeletionForSession,
   getTimelineEvent,
   insertTimelineEvent,
   listBookmarksForSession,
@@ -38,8 +40,8 @@ import {
   listNotesForSession,
   listProjects,
   listSessions,
+  listUploadQueueForSession,
   listTimelineEvents,
-  softDeleteSession,
   upsertBookmark,
   upsertMediaAsset,
   upsertNote,
@@ -73,8 +75,11 @@ import {
 } from "@/src/services/supabase/recording-repository";
 import {
   createSignedSessionAssetUrl,
+  listPrivateSessionAssetPaths,
+  removePrivateSessionAssets,
   uploadPrivateSessionAsset,
 } from "@/src/services/supabase/session-assets";
+import { deleteRemoteSessionCascade } from "@/src/services/supabase/session-deletion-repository";
 import {
   fetchRemoteSession,
   fetchRemoteSessions,
@@ -92,6 +97,10 @@ import { requestMediaUploadSync } from "@/src/services/sync/media-upload-worker"
 import { notifyMetadataSyncChanges } from "@/src/services/sync/project-sync-events";
 import { requestMetadataSync } from "@/src/services/sync/project-sync-worker";
 import { requestRecordingUploadSync } from "@/src/services/sync/recording-upload-worker";
+import {
+  requestSessionDeletionSync,
+  runSessionDeletionSync,
+} from "@/src/services/sync/session-deletion-worker";
 import { buildIdempotencyKey } from "@/src/services/upload-queue/backoff";
 
 const generateId = () => Crypto.randomUUID();
@@ -600,9 +609,103 @@ export const markSessionStopped = async (
   return saveSessionWithSync(updated);
 };
 
-export const deleteSession = async (session: SessionRecord): Promise<void> => {
-  await softDeleteSession(session.id);
-  await deleteMetadataOperationsForEntity("session", session.id);
+export interface DeleteSessionInput {
+  session: SessionRecord;
+  requestedBy: string;
+}
+
+export interface DeleteSessionResult {
+  state: "deleted" | "pending_cloud_cleanup";
+}
+
+const uniqueStrings = (
+  values: readonly (string | null | undefined)[],
+): string[] =>
+  [
+    ...new Set(
+      values
+        .filter((value): value is string => Boolean(value?.trim()))
+        .map((value) => value.trim()),
+    ),
+  ];
+
+const deleteSessionDirectlyFromCloud = async (
+  session: SessionRecord,
+): Promise<void> => {
+  const [recording, assets, discoveredPaths] = await Promise.all([
+    fetchRemoteRecordingForSession(session.id),
+    fetchRemoteMediaAssets(session.id),
+    listPrivateSessionAssetPaths({
+      workspaceId: session.workspace_id,
+      sessionId: session.id,
+    }),
+  ]);
+
+  const paths = uniqueStrings([
+    recording?.private_storage_path,
+    ...assets.map((asset) => asset.private_storage_path),
+    ...discoveredPaths,
+  ]);
+  await removePrivateSessionAssets({ paths });
+  await deleteRemoteSessionCascade({
+    workspaceId: session.workspace_id,
+    sessionId: session.id,
+  });
+};
+
+/**
+ * Hide the session immediately on native and finish cloud/local cleanup using
+ * a durable queue. Web performs the same ordered cleanup synchronously because
+ * it has no SQLite queue.
+ */
+export const deleteSession = async (
+  input: DeleteSessionInput,
+): Promise<DeleteSessionResult> => {
+  const { session, requestedBy } = input;
+  requireUuid(session.id, "sessionId");
+  requireUuid(session.workspace_id, "workspaceId");
+  requireUuid(requestedBy, "requestedBy");
+
+  if (Platform.OS === "web") {
+    await deleteSessionDirectlyFromCloud(session);
+    notifyMetadataSyncChanges();
+    return { state: "deleted" };
+  }
+
+  const [recording, assets, queuedUploads] = await Promise.all([
+    getRecordingForSession(session.id),
+    listMediaAssetsForSession(session.id),
+    listUploadQueueForSession(session.id),
+  ]);
+
+  const storagePaths = uniqueStrings([
+    recording?.private_storage_path,
+    ...assets.map((asset) => asset.private_storage_path),
+    ...queuedUploads.map((item) => item.target_storage_path),
+  ]);
+  const localFileUris = uniqueStrings([
+    recording?.local_file_uri,
+    ...assets.map((asset) => asset.local_file_uri),
+    ...queuedUploads.map((item) => item.local_file_uri),
+  ]);
+
+  await atomicPrepareSessionDeletion({
+    id: `session-delete:${session.id}`,
+    userId: requestedBy,
+    workspaceId: session.workspace_id,
+    sessionId: session.id,
+    storagePaths,
+    localFileUris,
+  });
+  notifyMetadataSyncChanges();
+
+  const result = await runSessionDeletionSync();
+  const remaining = await getSessionDeletionForSession(session.id);
+  if (remaining || result.state !== "completed") {
+    requestSessionDeletionSync();
+    return { state: "pending_cloud_cleanup" };
+  }
+  return { state: "deleted" };
 };
 
 const refreshNativeSessionsFromCloud = async (

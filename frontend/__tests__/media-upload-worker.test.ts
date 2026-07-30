@@ -155,6 +155,7 @@ const makeDependencies = (
     updateAssetStatus: jest.fn(async () => undefined),
     saveLocalAsset: jest.fn(async () => undefined),
     uploadAsset: jest.fn(async () => undefined),
+    removeUploadedAsset: jest.fn(async () => undefined),
     upsertCloudAsset: jest.fn(async (value: MediaAssetRecord) => ({
       ...value,
       local_file_uri: null,
@@ -264,6 +265,31 @@ describe("media upload worker", () => {
       expect.any(String),
       "NETWORK_UNAVAILABLE",
       expect.stringContaining("saved locally"),
+    );
+  });
+
+
+  it("removes a just-uploaded evidence object when deletion starts", async () => {
+    let sessionReadCount = 0;
+    const dependencies = makeDependencies({
+      getLocalSession: jest.fn(async () => {
+        sessionReadCount += 1;
+        return sessionReadCount === 1
+          ? session
+          : { ...session, deleted_at: "2026-07-30T10:00:13.000Z" };
+      }),
+    });
+    const worker = createMediaUploadWorker(dependencies);
+
+    const result = await worker.run();
+
+    expect(result.cancelled).toBe(1);
+    expect(dependencies.removeUploadedAsset).toHaveBeenCalledWith(
+      queueRow.target_storage_path,
+    );
+    expect(dependencies.upsertCloudAsset).not.toHaveBeenCalled();
+    expect(dependencies.deleteCompletedOperation).toHaveBeenCalledWith(
+      queueRow.id,
     );
   });
 

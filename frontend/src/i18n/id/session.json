@@ -38,7 +38,11 @@
     "editLanguages": "Ubah bahasa yang diharapkan",
     "delete": "Hapus sesi",
     "deleteConfirmTitle": "Hapus sesi ini?",
-    "deleteConfirmBody": "Rekaman, bukti, catatan, penanda, linimasa, dan salinan cloud akan dihapus."
+    "deleteConfirmBody": "Rekaman, bukti, catatan, penanda, linimasa, dan salinan cloud akan dihapus.",
+    "deleting": "Menghapus…",
+    "deleteFailed": "Sesi tidak dapat dihapus. Silakan coba lagi.",
+    "cleanupPendingTitle": "Sesi telah dihapus",
+    "cleanupPendingBody": "Sesi telah disembunyikan dari perangkat ini. File cloud akan dihapus otomatis saat koneksi tersedia."
   },
   "timeline": {
     "recordingStarted": "Rekaman dimulai",

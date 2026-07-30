@@ -52,3 +52,10 @@ Library session card -> Session Detail -> Project Detail
 Session cards and Session Overview resolve project names from the stable
 `sessions.project_id -> projects.id` relationship. Project names are not copied
 into session rows.
+
+## Session deletion
+
+Session Detail requires confirmation before deletion. Native deletion hides the
+session immediately and continues cloud/private-Storage cleanup through a
+durable queue when offline. Web completes the ordered remote cleanup before
+returning to Library.
