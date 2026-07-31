@@ -342,6 +342,13 @@ export const createRecordingController = (): RecordingController => {
       await ExpoAudio.setAudioModeAsync({
         allowsRecording: true,
         playsInSilentMode: true,
+
+        // Keep the Expo audio session active when Android moves the
+        // application to the background or the screen is locked.
+        shouldPlayInBackground: true,
+
+        // Keep microphone recording alive through Android's foreground
+        // recording service.
         allowsBackgroundRecording: true,
       });
 
