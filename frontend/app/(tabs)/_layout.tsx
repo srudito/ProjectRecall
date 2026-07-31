@@ -1,9 +1,10 @@
-import { Tabs, useRouter } from "expo-router";
+import { Redirect, Tabs, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useI18n } from "@/src/i18n/I18nProvider";
+import { useAuthStore } from "@/src/stores/auth-store";
 import { useTheme } from "@/src/theme/ThemeProvider";
 
 export default function TabsLayout() {
@@ -11,6 +12,16 @@ export default function TabsLayout() {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const { t } = useI18n();
+  const session = useAuthStore((state) => state.session);
+  const initialized = useAuthStore((state) => state.initialized);
+
+  if (!initialized) {
+    return null;
+  }
+
+  if (!session) {
+    return <Redirect href="/(auth)/welcome" />;
+  }
 
   return (
     <Tabs

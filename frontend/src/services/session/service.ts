@@ -32,7 +32,6 @@ import {
   getProject,
   getRecordingForSession,
   getSession,
-  getSessionDeletionForSession,
   getTimelineEvent,
   insertTimelineEvent,
   listBookmarksForSession,
@@ -97,10 +96,7 @@ import { requestMediaUploadSync } from "@/src/services/sync/media-upload-worker"
 import { notifyMetadataSyncChanges } from "@/src/services/sync/project-sync-events";
 import { requestMetadataSync } from "@/src/services/sync/project-sync-worker";
 import { requestRecordingUploadSync } from "@/src/services/sync/recording-upload-worker";
-import {
-  requestSessionDeletionSync,
-  runSessionDeletionSync,
-} from "@/src/services/sync/session-deletion-worker";
+import { requestSessionDeletionSync } from "@/src/services/sync/session-deletion-worker";
 import { buildIdempotencyKey } from "@/src/services/upload-queue/backoff";
 
 const generateId = () => Crypto.randomUUID();
@@ -697,15 +693,15 @@ export const deleteSession = async (
     storagePaths,
     localFileUris,
   });
-  notifyMetadataSyncChanges();
 
-  const result = await runSessionDeletionSync();
-  const remaining = await getSessionDeletionForSession(session.id);
-  if (remaining || result.state !== "completed") {
-    requestSessionDeletionSync();
-    return { state: "pending_cloud_cleanup" };
-  }
-  return { state: "deleted" };
+  // The local transaction above has already hidden the session and persisted a
+  // durable deletion job. Notify subscribed screens immediately, then allow the
+  // deletion worker to remove private Storage objects, cloud metadata, and local
+  // files in the background. The UI must not wait for network cleanup.
+  notifyMetadataSyncChanges();
+  requestSessionDeletionSync();
+
+  return { state: "pending_cloud_cleanup" };
 };
 
 const refreshNativeSessionsFromCloud = async (

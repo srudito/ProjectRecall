@@ -70,3 +70,7 @@ the caller's active workspace membership.
 
 See `SECURITY.md` for the RLS test matrix and the exact CLI commands to
 verify each policy.
+
+## Authentication provider metadata migration
+
+`0005_auth_provider_metadata.sql` updates the new-auth-user trigger to use social-provider display-name fields such as `full_name` and `name`. It does not add or remove tables.

@@ -25,6 +25,7 @@ export const getSupabase = (): SupabaseClient | null => {
       autoRefreshToken: true,
       persistSession: true,
       detectSessionInUrl: Platform.OS === "web",
+      flowType: "pkce",
     },
   });
   return cached;

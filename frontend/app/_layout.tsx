@@ -41,6 +41,8 @@ function AuthedStack() {
       <Stack.Screen name="record/review" />
       <Stack.Screen name="session/[id]" />
       <Stack.Screen name="project/[id]" />
+      <Stack.Screen name="auth/callback" />
+      <Stack.Screen name="auth/reset" />
     </Stack>
   );
 }

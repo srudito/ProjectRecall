@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Project Recall",
-    "slug": "frontend",
+    "slug": "projectrecall",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -10,7 +10,7 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.emergent.sessioncapture.xqfna6",
+      "bundleIdentifier": "com.srudito.projectrecall",
       "infoPlist": {
         "NSMicrophoneUsageDescription": "Record audio when you tap Record.",
         "NSCameraUsageDescription": "Attach photos to the current recording.",
@@ -26,7 +26,7 @@
         "backgroundColor": "#0D1526"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.emergent.sessioncapture.xqfna6",
+      "package": "com.srudito.projectrecall",
       "permissions": [
         "android.permission.RECORD_AUDIO",
         "android.permission.CAMERA",
@@ -38,7 +38,8 @@
         "android.permission.FOREGROUND_SERVICE",
         "android.permission.FOREGROUND_SERVICE_MICROPHONE",
         "android.permission.POST_NOTIFICATIONS",
-        "android.permission.ACCESS_NETWORK_STATE"
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
       ]
     },
     "web": {
@@ -77,6 +78,12 @@
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "f9dda8c3-a70a-446f-b3d7-1763ba95121b"
+      }
     }
   }
 }
