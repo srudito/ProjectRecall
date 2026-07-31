@@ -55,6 +55,32 @@
       "sessionCount": "{{count}} sesi",
       "empty": "Belum ada sesi dalam proyek ini.",
       "notFound": "Proyek tidak ditemukan"
+    },
+    "organization": {
+      "sort": "Urutkan",
+      "sortSessions": "Urutkan sesi",
+      "sortProjects": "Urutkan proyek",
+      "cardView": "Tampilan kartu",
+      "compactView": "Tampilan ringkas",
+      "sessionSort": {
+        "newest": "Terbaru dahulu",
+        "oldest": "Terlama dahulu",
+        "longest": "Rekaman terpanjang",
+        "shortest": "Rekaman terpendek"
+      },
+      "projectSort": {
+        "recent": "Aktivitas terbaru",
+        "newest": "Proyek terbaru",
+        "name": "Nama proyek"
+      },
+      "dateGroups": {
+        "today": "Hari ini",
+        "yesterday": "Kemarin",
+        "thisWeek": "Minggu ini",
+        "earlier": "Sebelumnya"
+      },
+      "sessionCount": "{{count}} sesi",
+      "lastActivity": "Aktivitas terakhir: {{date}}"
     }
   },
   "empty": {

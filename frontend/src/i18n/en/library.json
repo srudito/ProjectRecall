@@ -55,6 +55,32 @@
       "sessionCount": "{{count}} sessions",
       "empty": "No sessions belong to this project yet.",
       "notFound": "Project not found"
+    },
+    "organization": {
+      "sort": "Sort",
+      "sortSessions": "Sort sessions",
+      "sortProjects": "Sort projects",
+      "cardView": "Card view",
+      "compactView": "Compact view",
+      "sessionSort": {
+        "newest": "Newest first",
+        "oldest": "Oldest first",
+        "longest": "Longest recording",
+        "shortest": "Shortest recording"
+      },
+      "projectSort": {
+        "recent": "Recent activity",
+        "newest": "Newest project",
+        "name": "Project name"
+      },
+      "dateGroups": {
+        "today": "Today",
+        "yesterday": "Yesterday",
+        "thisWeek": "This week",
+        "earlier": "Earlier"
+      },
+      "sessionCount": "{{count}} sessions",
+      "lastActivity": "Last activity: {{date}}"
     }
   },
   "empty": {
