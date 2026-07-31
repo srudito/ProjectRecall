@@ -265,7 +265,21 @@ const completeAuthSessionFromUrlInternal = async (
       error,
       ErrorCode.AUTH_OAUTH_FAILED,
     );
-    if (appError) throw appError;
+
+    if (appError) {
+      // A second callback observer may have exchanged the single-use PKCE
+      // code first. Reuse the resulting session instead of showing a false
+      // verification failure.
+      const recovered = await waitForCurrentSession();
+      if (recovered) {
+        return {
+          session: recovered,
+          user: recovered.user,
+        };
+      }
+
+      throw appError;
+    }
 
     return {
       session: data.session,
@@ -273,12 +287,16 @@ const completeAuthSessionFromUrlInternal = async (
     };
   }
 
-  const existing = await supabase.auth.getSession();
+  // Some Android deep-link deliveries expose the route before the full query
+  // string reaches this component, while WebBrowser is still finishing the
+  // same OAuth callback. Give that consumer a short opportunity to persist
+  // the session before treating the callback as invalid.
+  const recovered = await waitForCurrentSession();
 
-  if (existing.data.session) {
+  if (recovered) {
     return {
-      session: existing.data.session,
-      user: existing.data.session.user,
+      session: recovered,
+      user: recovered.user,
     };
   }
 
@@ -454,6 +472,35 @@ export const getCurrentSession = async (): Promise<Session | null> => {
 
   const { data } = await supabase.auth.getSession();
   return data.session;
+};
+
+/**
+ * Wait briefly for another OAuth callback consumer to finish persisting the
+ * Supabase session. On Android, Expo Router and WebBrowser can observe the
+ * same deep link through slightly different URL shapes or timing. The PKCE
+ * authorization code is single-use, so the consumer that loses that race must
+ * reuse the session created by the successful consumer instead of reporting a
+ * false callback-verification error.
+ */
+export const waitForCurrentSession = async (
+  timeoutMs = 2500,
+  pollIntervalMs = 100,
+): Promise<Session | null> => {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  const interval = Math.max(25, pollIntervalMs);
+
+  do {
+    const session = await getCurrentSession();
+    if (session) return session;
+
+    if (Date.now() >= deadline) break;
+
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, interval);
+    });
+  } while (Date.now() <= deadline);
+
+  return getCurrentSession();
 };
 
 export const resendVerificationEmail = async (

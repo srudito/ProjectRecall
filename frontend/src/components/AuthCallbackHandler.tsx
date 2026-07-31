@@ -12,7 +12,11 @@ import { Button } from "@/src/components/Button";
 import { Screen } from "@/src/components/Screen";
 import { AppError } from "@/src/domain/errors";
 import { useI18n } from "@/src/i18n/I18nProvider";
-import { completeAuthSessionFromUrl } from "@/src/services/supabase/auth";
+import {
+  completeAuthSessionFromUrl,
+  getCurrentSession,
+  waitForCurrentSession,
+} from "@/src/services/supabase/auth";
 import { useAuthStore } from "@/src/stores/auth-store";
 import { useTheme } from "@/src/theme/ThemeProvider";
 
@@ -41,10 +45,38 @@ export function AuthCallbackHandler({
   useEffect(() => {
     let active = true;
 
+    const finishWithSession = (
+      session: NonNullable<
+        Awaited<ReturnType<typeof getCurrentSession>>
+      >,
+    ) => {
+      if (!active) return;
+
+      setSession(session);
+      router.replace(destination);
+    };
+
     const complete = async () => {
+      setError(null);
+
+      // GoogleSignInButton may already have completed the callback while Expo
+      // Router was mounting this deep-link screen. Never show an error for an
+      // already authenticated user.
+      const existing = await getCurrentSession();
+      if (existing) {
+        finishWithSession(existing);
+        return;
+      }
+
       const url = callbackUrl ?? (await Linking.getInitialURL());
 
       if (!url) {
+        const recovered = await waitForCurrentSession();
+        if (recovered) {
+          finishWithSession(recovered);
+          return;
+        }
+
         if (active) {
           setError(t("errors", "AUTH_OAUTH_CALLBACK_INVALID"));
         }
@@ -58,9 +90,28 @@ export function AuthCallbackHandler({
           return;
         }
 
-        setSession(result.session);
-        router.replace(destination);
+        if (result.session) {
+          finishWithSession(result.session);
+          return;
+        }
+
+        const recovered = await waitForCurrentSession();
+        if (recovered) {
+          finishWithSession(recovered);
+          return;
+        }
+
+        setError(t("errors", "AUTH_OAUTH_CALLBACK_INVALID"));
       } catch (cause) {
+        // A parallel WebBrowser callback can succeed after this route receives
+        // a bare or already-consumed callback URL. Recover the stored session
+        // before surfacing an error to the user.
+        const recovered = await waitForCurrentSession();
+        if (recovered) {
+          finishWithSession(recovered);
+          return;
+        }
+
         if (!active) {
           return;
         }
