@@ -11,6 +11,7 @@ import {
   getNote,
   getProject,
   getSession,
+  getSessionUserPreferenceById,
   getTimelineEvent,
   markMetadataOperationFailed,
   resetInProgressMetadataOperations,
@@ -19,11 +20,13 @@ import {
   updateNoteSyncStatus,
   updateProjectSyncStatus,
   updateSessionSyncStatus,
+  updateSessionUserPreferenceSyncStatus,
   updateTimelineEventSyncStatus,
   upsertBookmark,
   upsertNote,
   upsertProject,
   upsertSession,
+  upsertSessionUserPreference,
   upsertTimelineEvent,
   type BookmarkRecord,
   type ContentSyncStatusUpdate,
@@ -32,6 +35,7 @@ import {
   type NoteRecord,
   type ProjectRecord,
   type SessionRecord,
+  type SessionUserPreferenceRecord,
   type TimelineEventRecord,
 } from "@/src/services/sqlite/repository";
 import { getSupabase } from "@/src/services/supabase/client";
@@ -46,6 +50,7 @@ import {
   upsertRemoteTimelineEvent,
 } from "@/src/services/supabase/session-content-repository";
 import { upsertRemoteSession } from "@/src/services/supabase/session-repository";
+import { upsertRemoteSessionPreference } from "@/src/services/supabase/session-preference-repository";
 import { nextBackoffMs, shouldGiveUp } from "@/src/services/upload-queue/backoff";
 
 import { notifyMetadataSyncChanges } from "./project-sync-events";
@@ -84,22 +89,30 @@ export interface MetadataSyncWorkerDependencies {
   claimOperation: (id: string) => Promise<MetadataQueueRow | null>;
   getLocalProject: (id: string) => Promise<ProjectRecord | null>;
   getLocalSession: (id: string) => Promise<SessionRecord | null>;
+  getLocalSessionPreference: (
+    id: string,
+  ) => Promise<SessionUserPreferenceRecord | null>;
   getLocalNote: (id: string) => Promise<NoteRecord | null>;
   getLocalBookmark: (id: string) => Promise<BookmarkRecord | null>;
   getLocalMediaAsset: (id: string) => Promise<MediaAssetRecord | null>;
   getLocalTimelineEvent: (id: string) => Promise<TimelineEventRecord | null>;
   updateProjectStatus: typeof updateProjectSyncStatus;
   updateSessionStatus: typeof updateSessionSyncStatus;
+  updateSessionPreferenceStatus: typeof updateSessionUserPreferenceSyncStatus;
   updateNoteStatus: typeof updateNoteSyncStatus;
   updateBookmarkStatus: typeof updateBookmarkSyncStatus;
   updateTimelineStatus: typeof updateTimelineEventSyncStatus;
   saveLocalProject: typeof upsertProject;
   saveLocalSession: typeof upsertSession;
+  saveLocalSessionPreference: typeof upsertSessionUserPreference;
   saveLocalNote: typeof upsertNote;
   saveLocalBookmark: typeof upsertBookmark;
   saveLocalTimelineEvent: typeof upsertTimelineEvent;
   upsertCloudProject: (project: ProjectRecord) => Promise<ProjectRecord>;
   upsertCloudSession: (session: SessionRecord) => Promise<SessionRecord>;
+  upsertCloudSessionPreference: (
+    preference: SessionUserPreferenceRecord,
+  ) => Promise<SessionUserPreferenceRecord>;
   upsertCloudNote: (note: NoteRecord) => Promise<NoteRecord>;
   upsertCloudBookmark: (bookmark: BookmarkRecord) => Promise<BookmarkRecord>;
   upsertCloudTimelineEvent: (
@@ -139,22 +152,26 @@ const defaultDependencies: MetadataSyncWorkerDependencies = {
   claimOperation: claimMetadataOperation,
   getLocalProject: getProject,
   getLocalSession: getSession,
+  getLocalSessionPreference: getSessionUserPreferenceById,
   getLocalNote: getNote,
   getLocalBookmark: getBookmark,
   getLocalMediaAsset: getMediaAsset,
   getLocalTimelineEvent: getTimelineEvent,
   updateProjectStatus: updateProjectSyncStatus,
   updateSessionStatus: updateSessionSyncStatus,
+  updateSessionPreferenceStatus: updateSessionUserPreferenceSyncStatus,
   updateNoteStatus: updateNoteSyncStatus,
   updateBookmarkStatus: updateBookmarkSyncStatus,
   updateTimelineStatus: updateTimelineEventSyncStatus,
   saveLocalProject: upsertProject,
   saveLocalSession: upsertSession,
+  saveLocalSessionPreference: upsertSessionUserPreference,
   saveLocalNote: upsertNote,
   saveLocalBookmark: upsertBookmark,
   saveLocalTimelineEvent: upsertTimelineEvent,
   upsertCloudProject: upsertRemoteProject,
   upsertCloudSession: upsertRemoteSession,
+  upsertCloudSessionPreference: upsertRemoteSessionPreference,
   upsertCloudNote: upsertRemoteNote,
   upsertCloudBookmark: upsertRemoteBookmark,
   upsertCloudTimelineEvent: upsertRemoteTimelineEvent,
@@ -484,6 +501,114 @@ export const createMetadataSyncWorker = (
         normalized.message,
       );
       await dependencies.updateSessionStatus(session.id, {
+        local_sync_status: "failed",
+        cloud_sync_status: "failed",
+        last_sync_error_code: normalized.code,
+        last_sync_error_message: normalized.message,
+      });
+      result.failed += 1;
+      return "continue";
+    }
+  };
+
+  const processSessionPreference = async (
+    claimed: MetadataQueueRow,
+    result: MetadataSyncRunResult,
+  ): Promise<"continue" | "break"> => {
+    const preference = await dependencies.getLocalSessionPreference(
+      claimed.entity_id,
+    );
+    if (!preference) {
+      await dependencies.deleteCompletedOperation(claimed.id);
+      result.failed += 1;
+      return "continue";
+    }
+
+    if (preference.user_id !== claimed.user_id) {
+      return failOperation(
+        claimed,
+        result,
+        dependencies.updateSessionPreferenceStatus,
+        "SESSION_PREFERENCE_USER_MISMATCH",
+        "This session preference belongs to a different user.",
+      );
+    }
+
+    const parentState = await ensureSessionReady(
+      preference.session_id,
+      claimed,
+      result,
+      dependencies.updateSessionPreferenceStatus,
+    );
+    if (parentState !== "ready") return parentState;
+
+    await dependencies.updateSessionPreferenceStatus(preference.id, {
+      local_sync_status: "synchronizing",
+      cloud_sync_status: "pending",
+      last_sync_error_code: null,
+      last_sync_error_message: null,
+    });
+
+    try {
+      const remote = await dependencies.upsertCloudSessionPreference(
+        preference,
+      );
+      const latest = await dependencies.getLocalSessionPreference(
+        preference.id,
+      );
+
+      // A rapid second tap can update the same preference while this request
+      // is in flight. Keep the newer local row and its re-queued operation.
+      if (
+        latest &&
+        (latest.updated_at !== preference.updated_at ||
+          latest.is_starred !== preference.is_starred)
+      ) {
+        result.deferred += 1;
+        return "continue";
+      }
+
+      await dependencies.saveLocalSessionPreference({
+        ...remote,
+        local_sync_status: "synchronized",
+        cloud_sync_status: "synchronized",
+        last_sync_error_code: null,
+        last_sync_error_message: null,
+        last_synced_at: dependencies.now().toISOString(),
+      });
+      await dependencies.deleteCompletedOperation(claimed.id);
+      result.synchronized += 1;
+      return "continue";
+    } catch (error) {
+      const normalized = safeUnknownError(error);
+      const exhausted = shouldGiveUp(
+        claimed.attempt_count,
+        dependencies.maxAttempts,
+      );
+
+      if (normalized.retryable && !exhausted) {
+        await dependencies.rescheduleOperation(
+          claimed.id,
+          nextRetryAt(dependencies, claimed.attempt_count),
+          normalized.code,
+          normalized.message,
+        );
+        await dependencies.updateSessionPreferenceStatus(preference.id, {
+          local_sync_status: "pending",
+          cloud_sync_status: "failed",
+          last_sync_error_code: normalized.code,
+          last_sync_error_message: normalized.message,
+        });
+        result.retried += 1;
+        return "break";
+      }
+
+      await dependencies.markOperationFailed(
+        claimed.id,
+        normalized.code,
+        normalized.message,
+      );
+      await dependencies.updateSessionPreferenceStatus(preference.id, {
         local_sync_status: "failed",
         cloud_sync_status: "failed",
         last_sync_error_code: normalized.code,
@@ -853,6 +978,9 @@ export const createMetadataSyncWorker = (
           break;
         case "session":
           action = await processSession(claimed, result);
+          break;
+        case "session_preference":
+          action = await processSessionPreference(claimed, result);
           break;
         case "note":
           action = await processMutableContent(claimed, result, {

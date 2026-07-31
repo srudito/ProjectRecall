@@ -34,7 +34,7 @@ Failed projects and sessions can be requeued from the UI.
 The worker is requested when:
 
 - authentication becomes ready;
-- a project, session, note, bookmark, or timeline event is created or changed;
+- a project, session, personal session preference, note, bookmark, or timeline event is created or changed;
 - a recording or evidence upload becomes eligible;
 - the application becomes active;
 - connectivity returns;
@@ -57,14 +57,15 @@ Metadata priorities currently are:
 ```text
 project:                    100
 session:                    200
+session preference:         250
 note/bookmark:              300
 recording/content timeline: 400
 evidence timeline:          500
 ```
 
 A session with a parent project is deferred until the local project is marked
-`synchronized`. Notes and bookmarks are deferred until their session is
-synchronized. A note/bookmark timeline event is deferred until both its session
+`synchronized`. Personal session preferences, notes, and bookmarks are deferred until their
+session is synchronized. A note/bookmark timeline event is deferred until both its session
 and source entity are synchronized. Recording lifecycle events depend on the
 session. Image/video/document timeline events wait until both the session and
 their `media_asset` binary/metadata upload are synchronized. Dependency
@@ -80,7 +81,8 @@ pending -> in_progress -> removed after success
                     \-> failed after permanent failure or retry exhaustion
 ```
 
-Local metadata sync states (project, session, note, bookmark, and timeline):
+Local metadata sync states (project, session, session preference, note,
+bookmark, and timeline):
 
 ```text
 local_only | pending | synchronizing | synchronized | failed
@@ -107,6 +109,7 @@ Deterministic metadata keys are:
 ```text
 upsert:project:<project_uuid>
 upsert:session:<session_uuid>
+upsert:session_preference:<user_uuid>:<session_uuid>
 upsert:note:<note_uuid>
 upsert:bookmark:<bookmark_uuid>
 upsert:timeline_event:<timeline_uuid>
@@ -129,6 +132,17 @@ On native platforms:
 6. absence from one cloud response never deletes an unsynchronized local row;
 7. cloud hydration preserves cloud `updated_at` and does not create a sync loop;
 8. a locally soft-deleted session is not resurrected.
+
+
+## Personal session organization preferences
+
+Starred state is stored separately from the shared session record. Native uses
+`local_session_user_preferences` plus the metadata queue; cloud uses
+`public.session_user_preferences` with the composite key
+`(user_id, session_id)`. A newer toggle reactivates the same deterministic
+queue operation, and cloud-to-local refresh restores the preference after
+reinstall or sign-in on another device. RLS restricts every row to its owner
+while also requiring access to the referenced session.
 
 ## Session lifecycle metadata
 

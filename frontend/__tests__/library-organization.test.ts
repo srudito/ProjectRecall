@@ -190,6 +190,35 @@ describe("library organization", () => {
     ]);
   });
 
+  it("sorts starred sessions first without changing the remaining chronology", () => {
+    const rows = [
+      session({
+        id: "newest-unstarred",
+        createdAt: localIso(2026, 7, 31),
+      }),
+      session({
+        id: "older-starred",
+        createdAt: localIso(2026, 7, 1),
+      }),
+      session({
+        id: "middle-unstarred",
+        createdAt: localIso(2026, 7, 20),
+      }),
+    ];
+
+    expect(
+      sortSessions(
+        rows,
+        "starred",
+        new Set(["older-starred"]),
+      ).map((item) => item.id),
+    ).toEqual([
+      "older-starred",
+      "newest-unstarred",
+      "middle-unstarred",
+    ]);
+  });
+
   it("calculates session count and last project activity", () => {
     const projectA = project(
       "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -264,6 +293,7 @@ describe("library organization", () => {
     expect(isLibraryViewMode("card")).toBe(true);
     expect(isLibraryViewMode("grid")).toBe(false);
     expect(isSessionSortMode("longest")).toBe(true);
+    expect(isSessionSortMode("starred")).toBe(true);
     expect(isSessionSortMode("recent")).toBe(false);
     expect(isProjectSortMode("recent")).toBe(true);
     expect(isProjectSortMode("longest")).toBe(false);

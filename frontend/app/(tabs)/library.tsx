@@ -1,3 +1,4 @@
+import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 import {
   useCallback,
@@ -51,9 +52,14 @@ import {
   fetchSessions,
   retryProjectSync,
 } from "@/src/services/session/service";
+import {
+  fetchSessionUserPreferences,
+  setSessionStarred,
+} from "@/src/services/session/session-preference-service";
 import type {
   ProjectRecord,
   SessionRecord,
+  SessionUserPreferenceRecord,
 } from "@/src/services/sqlite/repository";
 import { subscribeMetadataSyncChanges } from "@/src/services/sync/project-sync-events";
 import { resolvePersonalWorkspace } from "@/src/services/workspace/service";
@@ -66,6 +72,7 @@ type Tab = "projects" | "sessions";
 
 type Filter =
   | "all"
+  | "starred"
   | "localOnly"
   | "pending"
   | "syncing"
@@ -74,6 +81,7 @@ type Filter =
 
 const FILTER_TO_STATUS: Record<Filter, string | null> = {
   all: null,
+  starred: null,
   localOnly: "local_only",
   pending: "pending",
   syncing: "synchronizing",
@@ -95,6 +103,18 @@ export default function Library() {
     [],
   );
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
+  const [sessionPreferences, setSessionPreferences] = useState<
+    SessionUserPreferenceRecord[]
+  >([]);
+  const [starOverrides, setStarOverrides] = useState<Record<string, boolean>>(
+    {},
+  );
+  const [starringSessionIds, setStarringSessionIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [sessionPreferenceError, setSessionPreferenceError] = useState<
+    string | null
+  >(null);
   const [creatingProject, setCreatingProject] = useState(false);
   const [submittingProject, setSubmittingProject] = useState(false);
   const [retryingProjectId, setRetryingProjectId] = useState<string | null>(
@@ -191,7 +211,10 @@ export default function Library() {
       setProjects([]);
       setProjectReferences([]);
       setSessions([]);
+      setSessionPreferences([]);
+      setStarOverrides({});
       setProjectError(null);
+      setSessionPreferenceError(null);
       return;
     }
 
@@ -206,6 +229,21 @@ export default function Library() {
       setProjects(projectRows);
       setProjectReferences(projectRows);
       setSessions(sessionRows);
+
+      try {
+        const preferenceRows = await fetchSessionUserPreferences({
+          userId: user.id,
+          workspaceId: workspace.id,
+          sessionIds: sessionRows.map((session) => session.id),
+        });
+        setSessionPreferences(preferenceRows);
+        setStarOverrides({});
+        setSessionPreferenceError(null);
+      } catch {
+        setSessionPreferenceError(
+          t("library", "library.starred.loadFailed"),
+        );
+      }
 
       const activeProjectIds = new Set(
         projectRows.map((project) => project.id),
@@ -257,14 +295,31 @@ export default function Library() {
     [projectLookup, t],
   );
 
+  const starredSessionIds = useMemo(() => {
+    const starred = new Set(
+      sessionPreferences
+        .filter((preference) => preference.is_starred)
+        .map((preference) => preference.session_id),
+    );
+
+    Object.entries(starOverrides).forEach(([sessionId, isStarred]) => {
+      if (isStarred) starred.add(sessionId);
+      else starred.delete(sessionId);
+    });
+
+    return starred;
+  }, [sessionPreferences, starOverrides]);
+
   const filteredSessions = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     const selectedStatus = FILTER_TO_STATUS[filter];
 
     return sessions.filter((session) => {
       const passesFilter =
-        selectedStatus === null ||
-        session.local_sync_status === selectedStatus;
+        filter === "starred"
+          ? starredSessionIds.has(session.id)
+          : selectedStatus === null ||
+            session.local_sync_status === selectedStatus;
       const projectName = projectNameForSession(session).toLowerCase();
       const passesSearch =
         normalizedQuery.length === 0 ||
@@ -273,7 +328,13 @@ export default function Library() {
 
       return passesFilter && passesSearch;
     });
-  }, [filter, projectNameForSession, query, sessions]);
+  }, [
+    filter,
+    projectNameForSession,
+    query,
+    sessions,
+    starredSessionIds,
+  ]);
 
   const sessionSections = useMemo(
     () =>
@@ -281,8 +342,10 @@ export default function Library() {
         filteredSessions,
         sessionSortMode,
         language,
+        new Date(),
+        starredSessionIds,
       ),
-    [filteredSessions, language, sessionSortMode],
+    [filteredSessions, language, sessionSortMode, starredSessionIds],
   );
 
   const projectStats = useMemo(
@@ -310,6 +373,10 @@ export default function Library() {
       {
         value: "oldest",
         label: t("library", "library.organization.sessionSort.oldest"),
+      },
+      {
+        value: "starred",
+        label: t("library", "library.organization.sessionSort.starred"),
       },
       {
         value: "longest",
@@ -340,6 +407,92 @@ export default function Library() {
     ],
     [t],
   );
+
+  const toggleSessionStar = async (session: SessionRecord) => {
+    if (!user?.id || starringSessionIds.has(session.id)) return;
+
+    const previous = starredSessionIds.has(session.id);
+    const next = !previous;
+    setSessionPreferenceError(null);
+    setStarOverrides((current) => ({ ...current, [session.id]: next }));
+    setStarringSessionIds((current) => {
+      const updated = new Set(current);
+      updated.add(session.id);
+      return updated;
+    });
+
+    try {
+      const preference = await setSessionStarred({
+        userId: user.id,
+        workspaceId: session.workspace_id,
+        sessionId: session.id,
+        isStarred: next,
+      });
+      setSessionPreferences((current) => {
+        const remaining = current.filter(
+          (item) =>
+            item.user_id !== preference.user_id ||
+            item.session_id !== preference.session_id,
+        );
+        return [preference, ...remaining];
+      });
+      setStarOverrides((current) => {
+        const updated = { ...current };
+        delete updated[session.id];
+        return updated;
+      });
+    } catch {
+      setStarOverrides((current) => {
+        const updated = { ...current };
+        delete updated[session.id];
+        return updated;
+      });
+      setSessionPreferenceError(
+        t("library", "library.starred.updateFailed"),
+      );
+    } finally {
+      setStarringSessionIds((current) => {
+        const updated = new Set(current);
+        updated.delete(session.id);
+        return updated;
+      });
+    }
+  };
+
+  const renderStarButton = (session: SessionRecord) => {
+    const isStarred = starredSessionIds.has(session.id);
+    const isSaving = starringSessionIds.has(session.id);
+    const label = isStarred
+      ? t("library", "library.starred.remove")
+      : t("library", "library.starred.add");
+
+    return (
+      <TouchableOpacity
+        testID={`library-session-star-${session.id}`}
+        accessibilityRole="button"
+        accessibilityLabel={label}
+        accessibilityState={{ selected: isStarred, disabled: isSaving }}
+        disabled={isSaving}
+        onPress={(event) => {
+          event.stopPropagation();
+          void toggleSessionStar(session);
+        }}
+        style={{
+          width: 40,
+          height: 40,
+          alignItems: "center",
+          justifyContent: "center",
+          opacity: isSaving ? 0.55 : 1,
+        }}
+      >
+        <Ionicons
+          name={isStarred ? "star" : "star-outline"}
+          size={22}
+          color={isStarred ? colors.warning : colors.textTertiary}
+        />
+      </TouchableOpacity>
+    );
+  };
 
   const submitNewProject = async () => {
     const projectName = newName.trim();
@@ -494,6 +647,7 @@ export default function Library() {
   const renderFilters = () => {
     const items: { key: Filter; label: string }[] = [
       { key: "all", label: t("library", "library.filters.all") },
+      { key: "starred", label: t("library", "library.filters.starred") },
       {
         key: "localOnly",
         label: t("library", "library.filters.localOnly"),
@@ -763,11 +917,11 @@ export default function Library() {
             <View
               style={{
                 flexDirection: "row",
-                justifyContent: "space-between",
-                alignItems: "flex-start",
-                gap: spacing.sm,
+                alignItems: "center",
+                gap: spacing.xs,
               }}
             >
+              {renderStarButton(item)}
               <Text
                 numberOfLines={1}
                 style={[
@@ -809,9 +963,24 @@ export default function Library() {
         }
       >
         <Card style={{ marginBottom: spacing.sm }}>
-          <Text style={[typography.bodyMedium, { color: colors.textPrimary }]}>
-            {item.title}
-          </Text>
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: spacing.xs,
+            }}
+          >
+            <Text
+              numberOfLines={2}
+              style={[
+                typography.bodyMedium,
+                { color: colors.textPrimary, flex: 1 },
+              ]}
+            >
+              {item.title}
+            </Text>
+            {renderStarButton(item)}
+          </View>
 
           <Text
             testID={`library-session-project-${item.id}`}
@@ -989,6 +1158,19 @@ export default function Library() {
 
           {renderFilters()}
 
+          {sessionPreferenceError ? (
+            <Text
+              accessibilityRole="alert"
+              testID="library-session-preference-error"
+              style={[
+                typography.caption,
+                { color: colors.recording, marginBottom: spacing.sm },
+              ]}
+            >
+              {sessionPreferenceError}
+            </Text>
+          ) : null}
+
           <LibraryOrganizationToolbar
             testIDPrefix="library-sessions"
             viewMode={sessionViewMode}
@@ -1012,6 +1194,9 @@ export default function Library() {
           <SectionList<SessionRecord, { key: SessionDateGroupKey }>
             sections={sessionSections}
             keyExtractor={(item: SessionRecord) => item.id}
+            extraData={`${sessionViewMode}:${sessionSortMode}:${filter}:${[
+              ...starredSessionIds,
+            ].join(",")}:${[...starringSessionIds].join(",")}`}
             style={{ flex: 1, minHeight: 0 }}
             contentContainerStyle={{
               paddingTop: spacing.xs,

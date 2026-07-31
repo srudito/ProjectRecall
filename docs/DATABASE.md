@@ -9,6 +9,7 @@
 | `workspace_members`      | Membership + role + status link between users & workspaces. |
 | `projects`               | Groups sessions inside a workspace.                         |
 | `sessions`               | Recording session with language + sync metadata.            |
+| `session_user_preferences` | Per-user session star and future organization preferences. |
 | `recordings`             | Audio artefact for a session (1:1).                         |
 | `media_assets`           | Photos, videos, documents attached during a session.        |
 | `attachment_events`      | Audit rows for asset add/remove.                            |
@@ -28,6 +29,8 @@
 - `workspace_members(workspace_id, user_id)` PK-like unique constraint.
 - `projects.workspace_id` FK → `workspaces.id`.
 - `sessions.workspace_id, project_id, created_by`.
+- `session_user_preferences(user_id, session_id)` composite primary key with
+  cascade cleanup from both the user and session.
 - `recordings.session_id` unique.
 - `media_assets.session_id`, `user_notes.session_id`, `bookmarks.session_id`,
   `timeline_events.session_id`.
@@ -49,6 +52,8 @@ indexes:
 - `idx_workspaces_owner`, `idx_wm_user`, `idx_wm_workspace`
 - `idx_projects_workspace`
 - `idx_sessions_workspace`, `idx_sessions_project`
+- `idx_session_user_preferences_session`,
+  `idx_session_user_preferences_starred`
 - `idx_media_session`
 - `idx_timeline_session(session_id, recording_offset_ms)`
 
@@ -60,7 +65,10 @@ Enabled on **every** user-owned table. Access is granted only when
 - `profiles`: owner-only (matched by `auth.uid()`).
 - `feature_flags`: read-only for `authenticated`.
 
-Full policy list is in `supabase/migrations/0002_rls_policies.sql`.
+The original policy set is in `supabase/migrations/0002_rls_policies.sql`.
+`0006_session_user_preferences.sql` adds self-only policies for personal
+session organization preferences and also requires access to the referenced
+session workspace.
 
 ## Storage policies
 

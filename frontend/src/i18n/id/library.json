@@ -22,7 +22,8 @@
       "pending": "Menunggu",
       "syncing": "Sinkron",
       "synced": "Tersinkron",
-      "failed": "Gagal"
+      "failed": "Gagal",
+      "starred": "Berbintang"
     },
     "search": "Cari",
     "createProject": "Buat proyek",
@@ -66,7 +67,8 @@
         "newest": "Terbaru dahulu",
         "oldest": "Terlama dahulu",
         "longest": "Rekaman terpanjang",
-        "shortest": "Rekaman terpendek"
+        "shortest": "Rekaman terpendek",
+        "starred": "Berbintang dahulu"
       },
       "projectSort": {
         "recent": "Aktivitas terbaru",
@@ -81,6 +83,12 @@
       },
       "sessionCount": "{{count}} sesi",
       "lastActivity": "Aktivitas terakhir: {{date}}"
+    },
+    "starred": {
+      "add": "Tambahkan ke sesi berbintang",
+      "remove": "Hapus dari sesi berbintang",
+      "updateFailed": "Preferensi sesi berbintang tidak dapat disimpan. Coba lagi.",
+      "loadFailed": "Sesi berbintang tidak dapat diperbarui. Perubahan bintang lokal tetap tersedia."
     }
   },
   "empty": {

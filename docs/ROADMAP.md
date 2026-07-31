@@ -43,6 +43,13 @@ Remaining Milestone 1 work:
   background recording;
 - authentication hardening/social login before public beta.
 
+Completed in Starred Sessions v1:
+
+- personal per-user session stars on Card and Compact views;
+- Starred filter and Starred-first sort;
+- local-first offline persistence and cloud restoration;
+- self-only RLS and session-deletion cascade cleanup.
+
 ## Milestone 2 — Batch transcription
 
 - `TranscriptionProvider` interface with a single real provider.

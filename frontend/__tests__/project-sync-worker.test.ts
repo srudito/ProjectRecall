@@ -9,6 +9,7 @@ import type {
   NoteRecord,
   ProjectRecord,
   SessionRecord,
+  SessionUserPreferenceRecord,
   TimelineEventRecord,
 } from "@/src/services/sqlite/repository";
 
@@ -64,6 +65,21 @@ const session: SessionRecord = {
   last_synced_at: null,
 };
 
+const sessionPreference: SessionUserPreferenceRecord = {
+  id: `session-preference:${project.created_by}:${session.id}`,
+  user_id: project.created_by,
+  workspace_id: project.workspace_id,
+  session_id: session.id,
+  is_starred: true,
+  created_at: "2026-07-27T10:00:00.000Z",
+  updated_at: "2026-07-27T10:00:00.000Z",
+  local_sync_status: "pending",
+  cloud_sync_status: "pending",
+  last_sync_error_code: null,
+  last_sync_error_message: null,
+  last_synced_at: null,
+};
+
 const queueRow: MetadataQueueRow = {
   id: "44444444-4444-4444-8444-444444444444",
   user_id: project.created_by,
@@ -110,17 +126,22 @@ const makeDependencies = (
     ),
     getLocalProject: jest.fn(async () => project),
     getLocalSession: jest.fn(async () => ({ ...session })),
+    getLocalSessionPreference: jest.fn(async () => ({ ...sessionPreference })),
     getLocalNote: jest.fn(async () => null),
     getLocalBookmark: jest.fn(async () => null),
     getLocalMediaAsset: jest.fn(async () => null),
     getLocalTimelineEvent: jest.fn(async () => null),
     updateProjectStatus: jest.fn(async () => undefined),
     updateSessionStatus: jest.fn(async () => undefined),
+    updateSessionPreferenceStatus: jest.fn(async () => undefined),
     updateNoteStatus: jest.fn(async () => undefined),
     updateBookmarkStatus: jest.fn(async () => undefined),
     updateTimelineStatus: jest.fn(async () => undefined),
     saveLocalProject: jest.fn(async () => undefined),
     saveLocalSession: jest.fn(async () => undefined),
+    saveLocalSessionPreference: jest.fn(
+      async (_record: SessionUserPreferenceRecord) => undefined,
+    ),
     saveLocalNote: jest.fn(async (_record: NoteRecord) => undefined),
     saveLocalBookmark: jest.fn(async (_record: BookmarkRecord) => undefined),
     saveLocalTimelineEvent: jest.fn(
@@ -132,6 +153,13 @@ const makeDependencies = (
       cloud_sync_status: "synchronized",
     })),
     upsertCloudSession: jest.fn(async () => ({ ...session })),
+    upsertCloudSessionPreference: jest.fn(
+      async (record: SessionUserPreferenceRecord) => ({
+        ...record,
+        local_sync_status: "synchronized",
+        cloud_sync_status: "synchronized",
+      }),
+    ),
     upsertCloudNote: jest.fn(async (record: NoteRecord) => record),
     upsertCloudBookmark: jest.fn(async (record: BookmarkRecord) => record),
     upsertCloudTimelineEvent: jest.fn(
@@ -231,6 +259,46 @@ describe("project sync worker", () => {
       "Access denied",
     );
     expect(dependencies.rescheduleOperation).not.toHaveBeenCalled();
+  });
+
+  it("synchronizes a starred-session preference after its session", async () => {
+    const preferenceQueue: MetadataQueueRow = {
+      ...queueRow,
+      id: "99999999-9999-4999-8999-999999999999",
+      entity_type: "session_preference",
+      entity_id: sessionPreference.id,
+      parent_entity_type: "session",
+      parent_entity_id: session.id,
+      priority: 250,
+      idempotency_key: `upsert:session_preference:${project.created_by}:${session.id}`,
+    };
+    const dependencies = makeDependencies({
+      getNextOperation: jest
+        .fn()
+        .mockResolvedValueOnce(preferenceQueue)
+        .mockResolvedValueOnce(null),
+      claimOperation: jest.fn(async () => ({
+        ...preferenceQueue,
+        queue_status: "in_progress" as const,
+        attempt_count: 1,
+      })),
+      getLocalSession: jest.fn(async () => ({
+        ...session,
+        local_sync_status: "synchronized",
+        cloud_sync_status: "synchronized",
+      })),
+    });
+    const worker = createProjectSyncWorker(dependencies);
+
+    const result = await worker.run();
+
+    expect(result.synchronized).toBe(1);
+    expect(dependencies.upsertCloudSessionPreference).toHaveBeenCalledWith(
+      sessionPreference,
+    );
+    expect(dependencies.deleteCompletedOperation).toHaveBeenCalledWith(
+      preferenceQueue.id,
+    );
   });
 
   it("shares one active run between concurrent callers", async () => {

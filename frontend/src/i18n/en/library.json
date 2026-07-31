@@ -22,7 +22,8 @@
       "pending": "Pending",
       "syncing": "Syncing",
       "synced": "Synced",
-      "failed": "Failed"
+      "failed": "Failed",
+      "starred": "Starred"
     },
     "search": "Search",
     "createProject": "Create project",
@@ -66,7 +67,8 @@
         "newest": "Newest first",
         "oldest": "Oldest first",
         "longest": "Longest recording",
-        "shortest": "Shortest recording"
+        "shortest": "Shortest recording",
+        "starred": "Starred first"
       },
       "projectSort": {
         "recent": "Recent activity",
@@ -81,6 +83,12 @@
       },
       "sessionCount": "{{count}} sessions",
       "lastActivity": "Last activity: {{date}}"
+    },
+    "starred": {
+      "add": "Add to starred sessions",
+      "remove": "Remove from starred sessions",
+      "updateFailed": "The starred-session preference could not be saved. Try again.",
+      "loadFailed": "Starred sessions could not be refreshed. Local star changes are still available."
     }
   },
   "empty": {

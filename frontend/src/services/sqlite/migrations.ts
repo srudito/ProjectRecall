@@ -737,6 +737,29 @@ const v8Ddl: readonly string[] = [
     ON CONFLICT(session_id) DO NOTHING`,
 ];
 
+// Version 9: per-user starred-session preferences and durable sync queue.
+const v9Ddl: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS local_session_user_preferences (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    is_starred INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    local_sync_status TEXT NOT NULL DEFAULT 'local_only',
+    cloud_sync_status TEXT NOT NULL DEFAULT 'not_started',
+    last_sync_error_code TEXT,
+    last_sync_error_message TEXT,
+    last_synced_at TEXT,
+    UNIQUE(user_id, session_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_session_preferences_user_starred
+     ON local_session_user_preferences(user_id, is_starred, updated_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_session_preferences_session
+     ON local_session_user_preferences(session_id)`,
+];
+
 export const MIGRATIONS: readonly Migration[] = [
   {
     version: 1,
@@ -806,6 +829,15 @@ export const MIGRATIONS: readonly Migration[] = [
     description: "Cloud-aware session deletion and orphan cleanup queue.",
     up: async ({ db }) => {
       for (const stmt of v8Ddl) {
+        await db.execAsync(stmt);
+      }
+    },
+  },
+  {
+    version: 9,
+    description: "Per-user starred-session preferences and synchronization.",
+    up: async ({ db }) => {
+      for (const stmt of v9Ddl) {
         await db.execAsync(stmt);
       }
     },

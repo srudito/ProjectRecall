@@ -8,6 +8,7 @@ import type {
   NoteRecord,
   ProjectRecord,
   SessionRecord,
+  SessionUserPreferenceRecord,
   TimelineEventRecord,
 } from "@/src/services/sqlite/repository";
 import { ProjectSyncError } from "@/src/services/supabase/project-repository";
@@ -63,6 +64,21 @@ const session: SessionRecord = {
   last_synced_at: null,
 };
 
+const sessionPreference: SessionUserPreferenceRecord = {
+  id: `session-preference:${session.created_by}:${session.id}`,
+  user_id: session.created_by,
+  workspace_id: session.workspace_id,
+  session_id: session.id,
+  is_starred: true,
+  created_at: session.created_at,
+  updated_at: session.updated_at,
+  local_sync_status: "pending",
+  cloud_sync_status: "pending",
+  last_sync_error_code: null,
+  last_sync_error_message: null,
+  last_synced_at: null,
+};
+
 const queueRow: MetadataQueueRow = {
   id: "66666666-6666-4666-8666-666666666666",
   user_id: session.created_by,
@@ -109,17 +125,20 @@ const makeDependencies = (
     ),
     getLocalProject: jest.fn(async () => project),
     getLocalSession: jest.fn(async () => session),
+    getLocalSessionPreference: jest.fn(async () => sessionPreference),
     getLocalNote: jest.fn(async () => null),
     getLocalBookmark: jest.fn(async () => null),
     getLocalMediaAsset: jest.fn(async () => null),
     getLocalTimelineEvent: jest.fn(async () => null),
     updateProjectStatus: jest.fn(async () => undefined),
     updateSessionStatus: jest.fn(async () => undefined),
+    updateSessionPreferenceStatus: jest.fn(async () => undefined),
     updateNoteStatus: jest.fn(async () => undefined),
     updateBookmarkStatus: jest.fn(async () => undefined),
     updateTimelineStatus: jest.fn(async () => undefined),
     saveLocalProject: jest.fn(async () => undefined),
     saveLocalSession: jest.fn(async () => undefined),
+    saveLocalSessionPreference: jest.fn(async () => undefined),
     saveLocalNote: jest.fn(async (_record: NoteRecord) => undefined),
     saveLocalBookmark: jest.fn(async (_record: BookmarkRecord) => undefined),
     saveLocalTimelineEvent: jest.fn(
@@ -128,6 +147,11 @@ const makeDependencies = (
     upsertCloudProject: jest.fn(async () => project),
     upsertCloudSession: jest.fn(async () => ({
       ...session,
+      local_sync_status: "synchronized",
+      cloud_sync_status: "synchronized",
+    })),
+    upsertCloudSessionPreference: jest.fn(async () => ({
+      ...sessionPreference,
       local_sync_status: "synchronized",
       cloud_sync_status: "synchronized",
     })),

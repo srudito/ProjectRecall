@@ -294,6 +294,165 @@ export const softDeleteSession = async (id: string): Promise<void> => {
   );
 };
 
+// Per-user session organization preferences -------------------------------
+export interface SessionUserPreferenceRecord {
+  id: string;
+  user_id: string;
+  workspace_id: string;
+  session_id: string;
+  is_starred: boolean;
+  created_at: string;
+  updated_at: string;
+  local_sync_status: string;
+  cloud_sync_status: string;
+  last_sync_error_code: string | null;
+  last_sync_error_message: string | null;
+  last_synced_at: string | null;
+}
+
+interface LocalSessionUserPreferenceRow
+  extends Omit<SessionUserPreferenceRecord, "is_starred"> {
+  is_starred: number;
+}
+
+const parseSessionUserPreference = (
+  row: LocalSessionUserPreferenceRow,
+): SessionUserPreferenceRecord => ({
+  ...row,
+  is_starred: row.is_starred === 1,
+});
+
+const upsertSessionUserPreferenceOnDb = async (
+  db: SQLite.SQLiteDatabase,
+  record: SessionUserPreferenceRecord,
+): Promise<void> => {
+  await db.runAsync(
+    `INSERT INTO local_session_user_preferences
+      (id, user_id, workspace_id, session_id, is_starred,
+       created_at, updated_at, local_sync_status, cloud_sync_status,
+       last_sync_error_code, last_sync_error_message, last_synced_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(user_id, session_id) DO UPDATE SET
+       id=excluded.id,
+       workspace_id=excluded.workspace_id,
+       is_starred=excluded.is_starred,
+       updated_at=excluded.updated_at,
+       local_sync_status=excluded.local_sync_status,
+       cloud_sync_status=excluded.cloud_sync_status,
+       last_sync_error_code=excluded.last_sync_error_code,
+       last_sync_error_message=excluded.last_sync_error_message,
+       last_synced_at=excluded.last_synced_at`,
+    [
+      record.id,
+      record.user_id,
+      record.workspace_id,
+      record.session_id,
+      record.is_starred ? 1 : 0,
+      record.created_at,
+      record.updated_at,
+      record.local_sync_status,
+      record.cloud_sync_status,
+      record.last_sync_error_code,
+      record.last_sync_error_message,
+      record.last_synced_at,
+    ],
+  );
+};
+
+export const upsertSessionUserPreference = async (
+  record: SessionUserPreferenceRecord,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  await upsertSessionUserPreferenceOnDb(db, record);
+};
+
+export const getSessionUserPreference = async (
+  userId: string,
+  sessionId: string,
+): Promise<SessionUserPreferenceRecord | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+  const row = (await db.getFirstAsync(
+    `SELECT *
+       FROM local_session_user_preferences
+      WHERE user_id = ? AND session_id = ?
+      LIMIT 1`,
+    [userId, sessionId],
+  )) as LocalSessionUserPreferenceRow | null;
+  return row ? parseSessionUserPreference(row) : null;
+};
+
+export const getSessionUserPreferenceById = async (
+  id: string,
+): Promise<SessionUserPreferenceRecord | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+  const row = (await db.getFirstAsync(
+    `SELECT *
+       FROM local_session_user_preferences
+      WHERE id = ?
+      LIMIT 1`,
+    [id],
+  )) as LocalSessionUserPreferenceRow | null;
+  return row ? parseSessionUserPreference(row) : null;
+};
+
+export const listSessionUserPreferences = async (
+  userId: string,
+  workspaceId?: string,
+): Promise<SessionUserPreferenceRecord[]> => {
+  const db = await openLocalDb();
+  if (!db) return [];
+  const workspaceClause = workspaceId ? " AND workspace_id = ?" : "";
+  const params = workspaceId ? [userId, workspaceId] : [userId];
+  const rows = (await db.getAllAsync(
+    `SELECT *
+       FROM local_session_user_preferences
+      WHERE user_id = ?${workspaceClause}
+      ORDER BY updated_at DESC`,
+    params,
+  )) as LocalSessionUserPreferenceRow[];
+  return rows.map(parseSessionUserPreference);
+};
+
+export interface SessionUserPreferenceSyncStatusUpdate {
+  local_sync_status?: string;
+  cloud_sync_status?: string;
+  last_sync_error_code?: string | null;
+  last_sync_error_message?: string | null;
+  last_synced_at?: string | null;
+}
+
+export const updateSessionUserPreferenceSyncStatus = async (
+  id: string,
+  patch: SessionUserPreferenceSyncStatusUpdate,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+
+  const allowedKeys: (keyof SessionUserPreferenceSyncStatusUpdate)[] = [
+    "local_sync_status",
+    "cloud_sync_status",
+    "last_sync_error_code",
+    "last_sync_error_message",
+    "last_synced_at",
+  ];
+  const entries = allowedKeys
+    .filter((key) => Object.prototype.hasOwnProperty.call(patch, key))
+    .map((key) => ({ key, value: patch[key] ?? null }));
+  if (entries.length === 0) return;
+
+  const assignments = entries.map(({ key }) => `${key} = ?`).join(", ");
+  const values = entries.map(({ value }) => value);
+  await db.runAsync(
+    `UPDATE local_session_user_preferences
+        SET ${assignments}
+      WHERE id = ?`,
+    [...values, id],
+  );
+};
+
 export interface ProjectRecord {
   id: string;
   workspace_id: string;
@@ -1761,7 +1920,8 @@ export type MetadataQueueEntityType =
   | "session"
   | "note"
   | "bookmark"
-  | "timeline_event";
+  | "timeline_event"
+  | "session_preference";
 export type MetadataQueueStatus =
   | "pending"
   | "in_progress"
@@ -2333,6 +2493,61 @@ export const atomicRequeueSessionSync = async (
 };
 
 // ============================================================================
+// Atomic per-user session preference update
+// ============================================================================
+
+export interface AtomicUpsertSessionUserPreferenceWithSyncInput {
+  preference: SessionUserPreferenceRecord;
+  queueRowId: string;
+  idempotencyKey: string;
+}
+
+export const atomicUpsertSessionUserPreferenceWithSync = async (
+  input: AtomicUpsertSessionUserPreferenceWithSyncInput,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  const preference = input.preference;
+
+  await runSerializedLocalTransaction(db, async () => {
+    await upsertSessionUserPreferenceOnDb(db, preference);
+    const now = nowIso();
+    await db.runAsync(
+      `INSERT INTO local_metadata_sync_queue
+        (id, user_id, workspace_id, entity_type, entity_id, operation,
+         parent_entity_type, parent_entity_id, priority,
+         queue_status, attempt_count, next_retry_at,
+         last_error_code, last_safe_error, idempotency_key,
+         created_at, updated_at)
+       VALUES (?, ?, ?, 'session_preference', ?, 'UPSERT', 'session', ?, 250,
+               'pending', 0, NULL, NULL, NULL, ?, ?, ?)
+       ON CONFLICT(idempotency_key) DO UPDATE SET
+         user_id = excluded.user_id,
+         workspace_id = excluded.workspace_id,
+         parent_entity_type = excluded.parent_entity_type,
+         parent_entity_id = excluded.parent_entity_id,
+         priority = excluded.priority,
+         queue_status = 'pending',
+         attempt_count = 0,
+         next_retry_at = NULL,
+         last_error_code = NULL,
+         last_safe_error = NULL,
+         updated_at = excluded.updated_at`,
+      [
+        input.queueRowId,
+        preference.user_id,
+        preference.workspace_id,
+        preference.id,
+        preference.session_id,
+        input.idempotencyKey,
+        preference.created_at,
+        now,
+      ],
+    );
+  });
+};
+
+// ============================================================================
 // Atomic local note/bookmark/timeline creation
 // ============================================================================
 
@@ -2633,8 +2848,17 @@ export const atomicPrepareSessionDeletion = async (
               ))
            OR (entity_type = 'timeline_event' AND entity_id IN (
                 SELECT id FROM local_timeline_events WHERE session_id = ?
+              ))
+           OR (entity_type = 'session_preference' AND entity_id IN (
+                SELECT id FROM local_session_user_preferences WHERE session_id = ?
               ))`,
-      [input.sessionId, input.sessionId, input.sessionId, input.sessionId],
+      [
+        input.sessionId,
+        input.sessionId,
+        input.sessionId,
+        input.sessionId,
+        input.sessionId,
+      ],
     );
 
     await db.runAsync(
@@ -2920,13 +3144,20 @@ export const hardDeleteLocalSessionData = async (
               ))
            OR (entity_type = 'timeline_event' AND entity_id IN (
                 SELECT id FROM local_timeline_events WHERE session_id = ?
+              ))
+           OR (entity_type = 'session_preference' AND entity_id IN (
+                SELECT id FROM local_session_user_preferences WHERE session_id = ?
               ))`,
-      [sessionId, sessionId, sessionId, sessionId],
+      [sessionId, sessionId, sessionId, sessionId, sessionId],
     );
     await db.runAsync(`DELETE FROM local_upload_queue WHERE session_id = ?`, [sessionId]);
     await db.runAsync(`DELETE FROM local_timeline_events WHERE session_id = ?`, [sessionId]);
     await db.runAsync(`DELETE FROM local_notes WHERE session_id = ?`, [sessionId]);
     await db.runAsync(`DELETE FROM local_bookmarks WHERE session_id = ?`, [sessionId]);
+    await db.runAsync(
+      `DELETE FROM local_session_user_preferences WHERE session_id = ?`,
+      [sessionId],
+    );
     await db.runAsync(`DELETE FROM local_media_assets WHERE session_id = ?`, [sessionId]);
     await db.runAsync(`DELETE FROM local_recordings WHERE session_id = ?`, [sessionId]);
     await db.runAsync(`DELETE FROM local_sessions WHERE id = ?`, [sessionId]);

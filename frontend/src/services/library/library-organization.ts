@@ -4,7 +4,12 @@ import type {
 } from "@/src/services/sqlite/repository";
 
 export type LibraryViewMode = "card" | "compact";
-export type SessionSortMode = "newest" | "oldest" | "longest" | "shortest";
+export type SessionSortMode =
+  | "newest"
+  | "oldest"
+  | "longest"
+  | "shortest"
+  | "starred";
 export type ProjectSortMode = "recent" | "newest" | "name";
 export type SessionDateGroupKey =
   | "today"
@@ -101,7 +106,8 @@ export const isSessionSortMode = (
   value === "newest" ||
   value === "oldest" ||
   value === "longest" ||
-  value === "shortest";
+  value === "shortest" ||
+  value === "starred";
 
 export const isProjectSortMode = (
   value: string | null,
@@ -170,6 +176,7 @@ export const formatLibraryDateTime = (
 export const sortSessions = (
   sessions: SessionRecord[],
   sortMode: SessionSortMode,
+  starredSessionIds: ReadonlySet<string> = new Set<string>(),
 ): SessionRecord[] => {
   const copy = [...sessions];
 
@@ -178,6 +185,17 @@ export const sortSessions = (
     const rightTimestamp = timestampMs(sessionDisplayTimestamp(right));
 
     switch (sortMode) {
+      case "starred": {
+        const starredDifference =
+          Number(starredSessionIds.has(right.id)) -
+          Number(starredSessionIds.has(left.id));
+        return (
+          starredDifference ||
+          rightTimestamp - leftTimestamp ||
+          left.title.localeCompare(right.title)
+        );
+      }
+
       case "oldest":
         return (
           leftTimestamp - rightTimestamp ||
@@ -215,12 +233,17 @@ export const buildSessionSections = (
   sortMode: SessionSortMode,
   language: string,
   now = new Date(),
+  starredSessionIds: ReadonlySet<string> = new Set<string>(),
 ): SessionLibrarySection[] => {
-  const sorted = sortSessions(sessions, sortMode);
+  const sorted = sortSessions(sessions, sortMode, starredSessionIds);
 
-  // Duration sorts are intentionally global. Chronological sorts use date
-  // sections so the user can scan recent recordings quickly.
-  if (sortMode === "longest" || sortMode === "shortest") {
+  // Duration and starred-first sorts are intentionally global. Chronological
+  // sorts use date sections so the user can scan recent recordings quickly.
+  if (
+    sortMode === "longest" ||
+    sortMode === "shortest" ||
+    sortMode === "starred"
+  ) {
     return sorted.length > 0 ? [{ key: "all", data: sorted }] : [];
   }
 
