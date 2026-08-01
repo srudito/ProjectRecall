@@ -503,6 +503,63 @@ export const waitForCurrentSession = async (
   return getCurrentSession();
 };
 
+/**
+ * Read-only, narrowed view of a Supabase auth identity for display purposes.
+ * Deliberately excludes every raw or sensitive field (tokens, provider
+ * tokens, raw `identity_data`) — only the four fields the UI needs to show
+ * a connected provider are surfaced.
+ */
+export interface ConnectedIdentity {
+  identityId: string;
+  provider: string;
+  createdAt: string | null;
+  email: string | null;
+}
+
+const toConnectedIdentity = (identity: {
+  identity_id: string;
+  provider: string;
+  created_at?: string | null;
+  identity_data?: Record<string, unknown> | null;
+}): ConnectedIdentity => {
+  const rawEmail = identity.identity_data?.email;
+
+  return {
+    identityId: identity.identity_id,
+    provider: identity.provider,
+    createdAt: identity.created_at ?? null,
+    email: typeof rawEmail === "string" ? rawEmail : null,
+  };
+};
+
+/**
+ * List the auth identities linked to the current session, narrowed to a
+ * display-safe shape. Never returns access tokens, refresh tokens, provider
+ * tokens, raw `identity_data`, or the raw Supabase identity object — see
+ * `ConnectedIdentity` and `toConnectedIdentity` above for the exact field
+ * allow-list.
+ *
+ * Read-only: this function does not link, unlink, or modify anything.
+ */
+export const listUserIdentities = async (): Promise<ConnectedIdentity[]> => {
+  const supabase = getSupabase();
+
+  if (!supabase) {
+    throw new AppError(
+      ErrorCode.UNKNOWN_ERROR,
+      "Supabase is not configured",
+    );
+  }
+
+  const { data, error } = await supabase.auth.getUserIdentities();
+
+  const appError = mapAuthError(error);
+  if (appError) throw appError;
+
+  const identities = data?.identities ?? [];
+  return identities.map(toConnectedIdentity);
+};
+
 export const resendVerificationEmail = async (
   email: string,
 ): Promise<void> => {

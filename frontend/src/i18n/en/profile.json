@@ -12,6 +12,18 @@
     "dark": "Dark",
     "system": "Follow system"
   },
+  "connectedAccounts": {
+    "title": "Connected Accounts",
+    "loading": "Loading connected accounts…",
+    "empty": "No connected accounts found.",
+    "loadError": "Couldn't load connected accounts.",
+    "status": "Connected",
+    "onlyIdentity": "Only connected identity",
+    "providers": {
+      "email": "Email",
+      "google": "Google"
+    }
+  },
   "appLanguage": "App language",
   "spokenLanguage": "Default spoken language",
   "wifiOnly": "Upload over Wi-Fi only",

@@ -8,7 +8,11 @@ import { Screen } from "@/src/components/Screen";
 import { branding } from "@/src/config/branding";
 import { appLanguages, displayLanguageName } from "@/src/i18n/languages";
 import { useI18n } from "@/src/i18n/I18nProvider";
-import { signOut } from "@/src/services/supabase/auth";
+import {
+  ConnectedIdentity,
+  listUserIdentities,
+  signOut,
+} from "@/src/services/supabase/auth";
 import { getPreference, setPreference } from "@/src/services/sqlite/repository";
 import { requestMediaUploadSync } from "@/src/services/sync/media-upload-worker";
 import { requestRecordingUploadSync } from "@/src/services/sync/recording-upload-worker";
@@ -23,12 +27,41 @@ export default function Profile() {
   const { colors, spacing, typography, mode, setMode } = useTheme();
   const user = useAuthStore((s) => s.user);
   const [wifiOnly, setWifiOnly] = useState(false);
+  const [connectedIdentities, setConnectedIdentities] = useState<
+    ConnectedIdentity[]
+  >([]);
+  const [identitiesLoading, setIdentitiesLoading] = useState(true);
+  const [identitiesError, setIdentitiesError] = useState(false);
 
   useEffect(() => {
     (async () => {
       const v = await getPreference<boolean>(WIFI_ONLY_KEY, true);
       setWifiOnly(v);
     })();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      setIdentitiesLoading(true);
+      setIdentitiesError(false);
+      try {
+        const identities = await listUserIdentities();
+        if (!cancelled) setConnectedIdentities(identities);
+      } catch {
+        // Never surface the raw Supabase/auth error to the UI or logs here —
+        // only a generic, non-sensitive load-failure state.
+        if (!cancelled) setConnectedIdentities([]);
+        if (!cancelled) setIdentitiesError(true);
+      } finally {
+        if (!cancelled) setIdentitiesLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const toggleWifi = async (v: boolean) => {
@@ -104,6 +137,102 @@ export default function Profile() {
     );
   };
 
+  const providerDisplayName = (provider: string): string => {
+    const known = t("profile", `connectedAccounts.providers.${provider}`);
+    // i18n-js returns a "[missing ...]" style string for unknown keys; fall
+    // back to a simple capitalization for providers without a translated
+    // label instead of showing that placeholder in the UI.
+    if (known.startsWith("[missing")) {
+      return provider.charAt(0).toUpperCase() + provider.slice(1);
+    }
+    return known;
+  };
+
+  const renderConnectedAccounts = () => {
+    if (identitiesLoading) {
+      return (
+        <Text
+          testID="profile-connected-accounts-loading"
+          style={[typography.caption, { color: colors.textSecondary }]}
+        >
+          {t("profile", "connectedAccounts.loading")}
+        </Text>
+      );
+    }
+
+    if (identitiesError) {
+      return (
+        <Text
+          testID="profile-connected-accounts-error"
+          style={[typography.caption, { color: colors.textSecondary }]}
+        >
+          {t("profile", "connectedAccounts.loadError")}
+        </Text>
+      );
+    }
+
+    if (connectedIdentities.length === 0) {
+      return (
+        <Text
+          testID="profile-connected-accounts-empty"
+          style={[typography.caption, { color: colors.textSecondary }]}
+        >
+          {t("profile", "connectedAccounts.empty")}
+        </Text>
+      );
+    }
+
+    const onlyIdentity = connectedIdentities.length === 1;
+
+    return (
+      <View testID="profile-connected-accounts-list">
+        {connectedIdentities.map((identity, index) => (
+          <View
+            key={identity.identityId}
+            testID={`profile-connected-account-${identity.provider}`}
+            style={{
+              paddingVertical: spacing.sm,
+              borderTopWidth: index === 0 ? 0 : 1,
+              borderTopColor: colors.border,
+            }}
+          >
+            <View
+              style={{
+                flexDirection: "row",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <Text
+                style={[typography.bodyMedium, { color: colors.textPrimary }]}
+              >
+                {providerDisplayName(identity.provider)}
+              </Text>
+              <Text style={[typography.caption, { color: colors.accent }]}>
+                {t("profile", "connectedAccounts.status")}
+              </Text>
+            </View>
+            {identity.email ? (
+              <Text
+                style={[typography.caption, { color: colors.textSecondary }]}
+              >
+                {identity.email}
+              </Text>
+            ) : null}
+            {onlyIdentity ? (
+              <Text
+                testID="profile-connected-accounts-only-badge"
+                style={[typography.overline, { color: colors.textTertiary }]}
+              >
+                {t("profile", "connectedAccounts.onlyIdentity")}
+              </Text>
+            ) : null}
+          </View>
+        ))}
+      </View>
+    );
+  };
+
   return (
     <Screen scrollable testID="profile-screen">
       <Text style={[typography.displayMedium, { color: colors.textPrimary, marginBottom: spacing.lg }]}>
@@ -119,6 +248,15 @@ export default function Profile() {
           variant="secondary"
           onPress={doSignOut}
         />
+      </Card>
+
+      <View style={{ height: spacing.md }} />
+
+      <Card
+        title={t("profile", "connectedAccounts.title")}
+        testID="profile-connected-accounts-card"
+      >
+        {renderConnectedAccounts()}
       </Card>
 
       <View style={{ height: spacing.md }} />

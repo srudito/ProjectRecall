@@ -12,6 +12,18 @@
     "dark": "Gelap",
     "system": "Ikuti sistem"
   },
+  "connectedAccounts": {
+    "title": "Akun Terhubung",
+    "loading": "Memuat akun terhubung…",
+    "empty": "Tidak ada akun terhubung.",
+    "loadError": "Akun terhubung gagal dimuat.",
+    "status": "Terhubung",
+    "onlyIdentity": "Satu-satunya identitas terhubung",
+    "providers": {
+      "email": "Email",
+      "google": "Google"
+    }
+  },
   "appLanguage": "Bahasa aplikasi",
   "spokenLanguage": "Bahasa lisan default",
   "wifiOnly": "Unggah hanya via Wi-Fi",
