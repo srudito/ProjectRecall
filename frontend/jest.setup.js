@@ -1,6 +1,13 @@
 // Jest setup. Keep native modules stubbed so pure logic tests never need real
 // native code.
 
+// AsyncStorage is a native module and must be mocked in Jest.
+jest.mock("@react-native-async-storage/async-storage", () =>
+  require(
+    "@react-native-async-storage/async-storage/jest/async-storage-mock",
+  ),
+);
+
 jest.mock("expo-secure-store", () => ({
   getItemAsync: jest.fn(async () => null),
   setItemAsync: jest.fn(async () => undefined),

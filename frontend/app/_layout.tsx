@@ -1,4 +1,3 @@
-import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { useEffect } from "react";
@@ -9,6 +8,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { useIconFonts } from "@/src/hooks/use-icon-fonts";
 import { I18nProvider } from "@/src/i18n/I18nProvider";
+import { RootStack } from "@/src/navigation/RootStack";
 import { RecordingAudioCoordinator } from "@/src/services/recording/RecordingAudioCoordinator";
 import { ProjectSyncCoordinator } from "@/src/services/sync/ProjectSyncCoordinator";
 import { useAuthStore } from "@/src/stores/auth-store";
@@ -28,24 +28,6 @@ const queryClient = new QueryClient({
     },
   },
 });
-
-function AuthedStack() {
-  return (
-    <Stack screenOptions={{ headerShown: false, animation: "fade" }}>
-      <Stack.Screen name="index" />
-      <Stack.Screen name="(auth)" />
-      <Stack.Screen name="(onboarding)" />
-      <Stack.Screen name="(tabs)" />
-      <Stack.Screen name="record/setup" options={{ presentation: "modal" }} />
-      <Stack.Screen name="record/active" />
-      <Stack.Screen name="record/review" />
-      <Stack.Screen name="session/[id]" />
-      <Stack.Screen name="project/[id]" />
-      <Stack.Screen name="auth/callback" />
-      <Stack.Screen name="auth/reset" />
-    </Stack>
-  );
-}
 
 function StatusBarAdapter() {
   const { scheme } = useTheme();
@@ -83,7 +65,7 @@ export default function RootLayout() {
               <RecordingAudioCoordinator />
               <ProjectSyncCoordinator />
               <StatusBarAdapter />
-              <AuthedStack />
+              <RootStack />
             </KeyboardProvider>
           </QueryClientProvider>
         </I18nProvider>
