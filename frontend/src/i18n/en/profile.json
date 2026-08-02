@@ -24,7 +24,10 @@
       "google": "Google"
     },
     "connectGoogle": "Connect Google",
-    "connectGoogleDescription": "Connect Google to sign in to this same Project Recall account."
+    "connectGoogleDescription": "Connect Google to sign in to this same Project Recall account.",
+    "disconnectGoogle": "Disconnect Google",
+    "disconnectGoogleConfirmTitle": "Disconnect Google?",
+    "disconnectGoogleConfirmBody": "You will no longer be able to sign in to this Project Recall account with %{email}. Your account data and other connected identities will remain available."
   },
   "appLanguage": "App language",
   "spokenLanguage": "Default spoken language",

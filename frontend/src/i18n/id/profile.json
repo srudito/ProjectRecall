@@ -24,7 +24,10 @@
       "google": "Google"
     },
     "connectGoogle": "Hubungkan Google",
-    "connectGoogleDescription": "Hubungkan Google untuk masuk ke akun Project Recall yang sama."
+    "connectGoogleDescription": "Hubungkan Google untuk masuk ke akun Project Recall yang sama.",
+    "disconnectGoogle": "Putuskan Google",
+    "disconnectGoogleConfirmTitle": "Putuskan Google?",
+    "disconnectGoogleConfirmBody": "Anda tidak lagi dapat masuk ke akun Project Recall ini dengan %{email}. Data akun dan identitas terhubung lainnya akan tetap tersedia."
   },
   "appLanguage": "Bahasa aplikasi",
   "spokenLanguage": "Bahasa lisan default",

@@ -4,12 +4,14 @@ import { Linking, Switch, Text, TouchableOpacity, View } from "react-native";
 
 import { Button } from "@/src/components/Button";
 import { ConnectGoogleIdentityButton } from "@/src/components/ConnectGoogleIdentityButton";
+import { DisconnectGoogleIdentityButton } from "@/src/components/DisconnectGoogleIdentityButton";
 import { Card } from "@/src/components/Card";
 import { Screen } from "@/src/components/Screen";
 import { branding } from "@/src/config/branding";
 import { appLanguages, displayLanguageName } from "@/src/i18n/languages";
 import { useI18n } from "@/src/i18n/I18nProvider";
 import {
+  canDisconnectConnectedIdentity,
   ConnectedIdentity,
   hasConnectedProvider,
   listUserIdentities,
@@ -274,6 +276,19 @@ export default function Profile() {
               >
                 {t("profile", "connectedAccounts.onlyIdentity")}
               </Text>
+            ) : null}
+            {identity.provider === "google" &&
+            canDisconnectConnectedIdentity(
+              connectedIdentities,
+              identity.identityId,
+            ) ? (
+              <View style={{ marginTop: spacing.sm }}>
+                <DisconnectGoogleIdentityButton
+                  identityId={identity.identityId}
+                  identityEmail={identity.email}
+                  onUnlinked={loadConnectedIdentities}
+                />
+              </View>
             ) : null}
           </View>
         ))}

@@ -8,6 +8,7 @@ import type {
   AuthError,
   Session,
   User,
+  UserIdentity,
 } from "@supabase/supabase-js";
 
 import { branding } from "@/src/config/branding";
@@ -127,6 +128,49 @@ const mapIdentityLinkError = (error: AuthError | null): AppError | null => {
   }
 
   return mapAuthError(error, ErrorCode.AUTH_IDENTITY_LINK_FAILED);
+};
+
+const mapIdentityUnlinkError = (error: AuthError | null): AppError | null => {
+  if (!error) return null;
+
+  const code = normalizedAuthErrorCode(error);
+  const message = error.message.toLowerCase();
+
+  if (
+    code === "manual_linking_disabled" ||
+    message.includes("manual linking")
+  ) {
+    return new AppError(
+      ErrorCode.AUTH_IDENTITY_UNLINK_NOT_CONFIGURED,
+      error.message,
+      error,
+    );
+  }
+
+  if (
+    code === "single_identity_not_deletable" ||
+    message.includes("single identity") ||
+    message.includes("at least one identity")
+  ) {
+    return new AppError(
+      ErrorCode.AUTH_IDENTITY_UNLINK_LAST_IDENTITY,
+      error.message,
+      error,
+    );
+  }
+
+  if (
+    code === "email_conflict_identity_not_deletable" ||
+    message.includes("email conflict")
+  ) {
+    return new AppError(
+      ErrorCode.AUTH_IDENTITY_UNLINK_EMAIL_CONFLICT,
+      error.message,
+      error,
+    );
+  }
+
+  return mapAuthError(error, ErrorCode.AUTH_IDENTITY_UNLINK_FAILED);
 };
 
 export interface AuthResult {
@@ -595,7 +639,7 @@ const toConnectedIdentity = (identity: {
  *
  * Read-only: this function does not link, unlink, or modify anything.
  */
-export const listUserIdentities = async (): Promise<ConnectedIdentity[]> => {
+const getRawUserIdentities = async (): Promise<UserIdentity[]> => {
   const supabase = getSupabase();
 
   if (!supabase) {
@@ -610,7 +654,11 @@ export const listUserIdentities = async (): Promise<ConnectedIdentity[]> => {
   const appError = mapAuthError(error);
   if (appError) throw appError;
 
-  const identities = data?.identities ?? [];
+  return data?.identities ?? [];
+};
+
+export const listUserIdentities = async (): Promise<ConnectedIdentity[]> => {
+  const identities = await getRawUserIdentities();
   return identities.map(toConnectedIdentity);
 };
 
@@ -679,14 +727,14 @@ const getAuthenticatedUserId = async (): Promise<string> => {
 
 const requireSameSignedInUser = async (
   expectedUserId: string,
+  errorCode: keyof typeof ErrorCode =
+    ErrorCode.AUTH_IDENTITY_LINK_SESSION_CHANGED,
+  message = "The signed-in user changed while linking an identity.",
 ): Promise<void> => {
   const currentUserId = await getAuthenticatedUserId();
 
   if (currentUserId !== expectedUserId) {
-    throw new AppError(
-      ErrorCode.AUTH_IDENTITY_LINK_SESSION_CHANGED,
-      "The signed-in user changed while linking an identity.",
-    );
+    throw new AppError(errorCode, message);
   }
 };
 
@@ -997,6 +1045,183 @@ export const waitForGoogleIdentityLinkCompletion = async (): Promise<void> => {
   } catch {
     // The initiating button owns user-facing error handling.
   }
+};
+
+export type GoogleIdentityUnlinkResult =
+  | { status: "unlinked" }
+  | { status: "notConnected" }
+  | { status: "lastIdentity" };
+
+export const canDisconnectConnectedIdentity = (
+  identities: readonly ConnectedIdentity[],
+  identityId: string,
+): boolean => {
+  const targetExists = identities.some(
+    (identity) => identity.identityId === identityId,
+  );
+
+  return (
+    targetExists &&
+    identities.some((identity) => identity.identityId !== identityId)
+  );
+};
+
+const waitForDisconnectedIdentity = async (
+  identityId: string,
+  timeoutMs = 4000,
+  pollIntervalMs = 200,
+): Promise<ConnectedIdentity[]> => {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  const interval = Math.max(50, pollIntervalMs);
+
+  do {
+    const identities = await listUserIdentities();
+    if (!identities.some((identity) => identity.identityId === identityId)) {
+      return identities;
+    }
+
+    if (Date.now() >= deadline) {
+      return identities;
+    }
+
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, interval);
+    });
+  } while (Date.now() <= deadline);
+
+  return listUserIdentities();
+};
+
+let googleIdentityUnlinkPromise:
+  | Promise<GoogleIdentityUnlinkResult>
+  | null = null;
+let googleIdentityUnlinkTarget: string | null = null;
+
+const unlinkGoogleIdentityInternal = async (
+  identityId: string,
+): Promise<GoogleIdentityUnlinkResult> => {
+  const supabase = getSupabase();
+
+  if (!supabase) {
+    throw new AppError(
+      ErrorCode.UNKNOWN_ERROR,
+      "Supabase is not configured",
+    );
+  }
+
+  const expectedUserId = await getAuthenticatedUserId();
+  const identities = await getRawUserIdentities();
+  const googleIdentity = identities.find(
+    (identity) =>
+      identity.identity_id === identityId && identity.provider === "google",
+  );
+
+  if (!googleIdentity) {
+    return { status: "notConnected" };
+  }
+
+  if (googleIdentity.user_id !== expectedUserId) {
+    throw new AppError(
+      ErrorCode.AUTH_IDENTITY_UNLINK_SESSION_CHANGED,
+      "The Google identity did not belong to the signed-in user.",
+    );
+  }
+
+  const remainingIdentities = identities.filter(
+    (identity) => identity.identity_id !== identityId,
+  );
+
+  if (remainingIdentities.length === 0) {
+    return { status: "lastIdentity" };
+  }
+
+  await requireSameSignedInUser(
+    expectedUserId,
+    ErrorCode.AUTH_IDENTITY_UNLINK_SESSION_CHANGED,
+    "The signed-in user changed while disconnecting Google.",
+  );
+
+  const { error } = await supabase.auth.unlinkIdentity(googleIdentity);
+
+  if (error) {
+    const code = normalizedAuthErrorCode(error);
+
+    if (
+      code === "identity_not_found" ||
+      error.message.toLowerCase().includes("identity not found")
+    ) {
+      return { status: "notConnected" };
+    }
+
+    if (
+      code === "single_identity_not_deletable" ||
+      error.message.toLowerCase().includes("single identity") ||
+      error.message.toLowerCase().includes("at least one identity")
+    ) {
+      return { status: "lastIdentity" };
+    }
+
+    const appError = mapIdentityUnlinkError(error);
+    if (appError) throw appError;
+  }
+
+  await requireSameSignedInUser(
+    expectedUserId,
+    ErrorCode.AUTH_IDENTITY_UNLINK_SESSION_CHANGED,
+    "The signed-in user changed while disconnecting Google.",
+  );
+
+  const refreshedIdentities = await waitForDisconnectedIdentity(identityId);
+
+  await requireSameSignedInUser(
+    expectedUserId,
+    ErrorCode.AUTH_IDENTITY_UNLINK_SESSION_CHANGED,
+    "The signed-in user changed while disconnecting Google.",
+  );
+
+  if (
+    refreshedIdentities.some(
+      (identity) => identity.identityId === identityId,
+    )
+  ) {
+    throw new AppError(
+      ErrorCode.AUTH_IDENTITY_UNLINK_FAILED,
+      "Google identity remained connected after unlinking.",
+    );
+  }
+
+  return { status: "unlinked" };
+};
+
+/**
+ * Disconnect a specific Google identity without returning a raw identity,
+ * User, Session, callback URL, or token-bearing value to UI code. Calls are
+ * globally single-flight so rapid confirmation taps cannot submit twice.
+ */
+export const unlinkGoogleIdentity = (
+  identityId: string,
+): Promise<GoogleIdentityUnlinkResult> => {
+  if (googleIdentityUnlinkPromise) {
+    if (googleIdentityUnlinkTarget === identityId) {
+      return googleIdentityUnlinkPromise;
+    }
+
+    return Promise.reject(
+      new AppError(
+        ErrorCode.AUTH_IDENTITY_UNLINK_FAILED,
+        "Another identity unlink operation is already in progress.",
+      ),
+    );
+  }
+
+  googleIdentityUnlinkTarget = identityId;
+  googleIdentityUnlinkPromise = unlinkGoogleIdentityInternal(identityId)
+    .finally(() => {
+      googleIdentityUnlinkPromise = null;
+      googleIdentityUnlinkTarget = null;
+    });
+
+  return googleIdentityUnlinkPromise;
 };
 
 export const resendVerificationEmail = async (
