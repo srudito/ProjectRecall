@@ -29,8 +29,8 @@ const currentBrowserPathname = (): string => {
 /**
  * Keep the normal web OAuth callback auto-detection enabled, but never let
  * Supabase automatically exchange a PKCE code on the dedicated identity-link
- * callback route. The parent identity-link service owns that one-time exchange
- * so the popup/route and the initiating screen cannot consume the same code.
+ * callback routes. Dedicated identity-link and password-recovery services own
+ * those one-time exchanges so no second observer can consume the same code.
  */
 export const shouldDetectSessionInUrl = (
   platform: string = Platform.OS,
@@ -39,7 +39,10 @@ export const shouldDetectSessionInUrl = (
   if (platform !== "web") return false;
 
   const normalizedPath = pathname.replace(/\/+$/, "");
-  return !normalizedPath.endsWith("/auth/link-callback");
+  return !(
+    normalizedPath.endsWith("/auth/link-callback") ||
+    normalizedPath.endsWith("/auth/reset")
+  );
 };
 
 export const getSupabase = (): SupabaseClient | null => {

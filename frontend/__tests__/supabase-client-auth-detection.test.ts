@@ -16,6 +16,15 @@ describe("Supabase web auth URL detection", () => {
     ).toBe(false);
   });
 
+  it("disables automatic PKCE exchange on the password recovery callback", () => {
+    expect(
+      shouldDetectSessionInUrl("web", "/auth/reset"),
+    ).toBe(false);
+    expect(
+      shouldDetectSessionInUrl("web", "/auth/reset/"),
+    ).toBe(false);
+  });
+
   it("never auto-detects callback sessions on native platforms", () => {
     expect(
       shouldDetectSessionInUrl("android", "/auth/link-callback"),

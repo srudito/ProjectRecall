@@ -17,6 +17,7 @@ import {
   buildNativeAuthRedirectUrl,
   parseAuthCallbackUrl,
 } from "@/src/services/auth/oauth-utils";
+import { getPasswordRecoveryCallbackKey } from "@/src/services/auth/password-recovery-callback";
 
 import { getSupabase } from "./client";
 
@@ -187,6 +188,40 @@ export type OAuthSignInResult =
   | {
       status: "cancelled";
     };
+
+export type PasswordRecoveryResult = {
+  status: "ready";
+};
+
+interface PasswordRecoveryGrant {
+  userId: string;
+  expiresAt: number;
+}
+
+const PASSWORD_RECOVERY_GRANT_TTL_MS = 15 * 60 * 1000;
+let passwordRecoveryGrant: PasswordRecoveryGrant | null = null;
+
+const passwordRecoveryCallbackPromises = new Map<
+  string,
+  Promise<PasswordRecoveryResult>
+>();
+const completedPasswordRecoveryCallbackUrls = new Set<string>();
+
+const rememberCompletedPasswordRecoveryCallback = (url: string): void => {
+  completedPasswordRecoveryCallbackUrls.add(url);
+
+  // Recovery callback URLs can contain one-time credentials. Keep only a
+  // small in-memory replay guard and never persist or log these values.
+  while (completedPasswordRecoveryCallbackUrls.size > 10) {
+    const oldest = completedPasswordRecoveryCallbackUrls.values().next().value;
+    if (typeof oldest !== "string") break;
+    completedPasswordRecoveryCallbackUrls.delete(oldest);
+  }
+};
+
+export const clearPasswordRecoveryState = (): void => {
+  passwordRecoveryGrant = null;
+};
 
 const callbackPromises = new Map<
   string,
@@ -527,6 +562,10 @@ export const sendPasswordReset = async (
     );
   }
 
+  // Any previous recovery authorization is no longer relevant after a new
+  // request. The new email link must be completed before a password update.
+  clearPasswordRecoveryState();
+
   const { error } = await supabase.auth.resetPasswordForEmail(
     email,
     {
@@ -538,7 +577,199 @@ export const sendPasswordReset = async (
   if (appError) throw appError;
 };
 
-export const updatePassword = async (
+const passwordRecoveryError = (
+  message: string,
+  cause?: unknown,
+  code: keyof typeof ErrorCode = ErrorCode.AUTH_PASSWORD_RECOVERY_INVALID,
+): AppError => new AppError(code, message, cause);
+
+const passwordRecoveryErrorCode = (
+  code: string | null | undefined,
+  message: string | null | undefined,
+): keyof typeof ErrorCode => {
+  const normalizedCode = code?.toLowerCase() ?? "";
+  const normalizedMessage = message?.toLowerCase() ?? "";
+
+  if (
+    normalizedCode === "otp_expired" ||
+    normalizedCode === "token_expired" ||
+    normalizedMessage.includes("expired") ||
+    normalizedMessage.includes("already been used")
+  ) {
+    return ErrorCode.AUTH_PASSWORD_RECOVERY_EXPIRED;
+  }
+
+  if (
+    normalizedCode === "bad_code_verifier" ||
+    normalizedMessage.includes("code verifier")
+  ) {
+    return ErrorCode.AUTH_PASSWORD_RECOVERY_DEVICE_MISMATCH;
+  }
+
+  return ErrorCode.AUTH_PASSWORD_RECOVERY_INVALID;
+};
+
+const completePasswordRecoveryFromUrlInternal = async (
+  url: string,
+): Promise<PasswordRecoveryResult> => {
+  const supabase = getSupabase();
+
+  if (!supabase) {
+    throw new AppError(
+      ErrorCode.UNKNOWN_ERROR,
+      "Supabase is not configured",
+    );
+  }
+
+  const parsed = parseAuthCallbackUrl(url);
+
+  if (parsed.errorCode) {
+    const description = parsed.errorDescription ?? parsed.errorCode;
+    throw passwordRecoveryError(
+      description,
+      undefined,
+      passwordRecoveryErrorCode(parsed.errorCode, description),
+    );
+  }
+
+  // Reject callbacks explicitly marked for another auth purpose. Supabase
+  // PKCE callbacks may omit `type`, so null remains valid here.
+  if (parsed.callbackType && parsed.callbackType !== "recovery") {
+    throw passwordRecoveryError(
+      "The callback is not a password recovery callback.",
+    );
+  }
+
+  let recoveredSession: Session | null = null;
+
+  if (parsed.authorizationCode) {
+    // `/auth/reset` disables automatic URL detection on web, so this service
+    // is the only owner of the single-use PKCE code. Never reuse an unrelated
+    // pre-existing session as proof of recovery authorization.
+    const { data, error } =
+      await supabase.auth.exchangeCodeForSession(
+        parsed.authorizationCode,
+      );
+
+    if (error || !data.session) {
+      const message =
+        error?.message ?? "The recovery code could not be exchanged.";
+      throw passwordRecoveryError(
+        message,
+        error ?? undefined,
+        passwordRecoveryErrorCode(
+          normalizedAuthErrorCode(error),
+          message,
+        ),
+      );
+    }
+
+    recoveredSession = data.session;
+  } else if (parsed.accessToken && parsed.refreshToken) {
+    // Backward-compatible implicit callback support. Tokens stay inside the
+    // auth service and are never returned to UI code.
+    const { data, error } = await supabase.auth.setSession({
+      access_token: parsed.accessToken,
+      refresh_token: parsed.refreshToken,
+    });
+
+    if (error || !data.session) {
+      throw passwordRecoveryError(
+        error?.message ??
+          "The recovery session could not be established.",
+        error ?? undefined,
+      );
+    }
+
+    recoveredSession = data.session;
+  } else {
+    throw passwordRecoveryError(
+      "The recovery callback did not contain a valid code or session.",
+      undefined,
+      ErrorCode.AUTH_PASSWORD_RECOVERY_CALLBACK_MISSING,
+    );
+  }
+
+  const { data: verifiedData, error: verifiedError } =
+    await supabase.auth.getUser();
+
+  if (
+    verifiedError ||
+    !verifiedData.user ||
+    verifiedData.user.id !== recoveredSession.user.id
+  ) {
+    throw passwordRecoveryError(
+      "The recovered session could not be verified.",
+      verifiedError ?? undefined,
+    );
+  }
+
+  passwordRecoveryGrant = {
+    userId: verifiedData.user.id,
+    expiresAt: Date.now() + PASSWORD_RECOVERY_GRANT_TTL_MS,
+  };
+
+  return { status: "ready" };
+};
+
+/**
+ * Complete a password recovery callback once within the current process.
+ * The public result is deliberately token-free; the short-lived grant stores
+ * only the recovered user ID and an expiry timestamp.
+ */
+export const completePasswordRecoveryFromUrl = async (
+  url: string,
+): Promise<PasswordRecoveryResult> => {
+  const callbackKey = getPasswordRecoveryCallbackKey(url) ?? url;
+
+  if (completedPasswordRecoveryCallbackUrls.has(callbackKey)) {
+    const ready = await hasActivePasswordRecoveryGrant();
+    if (ready) return { status: "ready" };
+  }
+
+  const existing = passwordRecoveryCallbackPromises.get(callbackKey);
+  if (existing) return existing;
+
+  const promise = completePasswordRecoveryFromUrlInternal(url);
+  passwordRecoveryCallbackPromises.set(callbackKey, promise);
+
+  try {
+    const result = await promise;
+    rememberCompletedPasswordRecoveryCallback(callbackKey);
+    return result;
+  } catch (error) {
+    clearPasswordRecoveryState();
+    throw error;
+  } finally {
+    passwordRecoveryCallbackPromises.delete(callbackKey);
+  }
+};
+
+export const hasActivePasswordRecoveryGrant = async (
+  now: number = Date.now(),
+): Promise<boolean> => {
+  const grant = passwordRecoveryGrant;
+  if (!grant || grant.expiresAt <= now) {
+    clearPasswordRecoveryState();
+    return false;
+  }
+
+  const supabase = getSupabase();
+  if (!supabase) {
+    clearPasswordRecoveryState();
+    return false;
+  }
+
+  const { data, error } = await supabase.auth.getUser();
+  if (error || !data.user || data.user.id !== grant.userId) {
+    clearPasswordRecoveryState();
+    return false;
+  }
+
+  return true;
+};
+
+export const updateRecoveredPassword = async (
   newPassword: string,
 ): Promise<void> => {
   const supabase = getSupabase();
@@ -550,15 +781,63 @@ export const updatePassword = async (
     );
   }
 
+  const grant = passwordRecoveryGrant;
+  if (!grant || !(await hasActivePasswordRecoveryGrant())) {
+    throw new AppError(
+      ErrorCode.AUTH_PASSWORD_RECOVERY_REQUIRED,
+      "A valid password recovery link is required.",
+    );
+  }
+
+  const { data: beforeData, error: beforeError } =
+    await supabase.auth.getUser();
+
+  if (
+    beforeError ||
+    !beforeData.user ||
+    beforeData.user.id !== grant.userId
+  ) {
+    clearPasswordRecoveryState();
+    throw new AppError(
+      ErrorCode.AUTH_PASSWORD_RECOVERY_REQUIRED,
+      "The recovery session no longer matches the active user.",
+      beforeError ?? undefined,
+    );
+  }
+
   const { error } = await supabase.auth.updateUser({
     password: newPassword,
   });
 
-  const appError = mapAuthError(error);
-  if (appError) throw appError;
+  if (error) {
+    const mapped = mapAuthError(
+      error,
+      ErrorCode.AUTH_PASSWORD_UPDATE_FAILED,
+    );
+    if (mapped) throw mapped;
+  }
+
+  const { data: afterData, error: afterError } =
+    await supabase.auth.getUser();
+
+  if (
+    afterError ||
+    !afterData.user ||
+    afterData.user.id !== grant.userId
+  ) {
+    clearPasswordRecoveryState();
+    throw new AppError(
+      ErrorCode.AUTH_PASSWORD_RECOVERY_REQUIRED,
+      "The authenticated user changed during password recovery.",
+      afterError ?? undefined,
+    );
+  }
+
+  clearPasswordRecoveryState();
 };
 
 export const signOut = async (): Promise<void> => {
+  clearPasswordRecoveryState();
   const supabase = getSupabase();
   if (!supabase) return;
   await supabase.auth.signOut();
