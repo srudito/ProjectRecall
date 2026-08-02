@@ -36,6 +36,12 @@ export const LIBRARY_PREFERENCE_KEYS = {
   projectSortMode: "library.projects.sortMode.v1",
 } as const;
 
+export const LIBRARY_SESSIONS_BACK_TO_TOP_THRESHOLD = 600;
+
+export const shouldShowSessionsBackToTop = (offsetY: number): boolean =>
+  Number.isFinite(offsetY) &&
+  offsetY >= LIBRARY_SESSIONS_BACK_TO_TOP_THRESHOLD;
+
 const localeForLanguage = (language: string): string =>
   language.toLowerCase().startsWith("id") ? "id-ID" : "en-US";
 

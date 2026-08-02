@@ -16,6 +16,9 @@
       "projects": "Proyek",
       "sessions": "Sesi"
     },
+    "actions": {
+      "backToTop": "Kembali ke atas"
+    },
     "filters": {
       "all": "Semua",
       "localOnly": "Lokal",

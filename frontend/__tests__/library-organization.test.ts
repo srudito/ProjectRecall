@@ -1,10 +1,12 @@
 import {
   buildProjectStats,
   buildSessionSections,
+  LIBRARY_SESSIONS_BACK_TO_TOP_THRESHOLD,
   isLibraryViewMode,
   isProjectSortMode,
   isSessionSortMode,
   sessionDisplayTimestamp,
+  shouldShowSessionsBackToTop,
   sortProjects,
   sortSessions,
 } from "@/src/services/library/library-organization";
@@ -287,6 +289,24 @@ describe("library organization", () => {
         (item) => item.id,
       ),
     ).toEqual([projectB.id, projectA.id]);
+  });
+
+  it("shows the Sessions back-to-top action only after a meaningful scroll", () => {
+    expect(shouldShowSessionsBackToTop(-1)).toBe(false);
+    expect(shouldShowSessionsBackToTop(0)).toBe(false);
+    expect(
+      shouldShowSessionsBackToTop(
+        LIBRARY_SESSIONS_BACK_TO_TOP_THRESHOLD - 1,
+      ),
+    ).toBe(false);
+    expect(
+      shouldShowSessionsBackToTop(
+        LIBRARY_SESSIONS_BACK_TO_TOP_THRESHOLD,
+      ),
+    ).toBe(true);
+    expect(shouldShowSessionsBackToTop(Number.POSITIVE_INFINITY)).toBe(
+      false,
+    );
   });
 
   it("validates persisted view and sort preferences", () => {

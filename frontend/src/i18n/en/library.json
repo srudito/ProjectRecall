@@ -16,6 +16,9 @@
       "projects": "Projects",
       "sessions": "Sessions"
     },
+    "actions": {
+      "backToTop": "Back to top"
+    },
     "filters": {
       "all": "All",
       "localOnly": "Local",

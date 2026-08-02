@@ -14,6 +14,8 @@ import {
   TouchableOpacity,
   View,
   type ListRenderItemInfo,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
   type SectionListData,
 } from "react-native";
 
@@ -33,6 +35,7 @@ import {
   isSessionSortMode,
   LIBRARY_PREFERENCE_KEYS,
   sessionDisplayTimestamp,
+  shouldShowSessionsBackToTop,
   sortProjects,
   type LibraryViewMode,
   type ProjectSortMode,
@@ -69,6 +72,7 @@ import { formatDurationMs } from "@/src/utils/format";
 import { storage } from "@/src/utils/storage";
 
 type Tab = "projects" | "sessions";
+type SessionSection = { key: SessionDateGroupKey };
 
 type Filter =
   | "all"
@@ -134,6 +138,18 @@ export default function Library() {
 
   const projectSubmitInFlight = useRef(false);
   const projectRetryInFlight = useRef(false);
+  const sessionListRef = useRef<
+    SectionList<SessionRecord, SessionSection>
+  >(null);
+  const sessionsBackToTopVisibleRef = useRef(false);
+  const [showSessionsBackToTop, setShowSessionsBackToTop] = useState(false);
+
+  useEffect(() => {
+    if (tab !== "sessions") {
+      sessionsBackToTopVisibleRef.current = false;
+      setShowSessionsBackToTop(false);
+    }
+  }, [tab]);
 
   useEffect(() => {
     let active = true;
@@ -587,6 +603,27 @@ export default function Library() {
     return t("library", `library.organization.dateGroups.${key}`);
   };
 
+  const handleSessionsScroll = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const shouldShow = shouldShowSessionsBackToTop(
+        event.nativeEvent.contentOffset.y,
+      );
+
+      if (sessionsBackToTopVisibleRef.current === shouldShow) return;
+
+      sessionsBackToTopVisibleRef.current = shouldShow;
+      setShowSessionsBackToTop(shouldShow);
+    },
+    [],
+  );
+
+  const scrollSessionsToTop = useCallback(() => {
+    sessionListRef.current?.getScrollResponder()?.scrollTo({
+      y: 0,
+      animated: true,
+    });
+  }, []);
+
   const renderTabs = () => {
     const items: { key: Tab; label: string }[] = [
       {
@@ -718,6 +755,55 @@ export default function Library() {
       </View>
     );
   };
+
+  const renderSessionListHeader = () => (
+    <View
+      testID="library-sessions-scroll-header"
+      style={{ marginBottom: spacing.sm }}
+    >
+      <Field
+        testID="library-search-input"
+        placeholder={t("library", "library.search")}
+        value={query}
+        onChangeText={setQuery}
+      />
+
+      {renderFilters()}
+
+      {sessionPreferenceError ? (
+        <Text
+          accessibilityRole="alert"
+          testID="library-session-preference-error"
+          style={[
+            typography.caption,
+            { color: colors.recording, marginBottom: spacing.sm },
+          ]}
+        >
+          {sessionPreferenceError}
+        </Text>
+      ) : null}
+
+      <LibraryOrganizationToolbar
+        testIDPrefix="library-sessions"
+        viewMode={sessionViewMode}
+        onViewModeChange={updateSessionViewMode}
+        sortValue={sessionSortMode}
+        sortOptions={sessionSortOptions}
+        onSortChange={updateSessionSortMode}
+        sortButtonLabel={t("library", "library.organization.sort")}
+        sortSheetTitle={t(
+          "library",
+          "library.organization.sortSessions",
+        )}
+        cardViewLabel={t("library", "library.organization.cardView")}
+        compactViewLabel={t(
+          "library",
+          "library.organization.compactView",
+        )}
+        closeLabel={t("common", "actions.close")}
+      />
+    </View>
+  );
 
   const renderProject = ({ item }: { item: ProjectRecord }) => {
     const isRetrying = retryingProjectId === item.id;
@@ -1149,49 +1235,8 @@ export default function Library() {
         />
       ) : (
         <View style={{ flex: 1, minHeight: 0 }}>
-          <Field
-            testID="library-search-input"
-            placeholder={t("library", "library.search")}
-            value={query}
-            onChangeText={setQuery}
-          />
-
-          {renderFilters()}
-
-          {sessionPreferenceError ? (
-            <Text
-              accessibilityRole="alert"
-              testID="library-session-preference-error"
-              style={[
-                typography.caption,
-                { color: colors.recording, marginBottom: spacing.sm },
-              ]}
-            >
-              {sessionPreferenceError}
-            </Text>
-          ) : null}
-
-          <LibraryOrganizationToolbar
-            testIDPrefix="library-sessions"
-            viewMode={sessionViewMode}
-            onViewModeChange={updateSessionViewMode}
-            sortValue={sessionSortMode}
-            sortOptions={sessionSortOptions}
-            onSortChange={updateSessionSortMode}
-            sortButtonLabel={t("library", "library.organization.sort")}
-            sortSheetTitle={t(
-              "library",
-              "library.organization.sortSessions",
-            )}
-            cardViewLabel={t("library", "library.organization.cardView")}
-            compactViewLabel={t(
-              "library",
-              "library.organization.compactView",
-            )}
-            closeLabel={t("common", "actions.close")}
-          />
-
-          <SectionList<SessionRecord, { key: SessionDateGroupKey }>
+          <SectionList<SessionRecord, SessionSection>
+            ref={sessionListRef}
             sections={sessionSections}
             keyExtractor={(item: SessionRecord) => item.id}
             extraData={`${sessionViewMode}:${sessionSortMode}:${filter}:${[
@@ -1200,11 +1245,15 @@ export default function Library() {
             style={{ flex: 1, minHeight: 0 }}
             contentContainerStyle={{
               paddingTop: spacing.xs,
-              paddingBottom: spacing.xl,
+              paddingBottom: spacing.xxxl,
             }}
             keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
             showsVerticalScrollIndicator={false}
             stickySectionHeadersEnabled={false}
+            scrollEventThrottle={32}
+            onScroll={handleSessionsScroll}
+            ListHeaderComponent={renderSessionListHeader()}
             ListEmptyComponent={
               <Text
                 style={[
@@ -1220,10 +1269,7 @@ export default function Library() {
             renderSectionHeader={({
               section,
             }: {
-              section: SectionListData<
-                SessionRecord,
-                { key: SessionDateGroupKey }
-              >;
+              section: SectionListData<SessionRecord, SessionSection>;
             }) =>
               section.key === "all" ? null : (
                 <Text
@@ -1242,6 +1288,43 @@ export default function Library() {
             }
             renderItem={renderSession}
           />
+
+          {showSessionsBackToTop ? (
+            <TouchableOpacity
+              testID="library-sessions-back-to-top"
+              accessibilityRole="button"
+              accessibilityLabel={t(
+                "library",
+                "library.actions.backToTop",
+              )}
+              onPress={scrollSessionsToTop}
+              activeOpacity={0.85}
+              style={{
+                position: "absolute",
+                right: spacing.sm,
+                bottom: spacing.sm,
+                width: 48,
+                height: 48,
+                borderRadius: 24,
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: colors.accent,
+                borderWidth: 1,
+                borderColor: colors.accent,
+                shadowColor: "#0D1526",
+                shadowOpacity: 0.18,
+                shadowRadius: 8,
+                shadowOffset: { width: 0, height: 4 },
+                elevation: 5,
+              }}
+            >
+              <Ionicons
+                name="arrow-up"
+                size={22}
+                color={colors.textOnAccent}
+              />
+            </TouchableOpacity>
+          ) : null}
         </View>
       )}
     </Screen>
