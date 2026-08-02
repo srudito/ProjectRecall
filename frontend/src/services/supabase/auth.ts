@@ -76,6 +76,59 @@ const mapAuthError = (
   );
 };
 
+const normalizedAuthErrorCode = (error: AuthError | null): string => {
+  const code = (error as (AuthError & { code?: string }) | null)?.code;
+  return typeof code === "string" ? code.toLowerCase() : "";
+};
+
+const isIdentityLinkConflict = (
+  code: string | null | undefined,
+  message: string | null | undefined,
+): boolean => {
+  const normalizedCode = code?.toLowerCase() ?? "";
+  const normalizedMessage = message?.toLowerCase() ?? "";
+
+  return (
+    normalizedCode === "identity_already_exists" ||
+    normalizedCode === "conflict" ||
+    normalizedMessage.includes("identity already exists") ||
+    normalizedMessage.includes("already linked") ||
+    normalizedMessage.includes("already associated")
+  );
+};
+
+const mapIdentityLinkError = (error: AuthError | null): AppError | null => {
+  if (!error) return null;
+
+  const code = normalizedAuthErrorCode(error);
+  const message = error.message.toLowerCase();
+
+  if (
+    code === "manual_linking_disabled" ||
+    message.includes("manual linking")
+  ) {
+    return new AppError(
+      ErrorCode.AUTH_IDENTITY_LINK_NOT_CONFIGURED,
+      error.message,
+      error,
+    );
+  }
+
+  if (
+    code === "provider_disabled" ||
+    code === "oauth_provider_not_supported" ||
+    message.includes("provider is not enabled")
+  ) {
+    return new AppError(
+      ErrorCode.AUTH_OAUTH_PROVIDER_NOT_CONFIGURED,
+      error.message,
+      error,
+    );
+  }
+
+  return mapAuthError(error, ErrorCode.AUTH_IDENTITY_LINK_FAILED);
+};
+
 export interface AuthResult {
   session: Session | null;
   user: User | null;
@@ -110,9 +163,10 @@ const rememberCompletedCallback = (url: string): void => {
 };
 
 export const getAuthRedirectUrl = (
-  path: "auth/callback" | "auth/reset",
+  path: "auth/callback" | "auth/reset" | "auth/link-callback",
+  platform: string = Platform.OS,
 ): string => {
-  if (Platform.OS === "web") {
+  if (platform === "web") {
     return Linking.createURL(path);
   }
 
@@ -558,6 +612,391 @@ export const listUserIdentities = async (): Promise<ConnectedIdentity[]> => {
 
   const identities = data?.identities ?? [];
   return identities.map(toConnectedIdentity);
+};
+
+export type GoogleIdentityLinkResult =
+  | { status: "linked" }
+  | { status: "cancelled" }
+  | { status: "alreadyLinkedElsewhere" };
+
+export const hasConnectedProvider = (
+  identities: readonly ConnectedIdentity[],
+  provider: string,
+): boolean => identities.some((identity) => identity.provider === provider);
+
+const waitForConnectedProvider = async (
+  provider: string,
+  timeoutMs = 4000,
+  pollIntervalMs = 200,
+): Promise<ConnectedIdentity[]> => {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  const interval = Math.max(50, pollIntervalMs);
+
+  do {
+    const identities = await listUserIdentities();
+    if (hasConnectedProvider(identities, provider)) {
+      return identities;
+    }
+
+    if (Date.now() >= deadline) {
+      return identities;
+    }
+
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, interval);
+    });
+  } while (Date.now() <= deadline);
+
+  return listUserIdentities();
+};
+
+const getAuthenticatedUserId = async (): Promise<string> => {
+  const supabase = getSupabase();
+
+  if (!supabase) {
+    throw new AppError(
+      ErrorCode.UNKNOWN_ERROR,
+      "Supabase is not configured",
+    );
+  }
+
+  const { data, error } = await supabase.auth.getUser();
+  const appError = mapAuthError(
+    error,
+    ErrorCode.AUTH_SESSION_EXPIRED,
+  );
+  if (appError) throw appError;
+
+  if (!data.user) {
+    throw new AppError(
+      ErrorCode.AUTH_SESSION_EXPIRED,
+      "A signed-in user is required to link an identity.",
+    );
+  }
+
+  return data.user.id;
+};
+
+const requireSameSignedInUser = async (
+  expectedUserId: string,
+): Promise<void> => {
+  const currentUserId = await getAuthenticatedUserId();
+
+  if (currentUserId !== expectedUserId) {
+    throw new AppError(
+      ErrorCode.AUTH_IDENTITY_LINK_SESSION_CHANGED,
+      "The signed-in user changed while linking an identity.",
+    );
+  }
+};
+
+interface IdentityLinkSessionSnapshot {
+  userId: string;
+  accessToken: string;
+  refreshToken: string;
+}
+
+const getIdentityLinkSessionSnapshot = async (): Promise<
+  IdentityLinkSessionSnapshot
+> => {
+  const supabase = getSupabase();
+
+  if (!supabase) {
+    throw new AppError(
+      ErrorCode.UNKNOWN_ERROR,
+      "Supabase is not configured",
+    );
+  }
+
+  const { data, error } = await supabase.auth.getSession();
+  const appError = mapAuthError(
+    error,
+    ErrorCode.AUTH_SESSION_EXPIRED,
+  );
+  if (appError) throw appError;
+
+  const session = data.session;
+  if (!session) {
+    throw new AppError(
+      ErrorCode.AUTH_SESSION_EXPIRED,
+      "A signed-in session is required to link an identity.",
+    );
+  }
+
+  const authenticatedUserId = await getAuthenticatedUserId();
+  if (session.user.id !== authenticatedUserId) {
+    throw new AppError(
+      ErrorCode.AUTH_IDENTITY_LINK_SESSION_CHANGED,
+      "The authenticated user did not match the stored session.",
+    );
+  }
+
+  return {
+    userId: authenticatedUserId,
+    accessToken: session.access_token,
+    refreshToken: session.refresh_token,
+  };
+};
+
+const restoreIdentityLinkSession = async (
+  snapshot: IdentityLinkSessionSnapshot,
+): Promise<void> => {
+  const supabase = getSupabase();
+
+  if (!supabase) {
+    throw new AppError(
+      ErrorCode.AUTH_IDENTITY_LINK_SESSION_CHANGED,
+      "Supabase became unavailable while restoring the session.",
+    );
+  }
+
+  const { data, error } = await supabase.auth.setSession({
+    access_token: snapshot.accessToken,
+    refresh_token: snapshot.refreshToken,
+  });
+  const appError = mapAuthError(
+    error,
+    ErrorCode.AUTH_IDENTITY_LINK_SESSION_CHANGED,
+  );
+  if (appError) throw appError;
+
+  if (data.session?.user.id !== snapshot.userId) {
+    throw new AppError(
+      ErrorCode.AUTH_IDENTITY_LINK_SESSION_CHANGED,
+      "The original signed-in session could not be restored.",
+    );
+  }
+
+  await requireSameSignedInUser(snapshot.userId);
+};
+
+const ensureOriginalSessionActive = async (
+  snapshot: IdentityLinkSessionSnapshot,
+): Promise<void> => {
+  try {
+    const currentUserId = await getAuthenticatedUserId();
+    if (currentUserId === snapshot.userId) {
+      return;
+    }
+  } catch {
+    // Restore below. Never expose the intermediate auth failure or tokens.
+  }
+
+  await restoreIdentityLinkSession(snapshot);
+};
+
+const linkedGoogleResultIfPresent = async (): Promise<
+  GoogleIdentityLinkResult | null
+> => {
+  try {
+    const identities = await listUserIdentities();
+    return hasConnectedProvider(identities, "google")
+      ? { status: "linked" }
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+let googleIdentityLinkPromise: Promise<GoogleIdentityLinkResult> | null = null;
+
+const linkGoogleIdentityInternal = async (): Promise<GoogleIdentityLinkResult> => {
+  const supabase = getSupabase();
+
+  if (!supabase) {
+    throw new AppError(
+      ErrorCode.UNKNOWN_ERROR,
+      "Supabase is not configured",
+    );
+  }
+
+  // Keep the token-bearing snapshot strictly inside this service. It is used
+  // only to recover the original account if an unexpected callback attempts
+  // to establish a session for a different auth.users row.
+  const originalSession = await getIdentityLinkSessionSnapshot();
+  const existingIdentities = await listUserIdentities();
+  if (hasConnectedProvider(existingIdentities, "google")) {
+    return { status: "linked" };
+  }
+
+  const redirectTo = getAuthRedirectUrl("auth/link-callback");
+  const { data, error } = await supabase.auth.linkIdentity({
+    provider: "google",
+    options: {
+      redirectTo,
+      skipBrowserRedirect: true,
+      queryParams: {
+        prompt: "select_account",
+      },
+    },
+  });
+
+  if (error) {
+    if (isIdentityLinkConflict(normalizedAuthErrorCode(error), error.message)) {
+      const linked = await linkedGoogleResultIfPresent();
+      return linked ?? { status: "alreadyLinkedElsewhere" };
+    }
+
+    const appError = mapIdentityLinkError(error);
+    if (appError) throw appError;
+  }
+
+  if (!data?.url) {
+    throw new AppError(
+      ErrorCode.AUTH_IDENTITY_LINK_FAILED,
+      "Google did not return an identity-linking URL.",
+    );
+  }
+
+  const browserResult = await WebBrowser.openAuthSessionAsync(
+    data.url,
+    redirectTo,
+  );
+
+  if (
+    browserResult.type === "cancel" ||
+    browserResult.type === "dismiss"
+  ) {
+    await requireSameSignedInUser(originalSession.userId);
+    return { status: "cancelled" };
+  }
+
+  if (
+    browserResult.type !== "success" ||
+    !("url" in browserResult) ||
+    typeof browserResult.url !== "string"
+  ) {
+    throw new AppError(
+      ErrorCode.AUTH_IDENTITY_LINK_FAILED,
+      "Google identity linking did not return a valid callback.",
+    );
+  }
+
+  const callbackUrl = browserResult.url;
+  const parsed = parseAuthCallbackUrl(callbackUrl);
+  const description = parsed.errorDescription ?? parsed.errorCode ?? "";
+
+  if (
+    parsed.errorCode === "access_denied" ||
+    description.toLowerCase().includes("cancel")
+  ) {
+    await requireSameSignedInUser(originalSession.userId);
+    return { status: "cancelled" };
+  }
+
+  if (parsed.errorCode) {
+    if (isIdentityLinkConflict(parsed.errorCode, description)) {
+      const linked = await linkedGoogleResultIfPresent();
+      return linked ?? { status: "alreadyLinkedElsewhere" };
+    }
+
+    throw new AppError(
+      ErrorCode.AUTH_IDENTITY_LINK_FAILED,
+      description,
+    );
+  }
+
+  if (!parsed.authorizationCode) {
+    throw new AppError(
+      ErrorCode.AUTH_OAUTH_CALLBACK_INVALID,
+      "The identity-link callback did not include an authorization code.",
+    );
+  }
+
+  // This service is the only owner of the dedicated link-callback PKCE code.
+  // The callback route disables Supabase URL auto-detection and never calls an
+  // exchange method, preventing the single-use code from being consumed twice.
+  const { data: exchangeData, error: exchangeError } =
+    await supabase.auth.exchangeCodeForSession(
+      parsed.authorizationCode,
+    );
+
+  if (exchangeError) {
+    await ensureOriginalSessionActive(originalSession);
+
+    const linked = await linkedGoogleResultIfPresent();
+    if (linked) {
+      return linked;
+    }
+
+    if (
+      isIdentityLinkConflict(
+        normalizedAuthErrorCode(exchangeError),
+        exchangeError.message,
+      )
+    ) {
+      return { status: "alreadyLinkedElsewhere" };
+    }
+
+    const appError = mapIdentityLinkError(exchangeError);
+    if (appError) throw appError;
+  }
+
+  const linkedSession = exchangeData.session;
+  if (!linkedSession) {
+    await ensureOriginalSessionActive(originalSession);
+    throw new AppError(
+      ErrorCode.AUTH_IDENTITY_LINK_FAILED,
+      "Identity linking completed without a session.",
+    );
+  }
+
+  if (linkedSession.user.id !== originalSession.userId) {
+    await restoreIdentityLinkSession(originalSession);
+    throw new AppError(
+      ErrorCode.AUTH_IDENTITY_LINK_SESSION_CHANGED,
+      "Identity linking returned a different signed-in user.",
+    );
+  }
+
+  await requireSameSignedInUser(originalSession.userId);
+
+  const identities = await waitForConnectedProvider("google");
+
+  await requireSameSignedInUser(originalSession.userId);
+
+  if (!hasConnectedProvider(identities, "google")) {
+    throw new AppError(
+      ErrorCode.AUTH_IDENTITY_LINK_FAILED,
+      "Google identity linking completed without a linked identity.",
+    );
+  }
+
+  return { status: "linked" };
+};
+
+/**
+ * Link Google to the currently signed-in user without returning a Session,
+ * User, callback URL, or token-bearing value to UI code. Calls are globally
+ * single-flight so rapid presses cannot start multiple provider flows.
+ */
+export const linkGoogleIdentity = (): Promise<GoogleIdentityLinkResult> => {
+  if (googleIdentityLinkPromise) {
+    return googleIdentityLinkPromise;
+  }
+
+  googleIdentityLinkPromise = linkGoogleIdentityInternal().finally(() => {
+    googleIdentityLinkPromise = null;
+  });
+
+  return googleIdentityLinkPromise;
+};
+
+/**
+ * Let a remounted Profile screen wait for an identity-link flow that was
+ * started before Expo Router handled the callback deep link. Errors are
+ * intentionally swallowed here: Profile will perform its own safe identity
+ * read and render either the connected state or its generic load-error state.
+ */
+export const waitForGoogleIdentityLinkCompletion = async (): Promise<void> => {
+  const inFlight = googleIdentityLinkPromise;
+  if (!inFlight) return;
+
+  try {
+    await inFlight;
+  } catch {
+    // The initiating button owns user-facing error handling.
+  }
 };
 
 export const resendVerificationEmail = async (

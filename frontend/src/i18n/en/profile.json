@@ -22,7 +22,9 @@
     "providers": {
       "email": "Email",
       "google": "Google"
-    }
+    },
+    "connectGoogle": "Connect Google",
+    "connectGoogleDescription": "Connect Google to sign in to this same Project Recall account."
   },
   "appLanguage": "App language",
   "spokenLanguage": "Default spoken language",

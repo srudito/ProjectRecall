@@ -106,6 +106,7 @@ describe("root authentication navigation", () => {
       "index",
       "(auth)",
       "auth/callback",
+      "auth/link-callback",
       "auth/reset",
     ]);
     const root = RootNavigator({
@@ -116,6 +117,7 @@ describe("root authentication navigation", () => {
 
     expect(screenNames(root.props.children)).toEqual(PUBLIC_ROOT_ROUTES);
     expect(protectedNames).not.toContain("auth/callback");
+    expect(protectedNames).not.toContain("auth/link-callback");
     expect(protectedNames).not.toContain("auth/reset");
   });
 

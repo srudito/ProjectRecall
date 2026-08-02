@@ -33,8 +33,9 @@ export function RootNavigator({
         <Stack.Screen name={ROOT_ROUTE.projectDetail} />
       </Stack.Protected>
 
-      {/* These callbacks establish or recover a session and must stay public. */}
+      {/* OAuth callbacks must stay public. The link callback preserves the existing session. */}
       <Stack.Screen name={ROOT_ROUTE.authCallback} />
+      <Stack.Screen name={ROOT_ROUTE.authLinkCallback} />
       <Stack.Screen name={ROOT_ROUTE.authResetCallback} />
     </Stack>
   );

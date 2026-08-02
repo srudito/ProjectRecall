@@ -10,6 +10,7 @@ export const ROOT_ROUTE = {
   sessionDetail: "session/[id]",
   projectDetail: "project/[id]",
   authCallback: "auth/callback",
+  authLinkCallback: "auth/link-callback",
   authResetCallback: "auth/reset",
 } as const;
 
@@ -17,6 +18,7 @@ export const PUBLIC_ROOT_ROUTES = [
   ROOT_ROUTE.index,
   ROOT_ROUTE.authGroup,
   ROOT_ROUTE.authCallback,
+  ROOT_ROUTE.authLinkCallback,
   ROOT_ROUTE.authResetCallback,
 ] as const;
 

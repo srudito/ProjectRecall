@@ -16,6 +16,32 @@ const secureStoreAdapter = {
 
 let cached: SupabaseClient | null = null;
 
+const currentBrowserPathname = (): string => {
+  const location = (globalThis as {
+    location?: { pathname?: string };
+  }).location;
+
+  return typeof location?.pathname === "string"
+    ? location.pathname
+    : "";
+};
+
+/**
+ * Keep the normal web OAuth callback auto-detection enabled, but never let
+ * Supabase automatically exchange a PKCE code on the dedicated identity-link
+ * callback route. The parent identity-link service owns that one-time exchange
+ * so the popup/route and the initiating screen cannot consume the same code.
+ */
+export const shouldDetectSessionInUrl = (
+  platform: string = Platform.OS,
+  pathname: string = currentBrowserPathname(),
+): boolean => {
+  if (platform !== "web") return false;
+
+  const normalizedPath = pathname.replace(/\/+$/, "");
+  return !normalizedPath.endsWith("/auth/link-callback");
+};
+
 export const getSupabase = (): SupabaseClient | null => {
   if (!isSupabaseConfigured()) return null;
   if (cached) return cached;
@@ -24,7 +50,7 @@ export const getSupabase = (): SupabaseClient | null => {
       storage: Platform.OS === "web" ? undefined : (secureStoreAdapter as any),
       autoRefreshToken: true,
       persistSession: true,
-      detectSessionInUrl: Platform.OS === "web",
+      detectSessionInUrl: shouldDetectSessionInUrl(),
       flowType: "pkce",
     },
   });

@@ -1,8 +1,9 @@
 import { useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Linking, Switch, Text, TouchableOpacity, View } from "react-native";
 
 import { Button } from "@/src/components/Button";
+import { ConnectGoogleIdentityButton } from "@/src/components/ConnectGoogleIdentityButton";
 import { Card } from "@/src/components/Card";
 import { Screen } from "@/src/components/Screen";
 import { branding } from "@/src/config/branding";
@@ -10,8 +11,10 @@ import { appLanguages, displayLanguageName } from "@/src/i18n/languages";
 import { useI18n } from "@/src/i18n/I18nProvider";
 import {
   ConnectedIdentity,
+  hasConnectedProvider,
   listUserIdentities,
   signOut,
+  waitForGoogleIdentityLinkCompletion,
 } from "@/src/services/supabase/auth";
 import { getPreference, setPreference } from "@/src/services/sqlite/repository";
 import { requestMediaUploadSync } from "@/src/services/sync/media-upload-worker";
@@ -32,37 +35,54 @@ export default function Profile() {
   >([]);
   const [identitiesLoading, setIdentitiesLoading] = useState(true);
   const [identitiesError, setIdentitiesError] = useState(false);
+  const mountedRef = useRef(true);
+
+  const loadConnectedIdentities = useCallback(async (): Promise<void> => {
+    if (mountedRef.current) {
+      setIdentitiesLoading(true);
+      setIdentitiesError(false);
+    }
+
+    try {
+      // On native, Expo Router can remount Profile while the WebBrowser
+      // callback is still resolving in the same JS process. Wait for that
+      // bounded single-flight operation before reading identities so the
+      // newly mounted screen cannot render stale "Connect Google" state.
+      await waitForGoogleIdentityLinkCompletion();
+      const identities = await listUserIdentities();
+      if (mountedRef.current) {
+        setConnectedIdentities(identities);
+      }
+    } catch {
+      // Never surface raw Supabase/auth errors or callback data in Profile.
+      if (mountedRef.current) {
+        setConnectedIdentities([]);
+        setIdentitiesError(true);
+      }
+    } finally {
+      if (mountedRef.current) {
+        setIdentitiesLoading(false);
+      }
+    }
+  }, []);
 
   useEffect(() => {
     (async () => {
       const v = await getPreference<boolean>(WIFI_ONLY_KEY, true);
-      setWifiOnly(v);
+      if (mountedRef.current) {
+        setWifiOnly(v);
+      }
     })();
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      setIdentitiesLoading(true);
-      setIdentitiesError(false);
-      try {
-        const identities = await listUserIdentities();
-        if (!cancelled) setConnectedIdentities(identities);
-      } catch {
-        // Never surface the raw Supabase/auth error to the UI or logs here —
-        // only a generic, non-sensitive load-failure state.
-        if (!cancelled) setConnectedIdentities([]);
-        if (!cancelled) setIdentitiesError(true);
-      } finally {
-        if (!cancelled) setIdentitiesLoading(false);
-      }
-    })();
+    mountedRef.current = true;
+    void loadConnectedIdentities();
 
     return () => {
-      cancelled = true;
+      mountedRef.current = false;
     };
-  }, []);
+  }, [loadConnectedIdentities]);
 
   const toggleWifi = async (v: boolean) => {
     setWifiOnly(v);
@@ -148,6 +168,31 @@ export default function Profile() {
     return known;
   };
 
+  const googleConnected = hasConnectedProvider(
+    connectedIdentities,
+    "google",
+  );
+
+  const renderConnectGoogleAction = () => {
+    if (googleConnected) {
+      return null;
+    }
+
+    return (
+      <View style={{ marginTop: spacing.md }}>
+        <Text
+          style={[typography.caption, { color: colors.textSecondary }]}
+        >
+          {t("profile", "connectedAccounts.connectGoogleDescription")}
+        </Text>
+        <View style={{ height: spacing.sm }} />
+        <ConnectGoogleIdentityButton
+          onLinked={loadConnectedIdentities}
+        />
+      </View>
+    );
+  };
+
   const renderConnectedAccounts = () => {
     if (identitiesLoading) {
       return (
@@ -173,12 +218,15 @@ export default function Profile() {
 
     if (connectedIdentities.length === 0) {
       return (
-        <Text
-          testID="profile-connected-accounts-empty"
-          style={[typography.caption, { color: colors.textSecondary }]}
-        >
-          {t("profile", "connectedAccounts.empty")}
-        </Text>
+        <View>
+          <Text
+            testID="profile-connected-accounts-empty"
+            style={[typography.caption, { color: colors.textSecondary }]}
+          >
+            {t("profile", "connectedAccounts.empty")}
+          </Text>
+          {renderConnectGoogleAction()}
+        </View>
       );
     }
 
@@ -229,6 +277,7 @@ export default function Profile() {
             ) : null}
           </View>
         ))}
+        {renderConnectGoogleAction()}
       </View>
     );
   };
