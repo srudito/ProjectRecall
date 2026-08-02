@@ -8,6 +8,7 @@ From `/app/frontend`:
 npx tsc --noEmit
 
 npx jest \
+  __tests__/password-recovery-callback.test.ts \
   __tests__/password-recovery.test.ts \
   __tests__/supabase-client-auth-detection.test.ts \
   __tests__/oauth-utils.test.ts \
@@ -18,12 +19,14 @@ npx jest \
 npx jest --runInBand
 
 npx eslint \
+  "./src/services/auth/password-recovery-callback.ts" \
   "./src/services/supabase/auth.ts" \
   "./src/services/supabase/client.ts" \
   "./src/components/PasswordRecoveryCallbackHandler.tsx" \
   "./app/auth/reset.tsx" \
   "./app/(auth)/reset-password.tsx" \
   "./src/domain/errors.ts" \
+  "./__tests__/password-recovery-callback.test.ts" \
   "./__tests__/password-recovery.test.ts" \
   "./__tests__/supabase-client-auth-detection.test.ts"
 
@@ -119,3 +122,14 @@ Confirm these remain working:
   a missing callback parameter.
 - If the UI reports a same-device mismatch, request and open the newest link in
   the same installed app without clearing app data.
+
+## Follow-up v1.1 checks
+
+- `projectrecall://auth/reset?code=...` and exact web `/auth/reset` callbacks
+  are accepted.
+- `/auth/callback?code=...` and `/auth/link-callback?code=...` are ignored and
+  never reach `exchangeCodeForSession()`.
+- `updateUser({ password })` must return the same recovered user ID.
+- No `getUser()` request occurs after a successful `updateUser()` response; a
+  network failure after the server update cannot be reported as an update
+  failure.

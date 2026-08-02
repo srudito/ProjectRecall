@@ -85,3 +85,17 @@ Recovery failures are now separated into safe, localized categories for an
 expired/used link, a PKCE device/verifier mismatch, and a callback that never
 returned verification parameters. No code, token, callback URL, or raw provider
 message is rendered or logged.
+
+## Follow-up hardening v1.1
+
+- Recovery callback capture is now purpose-bound to the exact native
+  `projectrecall://auth/reset` route or an exact web `/auth/reset` path. Normal
+  sign-in and identity-link callback URLs are ignored even when they contain a
+  PKCE-looking code.
+- The auth service repeats that route check before exchanging any code, so a
+  caller cannot bypass the UI callback filter.
+- Password-update success is verified from the `user` returned directly by
+  `updateUser({ password })`. A later network-only `getUser()` failure can no
+  longer turn an already-completed server update into a false failure message.
+- Focused tests cover wrong-route callbacks, returned-user mismatch, and the
+  absence of a post-update verification request.

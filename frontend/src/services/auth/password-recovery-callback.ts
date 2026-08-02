@@ -1,3 +1,4 @@
+import { branding } from "@/src/config/branding";
 import { parseAuthCallbackUrl } from "@/src/services/auth/oauth-utils";
 
 export type PasswordRecoveryRouteParams = Partial<
@@ -23,6 +24,28 @@ const firstString = (
     return value.find((item) => typeof item === "string") ?? null;
   }
   return null;
+};
+
+const normalizedCallbackBase = (url: string): string =>
+  url.trim().split(/[?#]/, 1)[0].replace(/\/+$/, "");
+
+/**
+ * Bind password-recovery handling to its dedicated callback route. This keeps
+ * normal sign-in and identity-link PKCE codes out of the recovery pipeline,
+ * even if another observer accidentally forwards those URLs here.
+ */
+export const isPasswordRecoveryCallbackRoute = (url: string): boolean => {
+  const callbackBase = normalizedCallbackBase(url);
+  if (!callbackBase) return false;
+
+  const normalizedBase = callbackBase.toLowerCase();
+  const nativeBase = `${branding.deepLinkScheme.toLowerCase()}://auth/reset`;
+
+  if (normalizedBase === nativeBase || normalizedBase === "/auth/reset") {
+    return true;
+  }
+
+  return /^https?:\/\/[^/]+\/auth\/reset$/i.test(callbackBase);
 };
 
 const RECOVERY_QUERY_KEYS = [
@@ -66,7 +89,7 @@ export const buildPasswordRecoveryCallbackUrl = (
 export const isActionablePasswordRecoveryCallbackUrl = (
   url: string | null | undefined,
 ): url is string => {
-  if (!url) return false;
+  if (!url || !isPasswordRecoveryCallbackRoute(url)) return false;
 
   const parsed = parseAuthCallbackUrl(url);
   return Boolean(
@@ -77,7 +100,7 @@ export const isActionablePasswordRecoveryCallbackUrl = (
 };
 
 export const selectPasswordRecoveryCallbackUrl = (
-  ...candidates: Array<string | null | undefined>
+  ...candidates: (string | null | undefined)[]
 ): string | null =>
   candidates.find(isActionablePasswordRecoveryCallbackUrl) ?? null;
 

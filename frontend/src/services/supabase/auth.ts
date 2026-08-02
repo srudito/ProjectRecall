@@ -17,7 +17,10 @@ import {
   buildNativeAuthRedirectUrl,
   parseAuthCallbackUrl,
 } from "@/src/services/auth/oauth-utils";
-import { getPasswordRecoveryCallbackKey } from "@/src/services/auth/password-recovery-callback";
+import {
+  getPasswordRecoveryCallbackKey,
+  isPasswordRecoveryCallbackRoute,
+} from "@/src/services/auth/password-recovery-callback";
 
 import { getSupabase } from "./client";
 
@@ -621,6 +624,12 @@ const completePasswordRecoveryFromUrlInternal = async (
     );
   }
 
+  if (!isPasswordRecoveryCallbackRoute(url)) {
+    throw passwordRecoveryError(
+      "The callback is not the dedicated password recovery route.",
+    );
+  }
+
   const parsed = parseAuthCallbackUrl(url);
 
   if (parsed.errorCode) {
@@ -805,9 +814,10 @@ export const updateRecoveredPassword = async (
     );
   }
 
-  const { error } = await supabase.auth.updateUser({
-    password: newPassword,
-  });
+  const { data: updatedData, error } =
+    await supabase.auth.updateUser({
+      password: newPassword,
+    });
 
   if (error) {
     const mapped = mapAuthError(
@@ -817,19 +827,11 @@ export const updateRecoveredPassword = async (
     if (mapped) throw mapped;
   }
 
-  const { data: afterData, error: afterError } =
-    await supabase.auth.getUser();
-
-  if (
-    afterError ||
-    !afterData.user ||
-    afterData.user.id !== grant.userId
-  ) {
+  if (!updatedData.user || updatedData.user.id !== grant.userId) {
     clearPasswordRecoveryState();
     throw new AppError(
       ErrorCode.AUTH_PASSWORD_RECOVERY_REQUIRED,
-      "The authenticated user changed during password recovery.",
-      afterError ?? undefined,
+      "The updated user did not match the recovered user.",
     );
   }
 

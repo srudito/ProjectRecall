@@ -2,6 +2,7 @@ import {
   buildPasswordRecoveryCallbackUrl,
   getPasswordRecoveryCallbackKey,
   isActionablePasswordRecoveryCallbackUrl,
+  isPasswordRecoveryCallbackRoute,
   selectPasswordRecoveryCallbackUrl,
 } from "@/src/services/auth/password-recovery-callback";
 
@@ -83,5 +84,40 @@ describe("password recovery callback capture", () => {
       "projectrecall://auth/reset#access_token=a&refresh_token=b&type=recovery",
     );
     expect(isActionablePasswordRecoveryCallbackUrl(url)).toBe(true);
+  });
+  it("accepts only the dedicated native and web recovery routes", () => {
+    expect(
+      isPasswordRecoveryCallbackRoute(
+        "projectrecall://auth/reset?code=recovery-code",
+      ),
+    ).toBe(true);
+    expect(
+      isPasswordRecoveryCallbackRoute(
+        "https://app.example/auth/reset?code=recovery-code",
+      ),
+    ).toBe(true);
+    expect(
+      isPasswordRecoveryCallbackRoute(
+        "projectrecall://auth/callback?code=sign-in-code",
+      ),
+    ).toBe(false);
+    expect(
+      isPasswordRecoveryCallbackRoute(
+        "projectrecall://auth/link-callback?code=link-code",
+      ),
+    ).toBe(false);
+  });
+
+  it("ignores actionable-looking codes from other auth routes", () => {
+    expect(
+      isActionablePasswordRecoveryCallbackUrl(
+        "projectrecall://auth/callback?code=sign-in-code",
+      ),
+    ).toBe(false);
+    expect(
+      isActionablePasswordRecoveryCallbackUrl(
+        "projectrecall://auth/link-callback?code=link-code",
+      ),
+    ).toBe(false);
   });
 });

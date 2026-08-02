@@ -133,6 +133,21 @@ describe("password recovery hardening", () => {
     expect(auth.exchangeCodeForSession).not.toHaveBeenCalled();
   });
 
+  it("rejects recovery-shaped codes delivered to another auth route", async () => {
+    const auth = createAuthMock();
+    mockedGetSupabase.mockReturnValue({ auth } as never);
+
+    await expect(
+      completePasswordRecoveryFromUrl(
+        "projectrecall://auth/callback?code=sign-in-code&type=recovery",
+      ),
+    ).rejects.toMatchObject({
+      code: "AUTH_PASSWORD_RECOVERY_INVALID",
+    });
+
+    expect(auth.exchangeCodeForSession).not.toHaveBeenCalled();
+  });
+
   it("blocks password updates that were not authorized by a recovery link", async () => {
     const auth = createAuthMock();
     mockedGetSupabase.mockReturnValue({ auth } as never);
@@ -161,12 +176,41 @@ describe("password recovery hardening", () => {
     expect(auth.updateUser).toHaveBeenCalledWith({
       password: "new-password-123",
     });
+
+    const updateOrder = auth.updateUser.mock.invocationCallOrder[0];
+    expect(
+      auth.getUser.mock.invocationCallOrder.every(
+        (order) => order < updateOrder,
+      ),
+    ).toBe(true);
+
     await expect(hasActivePasswordRecoveryGrant()).resolves.toBe(false);
     await expect(
       updateRecoveredPassword("another-password-123"),
     ).rejects.toMatchObject({
       code: "AUTH_PASSWORD_RECOVERY_REQUIRED",
     });
+  });
+
+  it("rejects an update result for a different user", async () => {
+    const auth = createAuthMock();
+    auth.updateUser.mockResolvedValue({
+      data: { user: { id: "user-2" } },
+      error: null,
+    });
+    mockedGetSupabase.mockReturnValue({ auth } as never);
+
+    await completePasswordRecoveryFromUrl(
+      "projectrecall://auth/reset?code=recovery-code-mismatch&type=recovery",
+    );
+
+    await expect(
+      updateRecoveredPassword("new-password-123"),
+    ).rejects.toMatchObject({
+      code: "AUTH_PASSWORD_RECOVERY_REQUIRED",
+    });
+
+    await expect(hasActivePasswordRecoveryGrant()).resolves.toBe(false);
   });
 
   it("rejects the update when the active user no longer matches the recovered user", async () => {
