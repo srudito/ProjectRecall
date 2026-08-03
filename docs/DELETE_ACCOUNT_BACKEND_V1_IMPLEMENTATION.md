@@ -12,7 +12,7 @@ The implementation is an authenticated Supabase Edge Function:
 supabase/functions/delete-account
 ```
 
-No PostgreSQL migration is added. The live development schema was audited
+Phase 5A originally added no PostgreSQL migration. Phase 5A.1 adds `0007_account_deletion_gate.sql` to close the concurrency/retry release gate identified by final review. The live development schema was audited
 before implementation:
 
 - application rows that point directly to `auth.users` with `NO ACTION` are
@@ -97,15 +97,20 @@ JWT gateway validation
 → auth.admin.deleteUser(current user)
 ```
 
-The function is idempotent for the supported partial states:
+The Phase 5A foundation supported basic partial retries. Phase 5A.1 supersedes the concurrency model with a durable database gate, distributed advisory locks, renewable leases, and preserved original workspace IDs.
+
+The function remains idempotent for the supported partial states:
 
 - if the Auth user is already missing, it returns `already_deleted`;
 - if owned workspaces were deleted by a previous attempt, user-owned orphan
   Storage objects remain in the retry scope;
 - repeated calls in the same Edge isolate are coalesced by user ID;
+- different Edge isolates are coordinated by a durable processing lease;
+- authenticated writes are drained and blocked while the durable gate is active;
 - database preflight and workspace deletion are rechecked transactionally;
-- owned workspace rows are locked before the final preflight so new child
-  rows cannot be attached during the cascade-delete decision.
+- the exclusive account advisory lock plus durable write gate prevents new
+  child rows from being attached during the cascade-delete decision;
+- workspace deletion targets only the original preflighted workspace IDs.
 
 A failure after some destructive steps is reported as retryable when safe.
 The next milestone must persist a local cleanup/deletion marker and retry the
@@ -133,5 +138,10 @@ docs/DELETE_ACCOUNT_BACKEND_V1_TEST.md
 - local crash-recovery marker;
 - team workspace ownership transfer;
 - anonymizing shared content;
-- database migration or migration-ledger repair;
+- migration-ledger repair or replay of migrations `0001`-`0006`;
 - scheduled/background deletion jobs.
+
+
+## Phase 5A.1 follow-up
+
+See `DELETE_ACCOUNT_CONCURRENCY_HARDENING_V1_IMPLEMENTATION.md` for the durable gate, advisory-lock protocol, write guards, and retry lease. The backend must not be exposed through a general-user UI until Phase 5B and Phase 5C are complete.

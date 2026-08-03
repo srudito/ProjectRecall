@@ -3,6 +3,8 @@ import postgres from "postgres";
 import {
   DeleteAccountDomainError,
   getDeleteAccountBlockers,
+  MAX_STORAGE_OBJECTS_PER_DELETE,
+  type DeleteAccountAttempt,
   type DeleteAccountDependencies,
   type DeleteAccountPreflight,
 } from "./core.ts";
@@ -30,6 +32,13 @@ interface PreflightRow {
   storage_objects_in_owned_workspaces_owned_by_other_users: number;
   storage_objects_in_owned_workspaces_without_owner: number;
   storage_object_count_in_deletion_scope: number;
+}
+
+interface DeletionRequestRow {
+  request_id: string;
+  status: "processing" | "retryable_failed";
+  expected_workspace_ids: string[];
+  lease_active: boolean;
 }
 
 const loadPreflightWithSql = async (
@@ -329,6 +338,32 @@ const sameStringSet = (
   );
 };
 
+const containsOnlyExpectedWorkspaces = (
+  current: readonly string[],
+  expected: readonly string[],
+): boolean => {
+  const expectedSet = new Set(expected);
+  return current.every((workspaceId) => expectedSet.has(workspaceId));
+};
+
+const accountDeletionInProgressError = (): DeleteAccountDomainError =>
+  new DeleteAccountDomainError(
+    "ACCOUNT_DELETION_IN_PROGRESS",
+    "Account deletion is already in progress. Try again shortly.",
+    { status: 409, retryable: true },
+  );
+
+const acquireExclusiveAccountLock = async (
+  sql: SqlClient,
+  userId: string,
+): Promise<void> => {
+  await sql`
+    select pg_advisory_xact_lock(
+      public.account_deletion_lock_key(${userId}::uuid)
+    )
+  `;
+};
+
 export const createDeleteAccountDatabase = (databaseUrl: string) => {
   const sql = postgres(databaseUrl, {
     max: 1,
@@ -344,7 +379,170 @@ export const createDeleteAccountDatabase = (databaseUrl: string) => {
       "removeStoragePaths" | "deleteAuthUser"
     >,
   ): DeleteAccountDependencies => ({
-    loadPreflight: (userId) => loadPreflightWithSql(sql, userId),
+    beginDeletionAttempt: async ({
+      userId,
+      requestId,
+      maxStorageObjects,
+      leaseSeconds,
+    }): Promise<DeleteAccountAttempt> =>
+      sql.begin(async (transaction: unknown) => {
+        const transactionSql = transaction as unknown as SqlClient;
+        await acquireExclusiveAccountLock(transactionSql, userId);
+
+        const [existingRequest] = await transactionSql<DeletionRequestRow[]>`
+          select
+            request.request_id::text as request_id,
+            request.status,
+            request.expected_workspace_ids::text[]
+              as expected_workspace_ids,
+            coalesce(request.lease_expires_at > now(), false)
+              as lease_active
+          from public.account_deletion_requests request
+          where request.user_id = ${userId}::uuid
+          for update
+        `;
+
+        if (
+          existingRequest?.status === "processing" &&
+          existingRequest.lease_active &&
+          existingRequest.request_id !== requestId
+        ) {
+          throw accountDeletionInProgressError();
+        }
+
+        const currentPreflight = await loadPreflightWithSql(
+          transactionSql,
+          userId,
+        );
+
+        if (!currentPreflight.userExists) {
+          return { preflight: currentPreflight, workspaceIds: [] };
+        }
+
+        const blockers = getDeleteAccountBlockers(currentPreflight);
+        if (blockers.length > 0) {
+          throw new DeleteAccountDomainError(
+            "ACCOUNT_DELETION_BLOCKED",
+            "This account cannot be deleted automatically while shared workspace data exists.",
+            { status: 409, blockers },
+          );
+        }
+
+        if (
+          currentPreflight.storageObjectCountInDeletionScope >
+          (maxStorageObjects ?? MAX_STORAGE_OBJECTS_PER_DELETE)
+        ) {
+          throw new DeleteAccountDomainError(
+            "ACCOUNT_DELETION_TOO_LARGE",
+            "This account contains too many files for automatic deletion.",
+            { status: 409 },
+          );
+        }
+
+        const expectedWorkspaceIds = existingRequest
+          ? existingRequest.expected_workspace_ids ?? []
+          : currentPreflight.ownedWorkspaceIds;
+
+        if (
+          existingRequest &&
+          !containsOnlyExpectedWorkspaces(
+            currentPreflight.ownedWorkspaceIds,
+            expectedWorkspaceIds,
+          )
+        ) {
+          throw new DeleteAccountDomainError(
+            "ACCOUNT_DELETION_BLOCKED",
+            "Account ownership changed while deletion was being retried.",
+            { status: 409 },
+          );
+        }
+
+        const [requestRow] = await transactionSql<
+          { expected_workspace_ids: string[] }[]
+        >`
+          insert into public.account_deletion_requests (
+            user_id,
+            request_id,
+            status,
+            expected_workspace_ids,
+            attempt_count,
+            started_at,
+            last_attempt_at,
+            lease_expires_at,
+            last_error_code
+          ) values (
+            ${userId}::uuid,
+            ${requestId}::uuid,
+            'processing',
+            ${expectedWorkspaceIds}::uuid[],
+            1,
+            now(),
+            now(),
+            now() + (${leaseSeconds} * interval '1 second'),
+            null
+          )
+          on conflict (user_id) do update set
+            request_id = excluded.request_id,
+            status = 'processing',
+            expected_workspace_ids =
+              public.account_deletion_requests.expected_workspace_ids,
+            attempt_count =
+              public.account_deletion_requests.attempt_count + 1,
+            last_attempt_at = now(),
+            lease_expires_at =
+              now() + (${leaseSeconds} * interval '1 second'),
+            last_error_code = null,
+            updated_at = now()
+          returning expected_workspace_ids::text[]
+            as expected_workspace_ids
+        `;
+
+        return {
+          preflight: currentPreflight,
+          workspaceIds:
+            requestRow?.expected_workspace_ids ?? expectedWorkspaceIds,
+        };
+      }),
+
+    heartbeatDeletionAttempt: async ({
+      userId,
+      requestId,
+      leaseSeconds,
+    }) => {
+      const rows = await sql<{ user_id: string }[]>`
+        update public.account_deletion_requests request
+        set
+          lease_expires_at =
+            now() + (${leaseSeconds} * interval '1 second'),
+          updated_at = now()
+        where request.user_id = ${userId}::uuid
+          and request.request_id = ${requestId}::uuid
+          and request.status = 'processing'
+          and request.lease_expires_at > now()
+        returning request.user_id::text as user_id
+      `;
+
+      if (rows.length !== 1) {
+        throw accountDeletionInProgressError();
+      }
+    },
+
+    markDeletionAttemptFailed: async ({
+      userId,
+      requestId,
+      errorCode,
+    }) => {
+      await sql`
+        update public.account_deletion_requests request
+        set
+          status = 'retryable_failed',
+          lease_expires_at = null,
+          last_error_code = left(${errorCode}, 120),
+          updated_at = now()
+        where request.user_id = ${userId}::uuid
+          and request.request_id = ${requestId}::uuid
+      `;
+    },
 
     listDeletionStoragePaths: async (userId, workspaceIds, maxRows) => {
       const rows = workspaceIds.length > 0
@@ -420,22 +618,39 @@ export const createDeleteAccountDatabase = (databaseUrl: string) => {
 
     deleteOwnedWorkspacesIfStillSafe: async ({
       userId,
+      requestId,
       expectedWorkspaceIds,
+      leaseSeconds,
     }) =>
       sql.begin(async (transaction: unknown) => {
         const transactionSql = transaction as unknown as SqlClient;
+        await acquireExclusiveAccountLock(transactionSql, userId);
 
-        // Prevent new child rows from being attached to an owned workspace
-        // between the final preflight and the cascading workspace delete.
-        // Foreign-key inserts require a key-share lock on the parent row,
-        // which conflicts with this row-level FOR UPDATE lock.
-        await transactionSql`
-          select workspace.id
-          from public.workspaces workspace
-          where workspace.owner_user_id = ${userId}::uuid
-          order by workspace.id
+        const [requestRow] = await transactionSql<DeletionRequestRow[]>`
+          select
+            request.request_id::text as request_id,
+            request.status,
+            request.expected_workspace_ids::text[]
+              as expected_workspace_ids,
+            coalesce(request.lease_expires_at > now(), false)
+              as lease_active
+          from public.account_deletion_requests request
+          where request.user_id = ${userId}::uuid
           for update
         `;
+
+        if (
+          !requestRow ||
+          requestRow.status !== "processing" ||
+          requestRow.request_id !== requestId ||
+          !requestRow.lease_active ||
+          !sameStringSet(
+            requestRow.expected_workspace_ids ?? [],
+            expectedWorkspaceIds,
+          )
+        ) {
+          throw accountDeletionInProgressError();
+        }
 
         const currentPreflight = await loadPreflightWithSql(
           transactionSql,
@@ -445,7 +660,7 @@ export const createDeleteAccountDatabase = (databaseUrl: string) => {
 
         if (
           blockers.length > 0 ||
-          !sameStringSet(
+          !containsOnlyExpectedWorkspaces(
             currentPreflight.ownedWorkspaceIds,
             expectedWorkspaceIds,
           )
@@ -457,11 +672,28 @@ export const createDeleteAccountDatabase = (databaseUrl: string) => {
           );
         }
 
-        const rows = await transactionSql<{ id: string }[]>`
-          delete from public.workspaces workspace
-          where workspace.owner_user_id = ${userId}::uuid
-          returning workspace.id::text as id
+        const rows = expectedWorkspaceIds.length > 0
+          ? await transactionSql<{ id: string }[]>`
+              delete from public.workspaces workspace
+              where workspace.owner_user_id = ${userId}::uuid
+                and workspace.id in ${transactionSql([
+                  ...expectedWorkspaceIds,
+                ])}
+              returning workspace.id::text as id
+            `
+          : [];
+
+        await transactionSql`
+          update public.account_deletion_requests request
+          set
+            lease_expires_at =
+              now() + (${leaseSeconds} * interval '1 second'),
+            updated_at = now()
+          where request.user_id = ${userId}::uuid
+            and request.request_id = ${requestId}::uuid
+            and request.status = 'processing'
         `;
+
         return rows.map((row: { id: string }) => row.id);
       }),
 

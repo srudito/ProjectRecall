@@ -1,5 +1,6 @@
 import {
   createSingleFlight,
+  DeleteAccountDomainError,
   decodeGatewayVerifiedClaims,
   executeDeleteAccount,
   getDeleteAccountBlockers,
@@ -11,6 +12,7 @@ import {
 
 const USER_ID = "11111111-1111-4111-8111-111111111111";
 const WORKSPACE_ID = "22222222-2222-4222-8222-222222222222";
+const REQUEST_ID = "33333333-3333-4333-8333-333333333333";
 const NOW = new Date("2026-08-02T08:00:00.000Z");
 const NOW_SECONDS = Math.floor(NOW.getTime() / 1000);
 
@@ -48,10 +50,23 @@ const preflight = (
   ...overrides,
 });
 
+const attempt = (
+  preflightOverrides: Partial<DeleteAccountPreflight> = {},
+  workspaceIds?: string[],
+) => {
+  const value = preflight(preflightOverrides);
+  return {
+    preflight: value,
+    workspaceIds: workspaceIds ?? value.ownedWorkspaceIds,
+  };
+};
+
 const dependencies = (
   overrides: Partial<DeleteAccountDependencies> = {},
 ): DeleteAccountDependencies => ({
-  loadPreflight: jest.fn(async () => preflight()),
+  beginDeletionAttempt: jest.fn(async () => attempt()),
+  heartbeatDeletionAttempt: jest.fn(async () => undefined),
+  markDeletionAttemptFailed: jest.fn(async () => undefined),
   listDeletionStoragePaths: jest.fn(async () => [
     `${WORKSPACE_ID}/session-a/asset-a/file-a.m4a`,
     `${WORKSPACE_ID}/session-a/asset-b/file-b.jpg`,
@@ -129,6 +144,7 @@ describe("delete-account backend core", () => {
       executeDeleteAccount(
         {
           userId: USER_ID,
+          requestId: REQUEST_ID,
           claims: claims(),
           confirmation: "delete",
           now: NOW,
@@ -146,6 +162,7 @@ describe("delete-account backend core", () => {
       executeDeleteAccount(
         {
           userId: USER_ID,
+          requestId: REQUEST_ID,
           claims: claims({
             amr: [
               { method: "password", timestamp: NOW_SECONDS - 3600 },
@@ -190,13 +207,13 @@ describe("delete-account backend core", () => {
   });
 
   it("blocks user-owned files in unsupported Storage buckets before deletion", async () => {
-const removeStoragePaths = jest.fn<
-  Promise<void>,
-  [readonly string[]]
->(async (_paths) => undefined);
+    const removeStoragePaths = jest.fn<
+      Promise<void>,
+      [readonly string[]]
+    >(async (_paths) => undefined);
     const deps = dependencies({
-      loadPreflight: jest.fn(async () =>
-        preflight({ userOwnedStorageObjectsOutsideSupportedBucket: 1 }),
+      beginDeletionAttempt: jest.fn(async () =>
+        attempt({ userOwnedStorageObjectsOutsideSupportedBucket: 1 }),
       ),
       removeStoragePaths,
     });
@@ -205,6 +222,7 @@ const removeStoragePaths = jest.fn<
       executeDeleteAccount(
         {
           userId: USER_ID,
+          requestId: REQUEST_ID,
           claims: claims(),
           confirmation: "DELETE",
           now: NOW,
@@ -224,8 +242,8 @@ const removeStoragePaths = jest.fn<
       [readonly string[]]
     >(async (_paths) => undefined);
     const deps = dependencies({
-      loadPreflight: jest.fn(async () =>
-        preflight({ membershipsInNonOwnedWorkspaces: 1 }),
+      beginDeletionAttempt: jest.fn(async () =>
+        attempt({ membershipsInNonOwnedWorkspaces: 1 }),
       ),
       removeStoragePaths,
     });
@@ -234,6 +252,7 @@ const removeStoragePaths = jest.fn<
       executeDeleteAccount(
         {
           userId: USER_ID,
+          requestId: REQUEST_ID,
           claims: claims(),
           confirmation: "DELETE",
           now: NOW,
@@ -261,6 +280,7 @@ const removeStoragePaths = jest.fn<
       executeDeleteAccount(
         {
           userId: USER_ID,
+          requestId: REQUEST_ID,
           claims: claims(),
           confirmation: "DELETE",
           now: NOW,
@@ -280,8 +300,8 @@ const removeStoragePaths = jest.fn<
       [readonly string[]]
     >(async (_paths) => undefined);
     const deps = dependencies({
-      loadPreflight: jest.fn(async () =>
-        preflight({ storageObjectCountInDeletionScope: 11 }),
+      beginDeletionAttempt: jest.fn(async () =>
+        attempt({ storageObjectCountInDeletionScope: 11 }),
       ),
       removeStoragePaths,
     });
@@ -290,6 +310,7 @@ const removeStoragePaths = jest.fn<
       executeDeleteAccount(
         {
           userId: USER_ID,
+          requestId: REQUEST_ID,
           claims: claims(),
           confirmation: "DELETE",
           now: NOW,
@@ -347,6 +368,7 @@ const removeStoragePaths = jest.fn<
     const result = await executeDeleteAccount(
       {
         userId: USER_ID,
+        requestId: REQUEST_ID,
         claims: claims(),
         confirmation: "DELETE",
         now: NOW,
@@ -382,8 +404,8 @@ const removeStoragePaths = jest.fn<
       [readonly string[]]
     >(async (_paths) => undefined);
     const deps = dependencies({
-      loadPreflight: jest.fn(async () =>
-        preflight({ storageObjectCountInDeletionScope: paths.length }),
+      beginDeletionAttempt: jest.fn(async () =>
+        attempt({ storageObjectCountInDeletionScope: paths.length }),
       ),
       listDeletionStoragePaths: jest
         .fn()
@@ -395,6 +417,7 @@ const removeStoragePaths = jest.fn<
     await executeDeleteAccount(
       {
         userId: USER_ID,
+        requestId: REQUEST_ID,
         claims: claims(),
         confirmation: "DELETE",
         now: NOW,
@@ -418,6 +441,7 @@ const removeStoragePaths = jest.fn<
       executeDeleteAccount(
         {
           userId: USER_ID,
+          requestId: REQUEST_ID,
           claims: claims(),
           confirmation: "DELETE",
           now: NOW,
@@ -438,12 +462,15 @@ const removeStoragePaths = jest.fn<
       [readonly string[]]
     >(async (_paths) => undefined);
     const deps = dependencies({
-      loadPreflight: jest.fn(async () =>
-        preflight({
-          ownedWorkspaceIds: [],
-          ownedWorkspaceCount: 0,
-          storageObjectCountInDeletionScope: 1,
-        }),
+      beginDeletionAttempt: jest.fn(async () =>
+        attempt(
+          {
+            ownedWorkspaceIds: [],
+            ownedWorkspaceCount: 0,
+            storageObjectCountInDeletionScope: 1,
+          },
+          [WORKSPACE_ID],
+        ),
       ),
       listDeletionStoragePaths: jest
         .fn()
@@ -459,6 +486,7 @@ const removeStoragePaths = jest.fn<
       executeDeleteAccount(
         {
           userId: USER_ID,
+          requestId: REQUEST_ID,
           claims: claims(),
           confirmation: "DELETE",
           now: NOW,
@@ -487,6 +515,7 @@ const removeStoragePaths = jest.fn<
       executeDeleteAccount(
         {
           userId: USER_ID,
+          requestId: REQUEST_ID,
           claims: claims(),
           confirmation: "DELETE",
           now: NOW,
@@ -498,12 +527,15 @@ const removeStoragePaths = jest.fn<
 
   it("supports retry after workspace cleanup and treats missing Auth user as deleted", async () => {
     const deps = dependencies({
-      loadPreflight: jest.fn(async () =>
-        preflight({
-          ownedWorkspaceIds: [],
-          ownedWorkspaceCount: 0,
-          storageObjectCountInDeletionScope: 0,
-        }),
+      beginDeletionAttempt: jest.fn(async () =>
+        attempt(
+          {
+            ownedWorkspaceIds: [],
+            ownedWorkspaceCount: 0,
+            storageObjectCountInDeletionScope: 0,
+          },
+          [WORKSPACE_ID],
+        ),
       ),
       listDeletionStoragePaths: jest.fn(async () => []),
       countDeletionStorageObjects: jest.fn(async () => 0),
@@ -515,6 +547,7 @@ const removeStoragePaths = jest.fn<
       executeDeleteAccount(
         {
           userId: USER_ID,
+          requestId: REQUEST_ID,
           claims: claims(),
           confirmation: "DELETE",
           now: NOW,
@@ -535,7 +568,9 @@ const removeStoragePaths = jest.fn<
     >(async (_paths) => undefined);
     const deleteAuthUser = jest.fn(async () => "deleted" as const);
     const deps = dependencies({
-      loadPreflight: jest.fn(async () => preflight({ userExists: false })),
+      beginDeletionAttempt: jest.fn(async () =>
+        attempt({ userExists: false, ownedWorkspaceIds: [] }, []),
+      ),
       removeStoragePaths,
       deleteAuthUser,
     });
@@ -544,6 +579,7 @@ const removeStoragePaths = jest.fn<
       executeDeleteAccount(
         {
           userId: USER_ID,
+          requestId: REQUEST_ID,
           claims: claims(),
           confirmation: "DELETE",
           now: NOW,
@@ -557,6 +593,114 @@ const removeStoragePaths = jest.fn<
     });
     expect(removeStoragePaths).not.toHaveBeenCalled();
     expect(deleteAuthUser).not.toHaveBeenCalled();
+  });
+
+
+  it("keeps a durable gate active when a destructive step fails", async () => {
+    const markDeletionAttemptFailed = jest.fn(async () => undefined);
+    const deps = dependencies({
+      removeStoragePaths: jest.fn(async () => {
+        throw new DeleteAccountDomainError(
+          "ACCOUNT_DELETION_STORAGE_FAILED",
+          "safe failure",
+          { status: 502, retryable: true },
+        );
+      }),
+      markDeletionAttemptFailed,
+    });
+
+    await expect(
+      executeDeleteAccount(
+        {
+          userId: USER_ID,
+          requestId: REQUEST_ID,
+          claims: claims(),
+          confirmation: "DELETE",
+          now: NOW,
+        },
+        deps,
+      ),
+    ).rejects.toMatchObject({
+      code: "ACCOUNT_DELETION_STORAGE_FAILED",
+      retryable: true,
+    });
+
+    expect(markDeletionAttemptFailed).toHaveBeenCalledWith({
+      userId: USER_ID,
+      requestId: REQUEST_ID,
+      errorCode: "ACCOUNT_DELETION_STORAGE_FAILED",
+    });
+  });
+
+  it("does not start Storage cleanup when another distributed lease is active", async () => {
+    const removeStoragePaths = jest.fn(async () => undefined);
+    const markDeletionAttemptFailed = jest.fn(async () => undefined);
+    const deps = dependencies({
+      beginDeletionAttempt: jest.fn(async () => {
+        throw new DeleteAccountDomainError(
+          "ACCOUNT_DELETION_IN_PROGRESS",
+          "safe in-progress response",
+          { status: 409, retryable: true },
+        );
+      }),
+      removeStoragePaths,
+      markDeletionAttemptFailed,
+    });
+
+    await expect(
+      executeDeleteAccount(
+        {
+          userId: USER_ID,
+          requestId: REQUEST_ID,
+          claims: claims(),
+          confirmation: "DELETE",
+          now: NOW,
+        },
+        deps,
+      ),
+    ).rejects.toMatchObject({
+      code: "ACCOUNT_DELETION_IN_PROGRESS",
+      status: 409,
+      retryable: true,
+    });
+
+    expect(removeStoragePaths).not.toHaveBeenCalled();
+    expect(markDeletionAttemptFailed).not.toHaveBeenCalled();
+  });
+
+  it("renews the durable lease before destructive phases", async () => {
+    const heartbeatDeletionAttempt = jest.fn(async () => undefined);
+    const deleteOwnedWorkspacesIfStillSafe = jest.fn(async () => [
+      WORKSPACE_ID,
+    ]);
+    const deps = dependencies({
+      heartbeatDeletionAttempt,
+      deleteOwnedWorkspacesIfStillSafe,
+    });
+
+    await executeDeleteAccount(
+      {
+        userId: USER_ID,
+        requestId: REQUEST_ID,
+        claims: claims(),
+        confirmation: "DELETE",
+        now: NOW,
+      },
+      deps,
+    );
+
+    expect(heartbeatDeletionAttempt).toHaveBeenCalled();
+    expect(heartbeatDeletionAttempt).toHaveBeenCalledWith({
+      userId: USER_ID,
+      requestId: REQUEST_ID,
+      leaseSeconds: 15 * 60,
+    });
+    expect(deleteOwnedWorkspacesIfStillSafe).toHaveBeenCalledWith({
+      userId: USER_ID,
+      requestId: REQUEST_ID,
+      expectedWorkspaceIds: [WORKSPACE_ID],
+      leaseSeconds: 15 * 60,
+    });
   });
 
   it("coalesces concurrent destructive operations by user ID", async () => {

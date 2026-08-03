@@ -247,6 +247,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
       executeDeleteAccount(
         {
           userId: currentUserId,
+          requestId,
           claims,
           confirmation: body.confirmation,
           now: new Date(),

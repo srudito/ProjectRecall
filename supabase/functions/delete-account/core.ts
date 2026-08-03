@@ -2,6 +2,7 @@ export const DELETE_ACCOUNT_CONFIRMATION = "DELETE";
 export const RECENT_AUTH_MAX_AGE_SECONDS = 15 * 60;
 export const STORAGE_REMOVE_BATCH_SIZE = 1000;
 export const MAX_STORAGE_OBJECTS_PER_DELETE = 10_000;
+export const DELETE_ACCOUNT_LEASE_SECONDS = 15 * 60;
 
 export type DeleteAccountErrorCode =
   | "ACCOUNT_DELETION_CONFIRMATION_REQUIRED"
@@ -11,7 +12,8 @@ export type DeleteAccountErrorCode =
   | "ACCOUNT_DELETION_STORAGE_FAILED"
   | "ACCOUNT_DELETION_DATABASE_FAILED"
   | "ACCOUNT_DELETION_AUTH_FAILED"
-  | "ACCOUNT_DELETION_INVALID_SESSION";
+  | "ACCOUNT_DELETION_INVALID_SESSION"
+  | "ACCOUNT_DELETION_IN_PROGRESS";
 
 export type DeleteAccountBlocker =
   | "OWNED_WORKSPACE_HAS_OTHER_MEMBERS"
@@ -82,8 +84,28 @@ export interface DeleteAccountPreflight {
 
 export type DeleteAuthUserResult = "deleted" | "not_found";
 
+export interface DeleteAccountAttempt {
+  preflight: DeleteAccountPreflight;
+  workspaceIds: string[];
+}
+
 export interface DeleteAccountDependencies {
-  loadPreflight: (userId: string) => Promise<DeleteAccountPreflight>;
+  beginDeletionAttempt: (input: {
+    userId: string;
+    requestId: string;
+    maxStorageObjects: number;
+    leaseSeconds: number;
+  }) => Promise<DeleteAccountAttempt>;
+  heartbeatDeletionAttempt: (input: {
+    userId: string;
+    requestId: string;
+    leaseSeconds: number;
+  }) => Promise<void>;
+  markDeletionAttemptFailed: (input: {
+    userId: string;
+    requestId: string;
+    errorCode: string;
+  }) => Promise<void>;
   listDeletionStoragePaths: (
     userId: string,
     workspaceIds: readonly string[],
@@ -96,7 +118,9 @@ export interface DeleteAccountDependencies {
   ) => Promise<number>;
   deleteOwnedWorkspacesIfStillSafe: (input: {
     userId: string;
+    requestId: string;
     expectedWorkspaceIds: readonly string[];
+    leaseSeconds: number;
   }) => Promise<string[]>;
   countRemainingBlockingReferences: (userId: string) => Promise<number>;
   deleteAuthUser: (userId: string) => Promise<DeleteAuthUserResult>;
@@ -104,6 +128,7 @@ export interface DeleteAccountDependencies {
 
 export interface DeleteAccountExecutionInput {
   userId: string;
+  requestId: string;
   claims: VerifiedUserClaims;
   confirmation: unknown;
   now: Date;
@@ -373,135 +398,186 @@ export const executeDeleteAccount = async (
     );
   }
 
-  const preflight = await dependencies.loadPreflight(input.userId);
-  if (!preflight.userExists) {
-    return {
-      status: "already_deleted",
-      deletedWorkspaceCount: 0,
-      deletedStorageObjectCount: 0,
-    };
-  }
-
-  const blockers = getDeleteAccountBlockers(preflight);
-  if (blockers.length > 0) {
-    throw new DeleteAccountDomainError(
-      "ACCOUNT_DELETION_BLOCKED",
-      "This account cannot be deleted automatically while shared workspace data exists.",
-      { status: 409, blockers },
-    );
-  }
-
   const maxStorageObjects =
     input.maxStorageObjects ?? MAX_STORAGE_OBJECTS_PER_DELETE;
-  if (preflight.storageObjectCountInDeletionScope > maxStorageObjects) {
-    throw new DeleteAccountDomainError(
-      "ACCOUNT_DELETION_TOO_LARGE",
-      "This account contains too many files for automatic deletion.",
-      { status: 409 },
+  const leaseSeconds = DELETE_ACCOUNT_LEASE_SECONDS;
+  let attemptStarted = false;
+
+  const heartbeat = (): Promise<void> =>
+    dependencies.heartbeatDeletionAttempt({
+      userId: input.userId,
+      requestId: input.requestId,
+      leaseSeconds,
+    });
+
+  try {
+    const attempt = await dependencies.beginDeletionAttempt({
+      userId: input.userId,
+      requestId: input.requestId,
+      maxStorageObjects,
+      leaseSeconds,
+    });
+    const preflight = attempt.preflight;
+
+    if (!preflight.userExists) {
+      return {
+        status: "already_deleted",
+        deletedWorkspaceCount: 0,
+        deletedStorageObjectCount: 0,
+      };
+    }
+
+    const blockers = getDeleteAccountBlockers(preflight);
+    if (blockers.length > 0) {
+      throw new DeleteAccountDomainError(
+        "ACCOUNT_DELETION_BLOCKED",
+        "This account cannot be deleted automatically while shared workspace data exists.",
+        { status: 409, blockers },
+      );
+    }
+
+    if (preflight.storageObjectCountInDeletionScope > maxStorageObjects) {
+      throw new DeleteAccountDomainError(
+        "ACCOUNT_DELETION_TOO_LARGE",
+        "This account contains too many files for automatic deletion.",
+        { status: 409 },
+      );
+    }
+
+    const workspaceIds = uniqueTrimmedStrings(attempt.workspaceIds);
+    attemptStarted = true;
+    await heartbeat();
+
+    const initialPaths = uniqueExactStrings(
+      await dependencies.listDeletionStoragePaths(
+        input.userId,
+        workspaceIds,
+        maxStorageObjects + 1,
+      ),
     );
-  }
 
-  const workspaceIds = uniqueTrimmedStrings(preflight.ownedWorkspaceIds);
-  const initialPaths = uniqueExactStrings(
-    await dependencies.listDeletionStoragePaths(
-      input.userId,
-      workspaceIds,
-      maxStorageObjects + 1,
-    ),
-  );
+    if (initialPaths.length > maxStorageObjects) {
+      throw new DeleteAccountDomainError(
+        "ACCOUNT_DELETION_TOO_LARGE",
+        "This account contains too many files for automatic deletion.",
+        { status: 409 },
+      );
+    }
 
-  if (initialPaths.length > maxStorageObjects) {
-    throw new DeleteAccountDomainError(
-      "ACCOUNT_DELETION_TOO_LARGE",
-      "This account contains too many files for automatic deletion.",
-      { status: 409 },
+    assertSafeStoragePaths(initialPaths);
+    const deletedStoragePaths = new Set<string>();
+    for (const batch of chunkValues(
+      initialPaths,
+      STORAGE_REMOVE_BATCH_SIZE,
+    )) {
+      await heartbeat();
+      await dependencies.removeStoragePaths(batch);
+      batch.forEach((path) => deletedStoragePaths.add(path));
+    }
+
+    await heartbeat();
+    const storageRemainingBeforeWorkspaceDelete =
+      await dependencies.countDeletionStorageObjects(
+        input.userId,
+        workspaceIds,
+      );
+    if (storageRemainingBeforeWorkspaceDelete !== 0) {
+      throw new DeleteAccountDomainError(
+        "ACCOUNT_DELETION_STORAGE_FAILED",
+        "Account files could not be removed. Try again later.",
+        { status: 502, retryable: true },
+      );
+    }
+
+    await heartbeat();
+    const deletedWorkspaceIds =
+      await dependencies.deleteOwnedWorkspacesIfStillSafe({
+        userId: input.userId,
+        requestId: input.requestId,
+        expectedWorkspaceIds: workspaceIds,
+        leaseSeconds,
+      });
+
+    // Close the in-flight upload race after workspace deletion. The durable
+    // account gate blocks authenticated writes while residual objects are
+    // discovered and removed.
+    await heartbeat();
+    const residualPaths = uniqueExactStrings(
+      await dependencies.listDeletionStoragePaths(
+        input.userId,
+        workspaceIds,
+        maxStorageObjects + 1,
+      ),
     );
+    if (residualPaths.length > maxStorageObjects) {
+      throw new DeleteAccountDomainError(
+        "ACCOUNT_DELETION_TOO_LARGE",
+        "This account contains too many residual files for automatic deletion.",
+        { status: 409 },
+      );
+    }
+    assertSafeStoragePaths(residualPaths);
+    for (const batch of chunkValues(
+      residualPaths,
+      STORAGE_REMOVE_BATCH_SIZE,
+    )) {
+      await heartbeat();
+      await dependencies.removeStoragePaths(batch);
+      batch.forEach((path) => deletedStoragePaths.add(path));
+    }
+
+    await heartbeat();
+    const storageRemainingAfterWorkspaceDelete =
+      await dependencies.countDeletionStorageObjects(
+        input.userId,
+        workspaceIds,
+      );
+    if (storageRemainingAfterWorkspaceDelete !== 0) {
+      throw new DeleteAccountDomainError(
+        "ACCOUNT_DELETION_STORAGE_FAILED",
+        "Account files could not be removed. Try again later.",
+        { status: 502, retryable: true },
+      );
+    }
+
+    await heartbeat();
+    const remainingReferences =
+      await dependencies.countRemainingBlockingReferences(input.userId);
+    if (remainingReferences !== 0) {
+      throw new DeleteAccountDomainError(
+        "ACCOUNT_DELETION_BLOCKED",
+        "This account still owns shared data and cannot be deleted automatically.",
+        { status: 409 },
+      );
+    }
+
+    await heartbeat();
+    const authDeleteResult = await dependencies.deleteAuthUser(input.userId);
+
+    return {
+      status:
+        authDeleteResult === "not_found" ? "already_deleted" : "deleted",
+      deletedWorkspaceCount: deletedWorkspaceIds.length,
+      deletedStorageObjectCount: deletedStoragePaths.size,
+    };
+  } catch (error) {
+    if (attemptStarted) {
+      const errorCode =
+        error instanceof DeleteAccountDomainError
+          ? error.code
+          : "ACCOUNT_DELETION_FAILED";
+      await dependencies
+        .markDeletionAttemptFailed({
+          userId: input.userId,
+          requestId: input.requestId,
+          errorCode,
+        })
+        .catch(() => {
+          // Preserve the original failure; the durable gate remains active.
+        });
+    }
+    throw error;
   }
-
-  assertSafeStoragePaths(initialPaths);
-  const deletedStoragePaths = new Set<string>();
-  for (const batch of chunkValues(
-    initialPaths,
-    STORAGE_REMOVE_BATCH_SIZE,
-  )) {
-    await dependencies.removeStoragePaths(batch);
-    batch.forEach((path) => deletedStoragePaths.add(path));
-  }
-
-  const storageRemainingBeforeWorkspaceDelete =
-    await dependencies.countDeletionStorageObjects(
-      input.userId,
-      workspaceIds,
-    );
-  if (storageRemainingBeforeWorkspaceDelete !== 0) {
-    throw new DeleteAccountDomainError(
-      "ACCOUNT_DELETION_STORAGE_FAILED",
-      "Account files could not be removed. Try again later.",
-      { status: 502, retryable: true },
-    );
-  }
-
-  const deletedWorkspaceIds = await dependencies.deleteOwnedWorkspacesIfStillSafe({
-    userId: input.userId,
-    expectedWorkspaceIds: workspaceIds,
-  });
-
-  // Close the in-flight upload race after workspace deletion. With the
-  // workspace gone, RLS rejects new uploads under these prefixes.
-  const residualPaths = uniqueExactStrings(
-    await dependencies.listDeletionStoragePaths(
-      input.userId,
-      workspaceIds,
-      maxStorageObjects + 1,
-    ),
-  );
-  if (residualPaths.length > maxStorageObjects) {
-    throw new DeleteAccountDomainError(
-      "ACCOUNT_DELETION_TOO_LARGE",
-      "This account contains too many residual files for automatic deletion.",
-      { status: 409 },
-    );
-  }
-  assertSafeStoragePaths(residualPaths);
-  for (const batch of chunkValues(
-    residualPaths,
-    STORAGE_REMOVE_BATCH_SIZE,
-  )) {
-    await dependencies.removeStoragePaths(batch);
-    batch.forEach((path) => deletedStoragePaths.add(path));
-  }
-
-  const storageRemainingAfterWorkspaceDelete =
-    await dependencies.countDeletionStorageObjects(
-      input.userId,
-      workspaceIds,
-    );
-  if (storageRemainingAfterWorkspaceDelete !== 0) {
-    throw new DeleteAccountDomainError(
-      "ACCOUNT_DELETION_STORAGE_FAILED",
-      "Account files could not be removed. Try again later.",
-      { status: 502, retryable: true },
-    );
-  }
-
-  const remainingReferences =
-    await dependencies.countRemainingBlockingReferences(input.userId);
-  if (remainingReferences !== 0) {
-    throw new DeleteAccountDomainError(
-      "ACCOUNT_DELETION_BLOCKED",
-      "This account still owns shared data and cannot be deleted automatically.",
-      { status: 409 },
-    );
-  }
-
-  const authDeleteResult = await dependencies.deleteAuthUser(input.userId);
-
-  return {
-    status:
-      authDeleteResult === "not_found" ? "already_deleted" : "deleted",
-    deletedWorkspaceCount: deletedWorkspaceIds.length,
-    deletedStorageObjectCount: deletedStoragePaths.size,
-  };
 };
 
 export const createSingleFlight = <T>() => {

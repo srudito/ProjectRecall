@@ -10,6 +10,7 @@
 | `projects`               | Groups sessions inside a workspace.                         |
 | `sessions`               | Recording session with language + sync metadata.            |
 | `session_user_preferences` | Per-user session star and future organization preferences. |
+| `account_deletion_requests` | Durable Delete Account gate, lease, retry, and safe error state. |
 | `recordings`             | Audio artefact for a session (1:1).                         |
 | `media_assets`           | Photos, videos, documents attached during a session.        |
 | `attachment_events`      | Audit rows for asset add/remove.                            |
@@ -35,6 +36,7 @@
 - `media_assets.session_id`, `user_notes.session_id`, `bookmarks.session_id`,
   `timeline_events.session_id`.
 - `upload_queue_records (user_id, idempotency_key)` unique.
+- `account_deletion_requests.user_id` is a one-row-per-user primary key and cascades from `auth.users`.
 
 ## Constraints & checks
 
@@ -68,13 +70,25 @@ Enabled on **every** user-owned table. Access is granted only when
 The original policy set is in `supabase/migrations/0002_rls_policies.sql`.
 `0006_session_user_preferences.sql` adds self-only policies for personal
 session organization preferences and also requires access to the referenced
-session workspace.
+session workspace. `0007_account_deletion_gate.sql` adds a durable deletion
+gate, distributed advisory-lock write serialization, write-guard triggers, and
+gated Storage mutation policies. `0008_workspace_scope_integrity.sql` binds
+every session-scoped write to the session's canonical workspace and prevents
+cross-workspace identifiers from bypassing the deletion gate.
+`0009_guard_function_privileges.sql` removes direct trigger-function execution
+from `PUBLIC`, `anon`, and `authenticated` while preserving trigger-based
+enforcement. `0010_account_deletion_gate_final_hardening.sql` restricts
+internal helper execution and makes `sessions.workspace_id` immutable.
+`0011_guard_trigger_record_safety.sql` makes the generic trigger safe across
+tables with different row structures by using JSON record access instead of
+direct field dereferences.
 
 ## Storage policies
 
 Bucket `session-assets` (private, 500 MB / object). Insert / select / update /
 delete policies check that the first path segment (`workspace_id`) belongs to
-the caller's active workspace membership.
+the caller's active workspace membership. Migration `0007` additionally
+requires the workspace/account write gate to be open for Storage mutations.
 
 See `SECURITY.md` for the RLS test matrix and the exact CLI commands to
 verify each policy.

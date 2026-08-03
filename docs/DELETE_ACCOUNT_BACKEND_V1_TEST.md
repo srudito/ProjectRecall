@@ -13,14 +13,16 @@ npx tsc --noEmit
 
 npx jest \
   __tests__/delete-account-backend.test.ts \
+  __tests__/account-deletion-gate-migration.test.ts \
   --runInBand
 
 npx jest --runInBand
 
 npx eslint \
-  --config ./eslint.config.js \
-  "../supabase/functions/delete-account/core.ts" \
-  "./__tests__/delete-account-backend.test.ts"
+  "./jest.config.js" \
+  "./__tests__/delete-account-backend.test.ts" \
+  "./__tests__/account-deletion-gate-migration.test.ts" \
+  --max-warnings=0
 
 npx expo-doctor
 ```
@@ -273,3 +275,8 @@ SQL.
 - User-owned object in a bucket other than `session-assets`: blocked.
 - Other-user or null-owner object inside owned workspace: blocked.
 - Function response/logs contain no bearer token, email, user ID, or raw error.
+
+
+## Phase 5A.1 concurrency/retry verification
+
+Run the additional migration, gate, distributed lease, and retry test plan in `DELETE_ACCOUNT_CONCURRENCY_HARDENING_V1_TEST.md` before exposing a Delete Account UI.
