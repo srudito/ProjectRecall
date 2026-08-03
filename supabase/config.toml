@@ -1,0 +1,4 @@
+project_id = "project-recall"
+
+[functions.delete-account]
+verify_jwt = true

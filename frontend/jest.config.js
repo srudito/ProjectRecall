@@ -6,6 +6,7 @@ module.exports = {
   ],
   moduleNameMapper: {
     "^@/(.*)$": "<rootDir>/$1",
+    "^@babel/runtime/(.*)$": "<rootDir>/node_modules/@babel/runtime/$1",
   },
   setupFiles: ["<rootDir>/jest.setup.js"],
 };
