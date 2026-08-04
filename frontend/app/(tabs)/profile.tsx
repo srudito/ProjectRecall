@@ -357,6 +357,25 @@ export default function Profile() {
 
       <View style={{ height: spacing.md }} />
 
+      <Card
+        title={t("profile", "sections.danger")}
+        testID="profile-danger-zone-card"
+      >
+        <Text style={[typography.body, { color: colors.textPrimary }]}>
+          {t("profile", "deleteAccount.summary")}
+        </Text>
+        <View style={{ height: spacing.sm }} />
+        <Button
+          testID="profile-delete-account-button"
+          label={t("profile", "deleteAccount.open")}
+          variant="danger"
+          fullWidth
+          onPress={() => router.push("/account/delete")}
+        />
+      </Card>
+
+      <View style={{ height: spacing.md }} />
+
       <Card title={t("profile", "sections.about")} testID="profile-about-card">
         <Text style={[typography.caption, { color: colors.textSecondary }]}>
           {branding.productName}

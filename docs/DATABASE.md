@@ -81,7 +81,9 @@ enforcement. `0010_account_deletion_gate_final_hardening.sql` restricts
 internal helper execution and makes `sessions.workspace_id` immutable.
 `0011_guard_trigger_record_safety.sql` makes the generic trigger safe across
 tables with different row structures by using JSON record access instead of
-direct field dereferences.
+direct field dereferences. `0012_profile_account_deletion_gate.sql` adds a
+profile-specific write guard so profile updates are also frozen while the
+durable account-deletion gate is active.
 
 ## Storage policies
 

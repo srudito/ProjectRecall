@@ -4,7 +4,8 @@
     "account": "Akun",
     "preferences": "Preferensi",
     "storage": "Penyimpanan",
-    "about": "Tentang"
+    "about": "Tentang",
+    "danger": "Zona Berbahaya"
   },
   "appearance": {
     "title": "Tampilan",
@@ -38,5 +39,39 @@
   "privacyPolicy": "Kebijakan Privasi",
   "terms": "Ketentuan Layanan",
   "signOut": "Keluar",
-  "version": "Versi"
+  "version": "Versi",
+  "deleteAccount": {
+    "title": "Hapus Akun",
+    "summary": "Hapus permanen akun Project Recall ini beserta data privat cloud dan lokalnya.",
+    "open": "Hapus Akun",
+    "screenTitle": "Hapus akun secara permanen",
+    "warningTitle": "Tindakan ini tidak dapat dibatalkan",
+    "warningBody": "Proyek, sesi, rekaman, catatan, penanda, peristiwa timeline, file bukti, identitas terhubung, dan akses akun akan dihapus secara permanen.",
+    "offlineWarning": "Biarkan perangkat tetap online sampai penghapusan dan pembersihan lokal selesai.",
+    "confirmationLabel": "Ketik DELETE untuk melanjutkan",
+    "confirmationPlaceholder": "DELETE",
+    "confirmButton": "Hapus akun secara permanen",
+    "finalTitle": "Hapus akun ini secara permanen?",
+    "finalBody": "Akun dan seluruh data Project Recall yang memenuhi syarat akan dihapus permanen. Tindakan ini tidak dapat dibatalkan.",
+    "stateCheckTitle": "Pemeriksaan privasi akun gagal",
+    "progressTitle": "Menghapus akun Anda",
+    "progressBody": "Jangan tutup Project Recall selama permintaan penghapusan diproses.",
+    "cleanupTitle": "Menyelesaikan pembersihan data privat",
+    "cleanupBody": "Akun cloud sudah dihapus. Project Recall sedang menghapus data privat dari perangkat ini.",
+    "retryTitle": "Penghapusan perlu dicoba lagi",
+    "blockedTitle": "Penghapusan akun diblokir",
+    "blockedBody": "Data ruang kerja bersama harus diselesaikan sebelum akun ini dapat dihapus otomatis.",
+    "reauthTitle": "Masuk kembali",
+    "reauthBody": "Demi keamanan, keluar lalu masuk kembali sebelum meminta penghapusan akun.",
+    "cleanupFailedTitle": "Pembersihan lokal belum selesai",
+    "retry": "Coba lagi",
+    "returnToProfile": "Kembali ke Profil",
+    "signOut": "Keluar",
+    "recordingActive": "Hentikan atau buang rekaman yang sedang aktif sebelum melanjutkan.",
+    "unverifiedCleanupTitle": "Menghapus data privat dari perangkat ini",
+    "unverifiedCleanupBody": "Project Recall tidak dapat memverifikasi apakah penghapusan cloud sudah selesai. Data privat pada perangkat ini sedang dihapus sebelum Anda melanjutkan.",
+    "unverifiedCompleteTitle": "Data privat sudah dihapus dari perangkat ini",
+    "unverifiedCompleteBody": "Project Recall tidak dapat memverifikasi apakah akun cloud sudah dihapus. Anda dapat melanjutkan dengan aman, lalu mencoba masuk lagi nanti untuk memastikan status akun cloud.",
+    "continueSafely": "Lanjutkan dengan aman"
+  }
 }

@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import {
   createSingleFlight,
   DeleteAccountDomainError,
@@ -15,6 +18,13 @@ const WORKSPACE_ID = "22222222-2222-4222-8222-222222222222";
 const REQUEST_ID = "33333333-3333-4333-8333-333333333333";
 const NOW = new Date("2026-08-02T08:00:00.000Z");
 const NOW_SECONDS = Math.floor(NOW.getTime() / 1000);
+const edgeIndexSource = readFileSync(
+  resolve(
+    process.cwd(),
+    "../supabase/functions/delete-account/index.ts",
+  ),
+  "utf8",
+);
 
 const claims = (
   overrides: Partial<VerifiedUserClaims> = {},
@@ -53,11 +63,13 @@ const preflight = (
 const attempt = (
   preflightOverrides: Partial<DeleteAccountPreflight> = {},
   workspaceIds?: string[],
+  gateActive = true,
 ) => {
   const value = preflight(preflightOverrides);
   return {
     preflight: value,
     workspaceIds: workspaceIds ?? value.ownedWorkspaceIds,
+    gateActive,
   };
 };
 
@@ -91,6 +103,12 @@ const encodeJwt = (payload: Record<string, unknown>): string => {
 };
 
 describe("delete-account backend core", () => {
+  it("returns explicit durable-gate state in every safe error response", () => {
+    expect(edgeIndexSource).toContain("gateActive: error.gateActive");
+    expect(edgeIndexSource).toContain("gateActive: false");
+    expect(edgeIndexSource).toContain("gateActive: null");
+  });
+
   it("decodes gateway-verified claims without exposing unrelated JWT fields", () => {
     const decoded = decodeGatewayVerifiedClaims(
       encodeJwt({
@@ -213,7 +231,11 @@ describe("delete-account backend core", () => {
     >(async (_paths) => undefined);
     const deps = dependencies({
       beginDeletionAttempt: jest.fn(async () =>
-        attempt({ userOwnedStorageObjectsOutsideSupportedBucket: 1 }),
+        attempt(
+          { userOwnedStorageObjectsOutsideSupportedBucket: 1 },
+          undefined,
+          false,
+        ),
       ),
       removeStoragePaths,
     });
@@ -243,7 +265,11 @@ describe("delete-account backend core", () => {
     >(async (_paths) => undefined);
     const deps = dependencies({
       beginDeletionAttempt: jest.fn(async () =>
-        attempt({ membershipsInNonOwnedWorkspaces: 1 }),
+        attempt(
+          { membershipsInNonOwnedWorkspaces: 1 },
+          undefined,
+          false,
+        ),
       ),
       removeStoragePaths,
     });
@@ -301,7 +327,11 @@ describe("delete-account backend core", () => {
     >(async (_paths) => undefined);
     const deps = dependencies({
       beginDeletionAttempt: jest.fn(async () =>
-        attempt({ storageObjectCountInDeletionScope: 11 }),
+        attempt(
+          { storageObjectCountInDeletionScope: 11 },
+          undefined,
+          false,
+        ),
       ),
       removeStoragePaths,
     });
@@ -321,6 +351,7 @@ describe("delete-account backend core", () => {
     ).rejects.toMatchObject({
       code: "ACCOUNT_DELETION_TOO_LARGE",
       status: 409,
+      gateActive: false,
     });
     expect(removeStoragePaths).not.toHaveBeenCalled();
   });
@@ -569,7 +600,7 @@ describe("delete-account backend core", () => {
     const deleteAuthUser = jest.fn(async () => "deleted" as const);
     const deps = dependencies({
       beginDeletionAttempt: jest.fn(async () =>
-        attempt({ userExists: false, ownedWorkspaceIds: [] }, []),
+        attempt({ userExists: false, ownedWorkspaceIds: [] }, [], false),
       ),
       removeStoragePaths,
       deleteAuthUser,
@@ -623,6 +654,7 @@ describe("delete-account backend core", () => {
     ).rejects.toMatchObject({
       code: "ACCOUNT_DELETION_STORAGE_FAILED",
       retryable: true,
+      gateActive: true,
     });
 
     expect(markDeletionAttemptFailed).toHaveBeenCalledWith({
@@ -640,7 +672,7 @@ describe("delete-account backend core", () => {
         throw new DeleteAccountDomainError(
           "ACCOUNT_DELETION_IN_PROGRESS",
           "safe in-progress response",
-          { status: 409, retryable: true },
+          { status: 409, retryable: true, gateActive: true },
         );
       }),
       removeStoragePaths,
@@ -662,6 +694,7 @@ describe("delete-account backend core", () => {
       code: "ACCOUNT_DELETION_IN_PROGRESS",
       status: 409,
       retryable: true,
+      gateActive: true,
     });
 
     expect(removeStoragePaths).not.toHaveBeenCalled();

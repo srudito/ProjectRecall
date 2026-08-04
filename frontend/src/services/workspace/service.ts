@@ -120,3 +120,18 @@ export const resolvePersonalWorkspace = async (
   await cacheWorkspace(userId, workspace);
   return workspace;
 };
+
+export const clearPersonalWorkspaceCache = async (
+  userId: string,
+): Promise<void> => {
+  requireUserId(userId);
+
+  const results = await Promise.all([
+    storage.removeItem(workspaceIdKey(userId)),
+    storage.removeItem(workspaceNameKey(userId)),
+  ]);
+
+  if (results.some((removed) => !removed)) {
+    throw new Error("The local workspace cache could not be cleared.");
+  }
+};

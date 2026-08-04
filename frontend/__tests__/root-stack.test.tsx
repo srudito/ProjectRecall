@@ -89,6 +89,7 @@ describe("root authentication navigation", () => {
       "record/review",
       "session/[id]",
       "project/[id]",
+      "account/delete",
     ]);
     const root = RootNavigator({
       isAuthenticated: false,

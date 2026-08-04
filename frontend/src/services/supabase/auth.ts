@@ -1528,3 +1528,73 @@ export const resendVerificationEmail = async (
   const appError = mapAuthError(error);
   if (appError) throw appError;
 };
+
+/** Clear non-persistent OAuth/recovery state after permanent account deletion. */
+export const clearAuthTransientState = (): void => {
+  clearPasswordRecoveryState();
+  passwordRecoveryCallbackPromises.clear();
+  completedPasswordRecoveryCallbackUrls.clear();
+  callbackPromises.clear();
+  completedCallbackUrls.clear();
+  googleIdentityLinkPromise = null;
+  googleIdentityUnlinkPromise = null;
+  googleIdentityUnlinkTarget = null;
+};
+
+/**
+ * Remove only the persisted local Supabase session for the deleted user.
+ *
+ * The account may already be absent server-side, so a failed logout request is
+ * not treated as fatal when the SDK has nevertheless removed the matching
+ * session from its configured storage adapter. A different user's session is
+ * never cleared.
+ */
+export const clearLocalAuthSession = async (
+  expectedUserId: string,
+): Promise<"cleared" | "different_user_preserved"> => {
+  clearAuthTransientState();
+  const supabase = getSupabase();
+  if (!supabase) {
+    throw new AppError(
+      ErrorCode.ACCOUNT_DELETION_LOCAL_CLEANUP_FAILED,
+      "The stored account session could not be verified safely.",
+    );
+  }
+
+  const before = await supabase.auth.getSession();
+  const beforeSession = before.data.session;
+  if (before.error && !beforeSession) {
+    throw new AppError(
+      ErrorCode.ACCOUNT_DELETION_LOCAL_CLEANUP_FAILED,
+      "The stored account session could not be verified safely.",
+      before.error,
+    );
+  }
+
+  const beforeUserId = beforeSession?.user.id ?? null;
+  if (beforeUserId && beforeUserId !== expectedUserId) {
+    return "different_user_preserved";
+  }
+
+  const { error } = await supabase.auth.signOut({ scope: "local" });
+  const after = await supabase.auth.getSession();
+  if (after.error) {
+    throw new AppError(
+      ErrorCode.ACCOUNT_DELETION_LOCAL_CLEANUP_FAILED,
+      "The stored account session could not be verified after cleanup.",
+      after.error,
+    );
+  }
+
+  const afterUserId = after.data.session?.user.id ?? null;
+  if (!afterUserId) return "cleared";
+  if (afterUserId !== expectedUserId) {
+    return "different_user_preserved";
+  }
+
+  throw new AppError(
+    ErrorCode.ACCOUNT_DELETION_LOCAL_CLEANUP_FAILED,
+    "The deleted account session is still stored on this device.",
+    error,
+  );
+};

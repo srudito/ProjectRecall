@@ -3,6 +3,7 @@ import * as FileSystem from "expo-file-system/legacy";
 import { Platform } from "react-native";
 
 import { uploadRetry } from "@/src/config/limits";
+import { isAccountDeletionLocallyPending } from "@/src/services/account-deletion/state";
 import {
   claimSessionDeletion,
   deleteCompletedSessionDeletion,
@@ -206,6 +207,10 @@ export const createSessionDeletionWorker = (
   let recoveredUserId: string | null = null;
 
   const runOnce = async (): Promise<SessionDeletionRunResult> => {
+    if (isAccountDeletionLocallyPending()) {
+      return emptyResult("completed");
+    }
+
     if (dependencies.platform === "web") {
       return emptyResult("web_skipped");
     }
@@ -228,6 +233,7 @@ export const createSessionDeletionWorker = (
       index < dependencies.maxOperationsPerRun;
       index += 1
     ) {
+      if (isAccountDeletionLocallyPending()) break;
       const next = await dependencies.getNextOperation(
         userId,
         dependencies.now().toISOString(),
@@ -345,11 +351,17 @@ export const createSessionDeletionWorker = (
   return {
     run: (): Promise<SessionDeletionRunResult> => {
       if (running) return running;
+
       const run = runOnce().finally(() => {
         running = null;
       });
       running = run;
       return run;
+    },
+    waitForIdle: async (): Promise<void> => {
+      const run = running;
+      if (!run) return;
+      await run.then(() => undefined, () => undefined);
     },
   };
 };
@@ -358,6 +370,9 @@ const worker = createSessionDeletionWorker();
 
 export const runSessionDeletionSync = (): Promise<SessionDeletionRunResult> =>
   worker.run();
+
+export const waitForSessionDeletionIdle = (): Promise<void> =>
+  worker.waitForIdle();
 
 export const requestSessionDeletionSync = (): void => {
   void worker.run().catch(() => {

@@ -2,6 +2,7 @@ import NetInfo from "@react-native-community/netinfo";
 import { useEffect } from "react";
 import { AppState, Platform } from "react-native";
 
+import { isAccountDeletionLocallyPending } from "@/src/services/account-deletion/state";
 import { useAuthStore } from "@/src/stores/auth-store";
 
 import { subscribeMetadataSyncChanges } from "./project-sync-events";
@@ -11,6 +12,7 @@ import { requestRecordingUploadSync } from "./recording-upload-worker";
 import { requestSessionDeletionSync } from "./session-deletion-worker";
 
 const requestAllSync = (): void => {
+  if (isAccountDeletionLocallyPending()) return;
   requestSessionDeletionSync();
   requestMetadataSync();
   requestRecordingUploadSync();

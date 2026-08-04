@@ -2,6 +2,7 @@ import NetInfo, { type NetInfoState } from "@react-native-community/netinfo";
 import { Platform } from "react-native";
 
 import { uploadRetry } from "@/src/config/limits";
+import { isAccountDeletionLocallyPending } from "@/src/services/account-deletion/state";
 import {
   claimUploadOperation,
   deleteCompletedUploadOperation,
@@ -172,6 +173,10 @@ export const createRecordingUploadWorker = (
   let recoveredUserId: string | null = null;
 
   const runOnce = async (): Promise<RecordingUploadRunResult> => {
+    if (isAccountDeletionLocallyPending()) {
+      return emptyResult("completed");
+    }
+
     if (dependencies.platform === "web") {
       return emptyResult("web_skipped");
     }
@@ -198,6 +203,7 @@ export const createRecordingUploadWorker = (
       index < dependencies.maxOperationsPerRun;
       index += 1
     ) {
+      if (isAccountDeletionLocallyPending()) break;
       const next = await dependencies.getNextOperation(
         userId,
         dependencies.now().toISOString(),
@@ -426,10 +432,18 @@ export const createRecordingUploadWorker = (
       running = run;
       return run;
     },
+    waitForIdle: async (): Promise<void> => {
+      const run = running;
+      if (!run) return;
+      await run.then(() => undefined, () => undefined);
+    },
   };
 };
 
 const worker = createRecordingUploadWorker();
+
+export const waitForRecordingUploadIdle = (): Promise<void> =>
+  worker.waitForIdle();
 
 export const requestRecordingUploadSync = (): void => {
   void worker.run().catch(() => {

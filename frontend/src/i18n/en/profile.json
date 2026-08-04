@@ -4,7 +4,8 @@
     "account": "Account",
     "preferences": "Preferences",
     "storage": "Storage",
-    "about": "About"
+    "about": "About",
+    "danger": "Danger Zone"
   },
   "appearance": {
     "title": "Appearance",
@@ -38,5 +39,39 @@
   "privacyPolicy": "Privacy Policy",
   "terms": "Terms of Service",
   "signOut": "Sign out",
-  "version": "Version"
+  "version": "Version",
+  "deleteAccount": {
+    "title": "Delete Account",
+    "summary": "Permanently delete this Project Recall account and its private cloud and local data.",
+    "open": "Delete Account",
+    "screenTitle": "Permanently delete account",
+    "warningTitle": "This cannot be undone",
+    "warningBody": "Projects, sessions, recordings, notes, bookmarks, timeline events, evidence files, connected identities, and account access will be permanently removed.",
+    "offlineWarning": "Keep this device online until deletion and local cleanup finish.",
+    "confirmationLabel": "Type DELETE to continue",
+    "confirmationPlaceholder": "DELETE",
+    "confirmButton": "Delete account permanently",
+    "finalTitle": "Delete this account permanently?",
+    "finalBody": "The account and all eligible Project Recall data will be permanently removed. This action cannot be undone.",
+    "stateCheckTitle": "Account privacy check failed",
+    "progressTitle": "Deleting your account",
+    "progressBody": "Do not close Project Recall while the deletion request is being processed.",
+    "cleanupTitle": "Finishing private data cleanup",
+    "cleanupBody": "The cloud account is deleted. Project Recall is removing private data from this device.",
+    "retryTitle": "Deletion needs another attempt",
+    "blockedTitle": "Account deletion is blocked",
+    "blockedBody": "Shared workspace data must be resolved before this account can be deleted automatically.",
+    "reauthTitle": "Sign in again",
+    "reauthBody": "For security, sign out and sign in again before requesting account deletion.",
+    "cleanupFailedTitle": "Local cleanup is incomplete",
+    "retry": "Try again",
+    "returnToProfile": "Return to Profile",
+    "signOut": "Sign out",
+    "recordingActive": "Stop or discard the current recording before continuing.",
+    "unverifiedCleanupTitle": "Removing private data from this device",
+    "unverifiedCleanupBody": "Project Recall could not verify whether cloud deletion finished. Private data on this device is being removed before you continue.",
+    "unverifiedCompleteTitle": "Private data removed from this device",
+    "unverifiedCompleteBody": "Project Recall could not verify whether the cloud account was deleted. You can continue safely, then try signing in again later to confirm the cloud account status.",
+    "continueSafely": "Continue safely"
+  }
 }

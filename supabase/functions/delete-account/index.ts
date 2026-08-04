@@ -30,6 +30,7 @@ interface SafeErrorResponse {
     code: string;
     message: string;
     retryable: boolean;
+    gateActive: boolean | null;
     blockers?: readonly string[];
     requestId: string;
   };
@@ -54,6 +55,7 @@ const safeErrorResponse = (
       code: error.code,
       message: error.message,
       retryable: error.retryable,
+      gateActive: error.gateActive,
       requestId,
     },
   };
@@ -190,6 +192,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
           code: "METHOD_NOT_ALLOWED",
           message: "Use POST to delete an account.",
           retryable: false,
+          gateActive: false,
           requestId,
         },
       },
@@ -271,6 +274,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
           code: "ACCOUNT_DELETION_FAILED",
           message: "The account could not be deleted. Try again later.",
           retryable: true,
+          gateActive: null,
           requestId,
         },
       },

@@ -9,6 +9,7 @@ export const ROOT_ROUTE = {
   recordReview: "record/review",
   sessionDetail: "session/[id]",
   projectDetail: "project/[id]",
+  accountDelete: "account/delete",
   authCallback: "auth/callback",
   authLinkCallback: "auth/link-callback",
   authResetCallback: "auth/reset",
@@ -30,6 +31,7 @@ export const AUTHENTICATED_ROOT_ROUTES = [
   ROOT_ROUTE.recordReview,
   ROOT_ROUTE.sessionDetail,
   ROOT_ROUTE.projectDetail,
+  ROOT_ROUTE.accountDelete,
 ] as const;
 
 export type RootAuthState =

@@ -1,6 +1,7 @@
 import NetInfo from "@react-native-community/netinfo";
 import { Platform } from "react-native";
 
+import { isAccountDeletionLocallyPending } from "@/src/services/account-deletion/state";
 import {
   claimMetadataOperation,
   deferMetadataOperationForDependency,
@@ -920,6 +921,8 @@ export const createMetadataSyncWorker = (
       failed: 0,
     };
 
+    if (isAccountDeletionLocallyPending()) return result;
+
     if (dependencies.platform === "web") {
       return { ...result, state: "web_skipped" };
     }
@@ -951,6 +954,7 @@ export const createMetadataSyncWorker = (
       index < dependencies.maxOperationsPerRun;
       index += 1
     ) {
+      if (isAccountDeletionLocallyPending()) break;
       const next = await dependencies.getNextOperation(
         dependencies.now().toISOString(),
         userId,
@@ -1033,6 +1037,11 @@ export const createMetadataSyncWorker = (
       activeRun = run;
       return run;
     },
+    waitForIdle: async (): Promise<void> => {
+      const run = activeRun;
+      if (!run) return;
+      await run.then(() => undefined, () => undefined);
+    },
   };
 };
 
@@ -1046,6 +1055,9 @@ export const runMetadataSyncWorker = (): Promise<MetadataSyncRunResult> =>
   defaultWorker.run();
 
 export const runProjectSyncWorker = runMetadataSyncWorker;
+
+export const waitForMetadataSyncIdle = (): Promise<void> =>
+  defaultWorker.waitForIdle();
 
 export const requestMetadataSync = (): void => {
   void runMetadataSyncWorker().catch(() => {

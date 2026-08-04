@@ -28,6 +28,9 @@ describe("account deletion distributed gate migration", () => {
   const recordSafetyMigration = readRepositoryFile(
     "supabase/migrations/0011_guard_trigger_record_safety.sql",
   );
+  const profileGateMigration = readRepositoryFile(
+    "supabase/migrations/0012_profile_account_deletion_gate.sql",
+  );
   const databaseSource = readRepositoryFile(
     "supabase/functions/delete-account/database.ts",
   );
@@ -198,6 +201,32 @@ describe("account deletion distributed gate migration", () => {
     for (const role of ["public", "anon", "authenticated"]) {
       expect(normalizedMigration).toContain(
         `revoke all on function public.guard_account_deletion_write() from ${role};`,
+      );
+    }
+  });
+
+  it("freezes profile writes while account deletion is active", () => {
+    const normalizedMigration = normalizeSql(profileGateMigration);
+
+    expect(normalizedMigration).toContain(
+      "create or replace function public.guard_profile_account_deletion_write()",
+    );
+    expect(normalizedMigration).toContain(
+      "before insert or update on public.profiles",
+    );
+    expect(normalizedMigration).toContain(
+      "perform public.lock_accounts_for_write(array[guarded_user_id])",
+    );
+    expect(normalizedMigration).toContain(
+      "public.is_account_deletion_active(guarded_user_id)",
+    );
+    expect(normalizedMigration).toContain(
+      "account_deletion_in_progress",
+    );
+
+    for (const role of ["public", "anon", "authenticated"]) {
+      expect(normalizedMigration).toContain(
+        `revoke all on function public.guard_profile_account_deletion_write() from ${role};`,
       );
     }
   });

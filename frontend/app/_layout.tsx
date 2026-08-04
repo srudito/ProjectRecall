@@ -6,6 +6,7 @@ import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
+import { AccountDeletionBoundary } from "@/src/components/AccountDeletionBoundary";
 import { useIconFonts } from "@/src/hooks/use-icon-fonts";
 import { I18nProvider } from "@/src/i18n/I18nProvider";
 import { RootStack } from "@/src/navigation/RootStack";
@@ -62,10 +63,12 @@ export default function RootLayout() {
         <I18nProvider>
           <QueryClientProvider client={queryClient}>
             <KeyboardProvider>
-              <RecordingAudioCoordinator />
-              <ProjectSyncCoordinator />
               <StatusBarAdapter />
-              <RootStack />
+              <AccountDeletionBoundary>
+                <RecordingAudioCoordinator />
+                <ProjectSyncCoordinator />
+                <RootStack />
+              </AccountDeletionBoundary>
             </KeyboardProvider>
           </QueryClientProvider>
         </I18nProvider>

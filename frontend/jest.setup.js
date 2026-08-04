@@ -25,12 +25,13 @@ jest.mock("expo-sqlite", () => ({
 }));
 
 const mockFileSystem = {
-  cacheDirectory: "/tmp/cache/",
-  documentDirectory: "/tmp/documents/",
+  cacheDirectory: "file:///tmp/cache/",
+  documentDirectory: "file:///tmp/documents/",
   getInfoAsync: jest.fn(async () => ({ exists: true, size: 0 })),
   copyAsync: jest.fn(async () => undefined),
   deleteAsync: jest.fn(async () => undefined),
   makeDirectoryAsync: jest.fn(async () => undefined),
+  readDirectoryAsync: jest.fn(async () => []),
   uploadAsync: jest.fn(async () => ({ status: 200, body: "{}", headers: {} })),
   FileSystemUploadType: { BINARY_CONTENT: 0, MULTIPART: 1 },
   EncodingType: { Base64: "base64" },

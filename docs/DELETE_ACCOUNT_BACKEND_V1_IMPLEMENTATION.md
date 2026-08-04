@@ -113,8 +113,9 @@ The function remains idempotent for the supported partial states:
 - workspace deletion targets only the original preflighted workspace IDs.
 
 A failure after some destructive steps is reported as retryable when safe.
-The next milestone must persist a local cleanup/deletion marker and retry the
-server operation before removing local data.
+Phase 5B adds the persistent local cleanup/deletion marker, authenticated
+function invocation, worker quiescence, scoped SQLite/file cleanup, and
+crash-safe resumption before removing the marker.
 
 ## Files
 
@@ -132,10 +133,6 @@ docs/DELETE_ACCOUNT_BACKEND_V1_TEST.md
 
 ## Out of scope
 
-- Delete Account UI;
-- local SQLite and durable-file cleanup;
-- client invocation service;
-- local crash-recovery marker;
 - team workspace ownership transfer;
 - anonymizing shared content;
 - migration-ledger repair or replay of migrations `0001`-`0006`;
@@ -145,3 +142,16 @@ docs/DELETE_ACCOUNT_BACKEND_V1_TEST.md
 ## Phase 5A.1 follow-up
 
 See `DELETE_ACCOUNT_CONCURRENCY_HARDENING_V1_IMPLEMENTATION.md` for the durable gate, advisory-lock protocol, write guards, and retry lease. The backend must not be exposed through a general-user UI until Phase 5B and Phase 5C are complete.
+
+## Structured durable-gate error state
+
+Safe Edge Function errors include `gateActive`. It is `false` for confirmation,
+recent-authentication, and first-attempt preflight failures that occur before a
+durable deletion request exists. It is `true` for active leases and for any
+failure after the durable request has been created, including partial Storage
+or database cleanup. Clients must not reopen normal private UI unless the
+server explicitly reports `gateActive: false`.
+
+An unexpected failure whose durable-gate state cannot be proven returns
+`gateActive: null`, not `false`. Clients treat unknown as fail-closed and keep
+the privacy boundary active.

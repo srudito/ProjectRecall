@@ -26,6 +26,7 @@ require an authenticated session.
 | Record — Review         | `/record/review`               | root      | yes  | —            |
 | Session Detail          | `/session/[id]`                | root      | yes  | —            |
 | Project Detail          | `/project/[id]`                | root      | yes  | —            |
+| Delete Account          | `/account/delete`              | root      | yes  | —            |
 
 Screens gated by feature flags (currently ALL false, therefore hidden):
 
@@ -59,3 +60,11 @@ Session Detail requires confirmation before deletion. Native deletion hides the
 session immediately and continues cloud/private-Storage cleanup through a
 durable queue when offline. Web completes the ordered remote cleanup before
 returning to Library.
+
+## Delete Account privacy boundary
+
+`AccountDeletionBoundary` loads the persistent local deletion marker before
+mounting the recording/sync coordinators or the root stack. While a marker is
+present, private routes are replaced by a dedicated deletion/cleanup status
+screen. This prevents Back navigation or cold-start deep links from reopening
+private account data after the cloud account has been deleted.

@@ -31,6 +31,7 @@ export function RootNavigator({
         <Stack.Screen name={ROOT_ROUTE.recordReview} />
         <Stack.Screen name={ROOT_ROUTE.sessionDetail} />
         <Stack.Screen name={ROOT_ROUTE.projectDetail} />
+        <Stack.Screen name={ROOT_ROUTE.accountDelete} />
       </Stack.Protected>
 
       {/* OAuth callbacks must stay public. The link callback preserves the existing session. */}

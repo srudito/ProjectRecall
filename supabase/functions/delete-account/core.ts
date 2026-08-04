@@ -30,6 +30,7 @@ export class DeleteAccountDomainError extends Error {
   readonly status: number;
   readonly retryable: boolean;
   readonly blockers: readonly DeleteAccountBlocker[];
+  readonly gateActive: boolean;
 
   constructor(
     code: DeleteAccountErrorCode,
@@ -38,6 +39,7 @@ export class DeleteAccountDomainError extends Error {
       status: number;
       retryable?: boolean;
       blockers?: readonly DeleteAccountBlocker[];
+      gateActive?: boolean;
     },
   ) {
     super(message);
@@ -46,6 +48,17 @@ export class DeleteAccountDomainError extends Error {
     this.status = options.status;
     this.retryable = options.retryable ?? false;
     this.blockers = options.blockers ?? [];
+    this.gateActive = options.gateActive ?? false;
+  }
+
+  withGateActive(): DeleteAccountDomainError {
+    if (this.gateActive) return this;
+    return new DeleteAccountDomainError(this.code, this.message, {
+      status: this.status,
+      retryable: this.retryable,
+      blockers: this.blockers,
+      gateActive: true,
+    });
   }
 }
 
@@ -87,6 +100,7 @@ export type DeleteAuthUserResult = "deleted" | "not_found";
 export interface DeleteAccountAttempt {
   preflight: DeleteAccountPreflight;
   workspaceIds: string[];
+  gateActive: boolean;
 }
 
 export interface DeleteAccountDependencies {
@@ -418,6 +432,7 @@ export const executeDeleteAccount = async (
       leaseSeconds,
     });
     const preflight = attempt.preflight;
+    attemptStarted = attempt.gateActive;
 
     if (!preflight.userExists) {
       return {
@@ -445,7 +460,6 @@ export const executeDeleteAccount = async (
     }
 
     const workspaceIds = uniqueTrimmedStrings(attempt.workspaceIds);
-    attemptStarted = true;
     await heartbeat();
 
     const initialPaths = uniqueExactStrings(
@@ -561,22 +575,31 @@ export const executeDeleteAccount = async (
       deletedStorageObjectCount: deletedStoragePaths.size,
     };
   } catch (error) {
-    if (attemptStarted) {
-      const errorCode =
-        error instanceof DeleteAccountDomainError
-          ? error.code
-          : "ACCOUNT_DELETION_FAILED";
-      await dependencies
-        .markDeletionAttemptFailed({
-          userId: input.userId,
-          requestId: input.requestId,
-          errorCode,
-        })
-        .catch(() => {
-          // Preserve the original failure; the durable gate remains active.
-        });
+    if (!attemptStarted) throw error;
+
+    const errorCode =
+      error instanceof DeleteAccountDomainError
+        ? error.code
+        : "ACCOUNT_DELETION_FAILED";
+    await dependencies
+      .markDeletionAttemptFailed({
+        userId: input.userId,
+        requestId: input.requestId,
+        errorCode,
+      })
+      .catch(() => {
+        // Preserve the original failure; the durable gate remains active.
+      });
+
+    if (error instanceof DeleteAccountDomainError) {
+      throw error.withGateActive();
     }
-    throw error;
+
+    throw new DeleteAccountDomainError(
+      "ACCOUNT_DELETION_DATABASE_FAILED",
+      "Account deletion could not be completed. Try again later.",
+      { status: 500, retryable: true, gateActive: true },
+    );
   }
 };
 

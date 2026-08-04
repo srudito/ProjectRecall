@@ -350,7 +350,7 @@ const accountDeletionInProgressError = (): DeleteAccountDomainError =>
   new DeleteAccountDomainError(
     "ACCOUNT_DELETION_IN_PROGRESS",
     "Account deletion is already in progress. Try again shortly.",
-    { status: 409, retryable: true },
+    { status: 409, retryable: true, gateActive: true },
   );
 
 const acquireExclusiveAccountLock = async (
@@ -416,7 +416,11 @@ export const createDeleteAccountDatabase = (databaseUrl: string) => {
         );
 
         if (!currentPreflight.userExists) {
-          return { preflight: currentPreflight, workspaceIds: [] };
+          return {
+            preflight: currentPreflight,
+            workspaceIds: [],
+            gateActive: false,
+          };
         }
 
         const blockers = getDeleteAccountBlockers(currentPreflight);
@@ -424,7 +428,11 @@ export const createDeleteAccountDatabase = (databaseUrl: string) => {
           throw new DeleteAccountDomainError(
             "ACCOUNT_DELETION_BLOCKED",
             "This account cannot be deleted automatically while shared workspace data exists.",
-            { status: 409, blockers },
+            {
+              status: 409,
+              blockers,
+              gateActive: existingRequest !== undefined,
+            },
           );
         }
 
@@ -435,7 +443,10 @@ export const createDeleteAccountDatabase = (databaseUrl: string) => {
           throw new DeleteAccountDomainError(
             "ACCOUNT_DELETION_TOO_LARGE",
             "This account contains too many files for automatic deletion.",
-            { status: 409 },
+            {
+              status: 409,
+              gateActive: existingRequest !== undefined,
+            },
           );
         }
 
@@ -453,7 +464,7 @@ export const createDeleteAccountDatabase = (databaseUrl: string) => {
           throw new DeleteAccountDomainError(
             "ACCOUNT_DELETION_BLOCKED",
             "Account ownership changed while deletion was being retried.",
-            { status: 409 },
+            { status: 409, gateActive: true },
           );
         }
 
@@ -501,6 +512,7 @@ export const createDeleteAccountDatabase = (databaseUrl: string) => {
           preflight: currentPreflight,
           workspaceIds:
             requestRow?.expected_workspace_ids ?? expectedWorkspaceIds,
+          gateActive: true,
         };
       }),
 

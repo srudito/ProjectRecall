@@ -3163,3 +3163,302 @@ export const hardDeleteLocalSessionData = async (
     await db.runAsync(`DELETE FROM local_sessions WHERE id = ?`, [sessionId]);
   });
 };
+
+// ============================================================================
+// Account deletion local cleanup.
+// ============================================================================
+
+export interface LocalAccountCleanupScope {
+  workspaceIds: string[];
+  sessionIds: string[];
+  mediaAssetIds: string[];
+  localFileUris: string[];
+}
+
+const uniqueStrings = (values: readonly string[]): string[] =>
+  [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort();
+
+const parseStringArrayJson = (value: string | null): string[] => {
+  if (!value) return [];
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === "string")
+      : [];
+  } catch {
+    return [];
+  }
+};
+
+const sqlInClause = (values: readonly string[]): {
+  sql: string;
+  params: string[];
+} => ({
+  sql:
+    values.length > 0
+      ? `(${values.map(() => "?").join(", ")})`
+      : "(SELECT NULL WHERE 0)",
+  params: [...values],
+});
+
+export const collectLocalAccountCleanupScope = async (
+  userId: string,
+  additionalWorkspaceIds: readonly string[] = [],
+): Promise<LocalAccountCleanupScope> => {
+  const db = await openLocalDb();
+  const initialWorkspaceIds = uniqueStrings(additionalWorkspaceIds);
+  if (!db) {
+    return {
+      workspaceIds: initialWorkspaceIds,
+      sessionIds: [],
+      mediaAssetIds: [],
+      localFileUris: [],
+    };
+  }
+
+  // Only workspace ids that are known to be owned by this account may be
+  // used as whole-workspace cleanup scopes. User-authored rows can exist in a
+  // shared workspace, and treating those workspace ids as owned would erase
+  // other users' cached rows on a shared device.
+  const workspaceRows = (await db.getAllAsync(
+    `SELECT workspace_id AS value
+       FROM local_profiles
+      WHERE id = ? AND workspace_id IS NOT NULL`,
+    [userId],
+  )) as { value: string | null }[];
+
+  const workspaceIds = uniqueStrings([
+    ...initialWorkspaceIds,
+    ...workspaceRows.map((row) => row.value ?? ""),
+  ]);
+  const workspaceClause = sqlInClause(workspaceIds);
+
+  const sessionRows = (await db.getAllAsync(
+    `SELECT id AS value
+       FROM local_sessions
+      WHERE created_by = ?
+         OR workspace_id IN ${workspaceClause.sql}
+     UNION
+     SELECT session_id AS value
+       FROM local_session_deletion_queue
+      WHERE user_id = ?
+         OR workspace_id IN ${workspaceClause.sql}`,
+    [
+      userId,
+      ...workspaceClause.params,
+      userId,
+      ...workspaceClause.params,
+    ],
+  )) as { value: string | null }[];
+
+  const sessionIds = uniqueStrings(
+    sessionRows.map((row) => row.value ?? ""),
+  );
+  const sessionClause = sqlInClause(sessionIds);
+
+  const mediaRows = (await db.getAllAsync(
+    `SELECT id AS value
+       FROM local_media_assets
+      WHERE added_by = ?
+         OR workspace_id IN ${workspaceClause.sql}
+         OR session_id IN ${sessionClause.sql}`,
+    [
+      userId,
+      ...workspaceClause.params,
+      ...sessionClause.params,
+    ],
+  )) as { value: string | null }[];
+
+  const fileRows = (await db.getAllAsync(
+    `SELECT local_file_uri AS value
+       FROM local_recordings
+      WHERE local_file_uri IS NOT NULL
+        AND (
+          workspace_id IN ${workspaceClause.sql}
+          OR session_id IN ${sessionClause.sql}
+        )
+     UNION ALL
+     SELECT local_file_uri AS value
+       FROM local_media_assets
+      WHERE local_file_uri IS NOT NULL
+        AND (
+          added_by = ?
+          OR workspace_id IN ${workspaceClause.sql}
+          OR session_id IN ${sessionClause.sql}
+        )
+     UNION ALL
+     SELECT local_file_uri AS value
+       FROM local_upload_queue
+      WHERE local_file_uri IS NOT NULL
+        AND (
+          user_id = ?
+          OR workspace_id IN ${workspaceClause.sql}
+          OR session_id IN ${sessionClause.sql}
+        )`,
+    [
+      ...workspaceClause.params,
+      ...sessionClause.params,
+      userId,
+      ...workspaceClause.params,
+      ...sessionClause.params,
+      userId,
+      ...workspaceClause.params,
+      ...sessionClause.params,
+    ],
+  )) as { value: string | null }[];
+
+  const deletionFileRows = (await db.getAllAsync(
+    `SELECT local_file_uris AS value
+       FROM local_session_deletion_queue
+      WHERE user_id = ?
+         OR workspace_id IN ${workspaceClause.sql}
+         OR session_id IN ${sessionClause.sql}`,
+    [
+      userId,
+      ...workspaceClause.params,
+      ...sessionClause.params,
+    ],
+  )) as { value: string | null }[];
+
+  return {
+    workspaceIds,
+    sessionIds,
+    mediaAssetIds: uniqueStrings(
+      mediaRows.map((row) => row.value ?? ""),
+    ),
+    localFileUris: uniqueStrings([
+      ...fileRows.map((row) => row.value ?? ""),
+      ...deletionFileRows.flatMap((row) =>
+        parseStringArrayJson(row.value),
+      ),
+    ]),
+  };
+};
+
+export const deleteLocalAccountData = async (input: {
+  userId: string;
+  workspaceIds: readonly string[];
+  sessionIds: readonly string[];
+}): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+
+  const workspaceIds = uniqueStrings(input.workspaceIds);
+  const sessionIds = uniqueStrings(input.sessionIds);
+  const workspaceClause = sqlInClause(workspaceIds);
+  const sessionClause = sqlInClause(sessionIds);
+
+  await runSerializedLocalTransaction(db, async () => {
+    await db.runAsync(
+      `DELETE FROM local_metadata_sync_queue
+        WHERE user_id = ?
+           OR workspace_id IN ${workspaceClause.sql}`,
+      [input.userId, ...workspaceClause.params],
+    );
+    await db.runAsync(
+      `DELETE FROM local_upload_queue
+        WHERE user_id = ?
+           OR workspace_id IN ${workspaceClause.sql}
+           OR session_id IN ${sessionClause.sql}`,
+      [
+        input.userId,
+        ...workspaceClause.params,
+        ...sessionClause.params,
+      ],
+    );
+    await db.runAsync(
+      `DELETE FROM local_session_deletion_queue
+        WHERE user_id = ?
+           OR workspace_id IN ${workspaceClause.sql}
+           OR session_id IN ${sessionClause.sql}`,
+      [
+        input.userId,
+        ...workspaceClause.params,
+        ...sessionClause.params,
+      ],
+    );
+    await db.runAsync(
+      `DELETE FROM local_session_user_preferences
+        WHERE user_id = ?
+           OR workspace_id IN ${workspaceClause.sql}
+           OR session_id IN ${sessionClause.sql}`,
+      [
+        input.userId,
+        ...workspaceClause.params,
+        ...sessionClause.params,
+      ],
+    );
+    await db.runAsync(
+      `DELETE FROM local_timeline_events
+        WHERE created_by = ?
+           OR workspace_id IN ${workspaceClause.sql}
+           OR session_id IN ${sessionClause.sql}`,
+      [
+        input.userId,
+        ...workspaceClause.params,
+        ...sessionClause.params,
+      ],
+    );
+    await db.runAsync(
+      `DELETE FROM local_notes
+        WHERE created_by = ?
+           OR workspace_id IN ${workspaceClause.sql}
+           OR session_id IN ${sessionClause.sql}`,
+      [
+        input.userId,
+        ...workspaceClause.params,
+        ...sessionClause.params,
+      ],
+    );
+    await db.runAsync(
+      `DELETE FROM local_bookmarks
+        WHERE created_by = ?
+           OR workspace_id IN ${workspaceClause.sql}
+           OR session_id IN ${sessionClause.sql}`,
+      [
+        input.userId,
+        ...workspaceClause.params,
+        ...sessionClause.params,
+      ],
+    );
+    await db.runAsync(
+      `DELETE FROM local_media_assets
+        WHERE added_by = ?
+           OR workspace_id IN ${workspaceClause.sql}
+           OR session_id IN ${sessionClause.sql}`,
+      [
+        input.userId,
+        ...workspaceClause.params,
+        ...sessionClause.params,
+      ],
+    );
+    await db.runAsync(
+      `DELETE FROM local_recordings
+        WHERE workspace_id IN ${workspaceClause.sql}
+           OR session_id IN ${sessionClause.sql}`,
+      [...workspaceClause.params, ...sessionClause.params],
+    );
+    await db.runAsync(
+      `DELETE FROM local_sessions
+        WHERE created_by = ?
+           OR workspace_id IN ${workspaceClause.sql}
+           OR id IN ${sessionClause.sql}`,
+      [
+        input.userId,
+        ...workspaceClause.params,
+        ...sessionClause.params,
+      ],
+    );
+    await db.runAsync(
+      `DELETE FROM local_projects
+        WHERE created_by = ?
+           OR workspace_id IN ${workspaceClause.sql}`,
+      [input.userId, ...workspaceClause.params],
+    );
+    await db.runAsync(
+      `DELETE FROM local_profiles WHERE id = ?`,
+      [input.userId],
+    );
+  });
+};
