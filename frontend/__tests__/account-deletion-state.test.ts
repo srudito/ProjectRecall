@@ -10,6 +10,7 @@ import {
   isAccountDeletionLocallyPending,
   isRecordingStateSafeForAccountDeletion,
   loadAccountDeletionMarker,
+  prepareAccountDeletionMarker,
   resolveAccountDeletionAuthMismatchStatus,
   resolveAccountDeletionLocalCleanupErrorCode,
   resolveAccountDeletionWorkflowFailureMarker,
@@ -82,6 +83,67 @@ describe("account deletion persistent state", () => {
       code: "ACCOUNT_DELETION_LOCAL_STATE_FAILED",
     });
     expect(isAccountDeletionLocallyPending()).toBe(false);
+  });
+
+  it("does not persist deletion state when no owned workspace scope can be resolved", async () => {
+    const persistMarker = jest.fn();
+
+    await expect(
+      prepareAccountDeletionMarker({
+        userId: USER_ID,
+        collectLocalScope: async () => ({ workspaceIds: [] }),
+        resolvePersonalWorkspaceId: async () => {
+          throw new Error("workspace lookup unavailable");
+        },
+        persistMarker,
+      }),
+    ).rejects.toMatchObject({
+      code: "ACCOUNT_DELETION_LOCAL_STATE_FAILED",
+    });
+
+    expect(persistMarker).not.toHaveBeenCalled();
+  });
+
+  it("uses the resolved personal workspace when local scope is empty", async () => {
+    const persistMarker = jest.fn().mockResolvedValue(undefined);
+
+    await expect(
+      prepareAccountDeletionMarker({
+        userId: USER_ID,
+        collectLocalScope: async () => ({ workspaceIds: [] }),
+        resolvePersonalWorkspaceId: async () => WORKSPACE_ID,
+        persistMarker,
+      }),
+    ).resolves.toMatchObject({
+      userId: USER_ID,
+      workspaceIds: [WORKSPACE_ID],
+    });
+
+    expect(persistMarker).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceIds: [WORKSPACE_ID] }),
+    );
+  });
+
+  it("uses a validated local workspace scope when cloud resolution is unavailable", async () => {
+    const persistMarker = jest.fn().mockResolvedValue(undefined);
+
+    await expect(
+      prepareAccountDeletionMarker({
+        userId: USER_ID,
+        collectLocalScope: async () => ({
+          workspaceIds: [WORKSPACE_ID],
+        }),
+        resolvePersonalWorkspaceId: async () => {
+          throw new Error("offline");
+        },
+        persistMarker,
+      }),
+    ).resolves.toMatchObject({
+      userId: USER_ID,
+      workspaceIds: [WORKSPACE_ID],
+    });
+
+    expect(persistMarker).toHaveBeenCalledTimes(1);
   });
 
   it("updates retry state without changing the deletion scope", () => {

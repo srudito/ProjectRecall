@@ -362,3 +362,14 @@ Focused state tests must prove that when an older fallback marker has no
 workflow persistence failure keeps the newer timestamp and enters
 `retryable_error`. Retrying must never overwrite the durable marker with the
 older pre-request state.
+
+## 18. Phase 5C release-hardening regressions
+
+Run the dedicated checklist:
+
+```text
+docs/DELETE_ACCOUNT_PHASE5C_RELEASE_HARDENING_V1_TEST.md
+```
+
+It covers same-process root remount, shared-workspace cache isolation,
+`secure_delete`, WAL truncation, and the fresh migration smoke-test gate.

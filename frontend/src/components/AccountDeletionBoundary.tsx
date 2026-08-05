@@ -26,9 +26,9 @@ import { performLocalAccountCleanup } from "@/src/services/account-deletion/loca
 import { waitForAccountDeletionBackgroundWork } from "@/src/services/account-deletion/quiescence";
 import {
   clearAccountDeletionMarker,
-  createAccountDeletionMarker,
   getCurrentAccountDeletionMarker,
   loadAccountDeletionMarker,
+  prepareAccountDeletionMarker,
   resolveAccountDeletionAuthMismatchStatus,
   resolveAccountDeletionLocalCleanupErrorCode,
   resolveAccountDeletionWorkflowFailureMarker,
@@ -59,9 +59,7 @@ const AccountDeletionContext = createContext<
 // Preserve one workflow across route/root remounts in the same JS process.
 // The durable marker remains the source of truth across process restarts.
 let activeWorkflow: Promise<void> | null = null;
-
-const uniqueStrings = (values: readonly string[]): string[] =>
-  [...new Set(values.filter(Boolean))].sort();
+let activeWorkflowOwner: object | null = null;
 
 const isReauthenticationError = (code: string): boolean =>
   code === ErrorCode.ACCOUNT_DELETION_REAUTHENTICATION_REQUIRED ||
@@ -297,6 +295,7 @@ export function AccountDeletionBoundary({
   const [markerLoadError, setMarkerLoadError] =
     useState<ErrorCodeKey | null>(null);
   const mountedRef = useRef(true);
+  const boundaryInstanceRef = useRef<object>({});
 
   const reloadMarker = useCallback(async (): Promise<void> => {
     if (mountedRef.current) {
@@ -534,13 +533,36 @@ export function AccountDeletionBoundary({
   );
 
   useEffect(() => {
-    if (
-      !initialized ||
-      !authInitialized ||
-      !marker ||
-      activeWorkflow
-    ) {
+    if (!initialized || !authInitialized || !marker) {
       return;
+    }
+
+    if (activeWorkflow) {
+      if (activeWorkflowOwner === boundaryInstanceRef.current) {
+        return;
+      }
+
+      // A root remount can happen while the previous boundary instance still
+      // owns the in-flight workflow. Observe that promise and reload the
+      // durable marker when it settles instead of remaining on a stale status
+      // screen until the next process restart. The original owner keeps its
+      // existing in-memory failure screen and does not attach this observer.
+      const observedWorkflow = activeWorkflow;
+      let cancelled = false;
+      const reloadAfterWorkflow = (): void => {
+        if (!cancelled && mountedRef.current) {
+          void reloadMarker();
+        }
+      };
+
+      void observedWorkflow.then(
+        reloadAfterWorkflow,
+        reloadAfterWorkflow,
+      );
+
+      return () => {
+        cancelled = true;
+      };
     }
 
     if (
@@ -553,6 +575,7 @@ export function AccountDeletionBoundary({
       return;
     }
 
+    activeWorkflowOwner = boundaryInstanceRef.current;
     activeWorkflow = (async () => {
       if (
         marker.status === "server_deleted_local_cleanup_pending" ||
@@ -585,12 +608,14 @@ export function AccountDeletionBoundary({
       })
       .finally(() => {
         activeWorkflow = null;
+        activeWorkflowOwner = null;
       });
   }, [
     authInitialized,
     finishLocalCleanup,
     initialized,
     marker,
+    reloadMarker,
     runServerDeletion,
   ]);
 
@@ -601,22 +626,13 @@ export function AccountDeletionBoundary({
         throw new AppError(ErrorCode.ACCOUNT_DELETION_INVALID_SESSION);
       }
 
-      const localScope = await collectLocalAccountCleanupScope(userId);
-      const workspaceIds = [...localScope.workspaceIds];
-      try {
-        const personalWorkspace = await resolvePersonalWorkspace(userId);
-        workspaceIds.push(personalWorkspace.id);
-      } catch {
-        // The server performs the authoritative ownership preflight. The local
-        // cleanup can still scope itself from SQLite if workspace resolution
-        // is temporarily unavailable.
-      }
-
-      const next = createAccountDeletionMarker({
+      await prepareAccountDeletionMarker({
         userId,
-        workspaceIds: uniqueStrings(workspaceIds),
+        collectLocalScope: collectLocalAccountCleanupScope,
+        resolvePersonalWorkspaceId: async (targetUserId) =>
+          (await resolvePersonalWorkspace(targetUserId)).id,
+        persistMarker,
       });
-      await persistMarker(next);
     },
     [authInitialized, authUserId, marker, persistMarker],
   );

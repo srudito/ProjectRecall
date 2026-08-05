@@ -98,3 +98,13 @@ verify each policy.
 ## Authentication provider metadata migration
 
 `0005_auth_provider_metadata.sql` updates the new-auth-user trigger to use social-provider display-name fields such as `full_name` and `name`. It does not add or remove tables.
+
+## Local SQLite deletion privacy
+
+The native SQLite connection uses WAL mode and enables
+`PRAGMA secure_delete = ON`. After scoped Delete Account cleanup commits, the
+repository requires `PRAGMA wal_checkpoint(TRUNCATE)` to finish before the
+persistent deletion marker can be removed. This preserves other users' rows in
+the shared database while preventing deleted account metadata from remaining
+in reusable pages or the WAL journal. Automatic `VACUUM` is not used during
+account deletion.

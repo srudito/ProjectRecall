@@ -30,6 +30,10 @@ export const openLocalDb = async (): Promise<SQLite.SQLiteDatabase | null> => {
   dbPromise = (async () => {
     const db = await SQLite.openDatabaseAsync(DB_NAME);
     await db.execAsync("PRAGMA journal_mode = WAL;");
+    // Overwrite deleted cell content instead of leaving it in reusable pages.
+    // Account cleanup also truncates the WAL after its scoped transaction so
+    // deleted private metadata is not retained in the journal.
+    await db.execAsync("PRAGMA secure_delete = ON;");
     await runMigrations(db);
     return db;
   })();

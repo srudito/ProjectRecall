@@ -3234,20 +3234,20 @@ export const collectLocalAccountCleanupScope = async (
   ]);
   const workspaceClause = sqlInClause(workspaceIds);
 
+  // Only sessions inside workspaces known to be owned by the deleted account
+  // become whole-session cleanup scopes. A session authored by the user in a
+  // non-owned/shared workspace can contain cached child rows authored by other
+  // users; expanding through that session id would erase unrelated device data.
   const sessionRows = (await db.getAllAsync(
     `SELECT id AS value
        FROM local_sessions
-      WHERE created_by = ?
-         OR workspace_id IN ${workspaceClause.sql}
+      WHERE workspace_id IN ${workspaceClause.sql}
      UNION
      SELECT session_id AS value
        FROM local_session_deletion_queue
-      WHERE user_id = ?
-         OR workspace_id IN ${workspaceClause.sql}`,
+      WHERE workspace_id IN ${workspaceClause.sql}`,
     [
-      userId,
       ...workspaceClause.params,
-      userId,
       ...workspaceClause.params,
     ],
   )) as { value: string | null }[];
@@ -3441,24 +3441,32 @@ export const deleteLocalAccountData = async (input: {
     );
     await db.runAsync(
       `DELETE FROM local_sessions
-        WHERE created_by = ?
-           OR workspace_id IN ${workspaceClause.sql}
+        WHERE workspace_id IN ${workspaceClause.sql}
            OR id IN ${sessionClause.sql}`,
-      [
-        input.userId,
-        ...workspaceClause.params,
-        ...sessionClause.params,
-      ],
+      [...workspaceClause.params, ...sessionClause.params],
     );
     await db.runAsync(
       `DELETE FROM local_projects
-        WHERE created_by = ?
-           OR workspace_id IN ${workspaceClause.sql}`,
-      [input.userId, ...workspaceClause.params],
+        WHERE workspace_id IN ${workspaceClause.sql}`,
+      [...workspaceClause.params],
     );
     await db.runAsync(
       `DELETE FROM local_profiles WHERE id = ?`,
       [input.userId],
     );
   });
+
+  // The database runs in WAL mode. Truncate the journal only after the scoped
+  // transaction commits so deleted private metadata is not retained in WAL.
+  // A busy checkpoint is treated as a retryable local-cleanup failure; the
+  // persistent deletion marker keeps private routes hidden until retry.
+  const checkpoint = await db.getFirstAsync<{
+    busy: number;
+    log: number;
+    checkpointed: number;
+  }>("PRAGMA wal_checkpoint(TRUNCATE)");
+
+  if (!checkpoint || Number(checkpoint.busy) !== 0) {
+    throw new Error("The local account cleanup WAL checkpoint did not finish.");
+  }
 };

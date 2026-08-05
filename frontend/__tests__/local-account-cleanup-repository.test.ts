@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { openLocalDb } from "@/src/services/sqlite/schema";
 import { runSerializedLocalTransaction } from "@/src/services/sqlite/transaction";
 import {
@@ -30,8 +33,20 @@ const mockedTransaction = runSerializedLocalTransaction as jest.MockedFunction<
 >;
 
 describe("SQLite account cleanup scope", () => {
+  const schemaSource = readFileSync(
+    resolve(process.cwd(), "src/services/sqlite/schema.ts"),
+    "utf8",
+  );
+
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  it("enables secure page deletion on the shared SQLite connection", () => {
+    expect(schemaSource).toContain("PRAGMA secure_delete = ON;");
+    expect(schemaSource.indexOf("PRAGMA secure_delete = ON;")).toBeLessThan(
+      schemaSource.indexOf("await runMigrations(db)"),
+    );
   });
 
   it("collects only owned workspace scopes and includes queued deletion file JSON", async () => {
@@ -41,6 +56,8 @@ describe("SQLite account cleanup scope", () => {
         return [{ value: OWNED_WORKSPACE_ID }];
       }
       if (sql.includes("SELECT id AS value") && sql.includes("local_sessions")) {
+        expect(sql).not.toContain("created_by = ?");
+        expect(sql).not.toContain("user_id = ?");
         return [{ value: SESSION_ID }];
       }
       if (sql.includes("SELECT id AS value") && sql.includes("local_media_assets")) {
@@ -93,7 +110,12 @@ describe("SQLite account cleanup scope", () => {
       async (_sql: string, _params?: readonly unknown[]): Promise<void> =>
         undefined,
     );
-    const db = { runAsync };
+    const getFirstAsync = jest.fn(async () => ({
+      busy: 0,
+      log: 0,
+      checkpointed: 0,
+    }));
+    const db = { runAsync, getFirstAsync };
     mockedOpenLocalDb.mockResolvedValue(db as never);
 
     await deleteLocalAccountData({
@@ -125,6 +147,19 @@ describe("SQLite account cleanup scope", () => {
     expect(sql).toContain("WHERE created_by = ?");
     expect(sql).toContain("WHERE added_by = ?");
     expect(sql).toContain("WHERE user_id = ?");
+
+    const sessionDelete = runAsync.mock.calls.find(([statement]) =>
+      statement.includes("DELETE FROM local_sessions"),
+    )?.[0];
+    const projectDelete = runAsync.mock.calls.find(([statement]) =>
+      statement.includes("DELETE FROM local_projects"),
+    )?.[0];
+    expect(sessionDelete).not.toContain("created_by = ?");
+    expect(projectDelete).not.toContain("created_by = ?");
+    expect(getFirstAsync).toHaveBeenCalledWith(
+      "PRAGMA wal_checkpoint(TRUNCATE)",
+    );
+
     expect(sql).not.toContain("DELETE FROM local_user_preferences");
     expect(sql).not.toContain("DELETE FROM local_sync_state");
 
@@ -133,5 +168,31 @@ describe("SQLite account cleanup scope", () => {
         /^\s*DELETE\s+FROM\s+local_meta(?:\s|$)/i.test(statement),
     );
     expect(deletesWholeLocalMetaTable).toBe(false);
+  });
+
+  it("fails closed when the WAL cannot be truncated after scoped cleanup", async () => {
+    const runAsync = jest.fn(
+      async (_sql: string, _params?: readonly unknown[]): Promise<void> =>
+        undefined,
+    );
+    const getFirstAsync = jest.fn(async () => ({
+      busy: 1,
+      log: 2,
+      checkpointed: 1,
+    }));
+    mockedOpenLocalDb.mockResolvedValue({
+      runAsync,
+      getFirstAsync,
+    } as never);
+
+    await expect(
+      deleteLocalAccountData({
+        userId: USER_ID,
+        workspaceIds: [OWNED_WORKSPACE_ID],
+        sessionIds: [SESSION_ID],
+      }),
+    ).rejects.toThrow(
+      "The local account cleanup WAL checkpoint did not finish.",
+    );
   });
 });

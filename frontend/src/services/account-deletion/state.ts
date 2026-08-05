@@ -135,6 +135,45 @@ export const createAccountDeletionMarker = (input: {
   };
 };
 
+export const prepareAccountDeletionMarker = async (input: {
+  userId: string;
+  collectLocalScope: (
+    userId: string,
+  ) => Promise<{ workspaceIds: readonly string[] }>;
+  resolvePersonalWorkspaceId: (userId: string) => Promise<string>;
+  persistMarker: (marker: AccountDeletionMarker) => Promise<void>;
+  now?: Date;
+}): Promise<AccountDeletionMarker> => {
+  const localScope = await input.collectLocalScope(input.userId);
+  const workspaceIds = [...localScope.workspaceIds];
+  let workspaceResolutionCause: unknown;
+
+  try {
+    workspaceIds.push(
+      await input.resolvePersonalWorkspaceId(input.userId),
+    );
+  } catch (cause) {
+    workspaceResolutionCause = cause;
+  }
+
+  const marker = createAccountDeletionMarker({
+    userId: input.userId,
+    workspaceIds,
+    now: input.now,
+  });
+
+  if (marker.workspaceIds.length === 0) {
+    throw new AppError(
+      ErrorCode.ACCOUNT_DELETION_LOCAL_STATE_FAILED,
+      "The local account-deletion scope could not be prepared.",
+      workspaceResolutionCause,
+    );
+  }
+
+  await input.persistMarker(marker);
+  return marker;
+};
+
 export const loadAccountDeletionMarker = async (): Promise<
   AccountDeletionMarker | null
 > => {

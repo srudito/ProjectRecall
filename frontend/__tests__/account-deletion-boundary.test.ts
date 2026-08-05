@@ -62,6 +62,24 @@ describe("account deletion root boundary", () => {
     );
   });
 
+  it("resynchronizes a remounted boundary after the active workflow settles", () => {
+    expect(boundary).toContain("activeWorkflowOwner");
+    expect(boundary).toContain("boundaryInstanceRef");
+    expect(boundary).toContain("const observedWorkflow = activeWorkflow");
+    expect(boundary).toContain("reloadAfterWorkflow");
+    expect(boundary).toContain("void reloadMarker()");
+    expect(boundary).toContain("cancelled = true");
+  });
+
+  it("prepares a validated owned-workspace scope before persisting deletion state", () => {
+    expect(boundary).toContain("await prepareAccountDeletionMarker({");
+    expect(boundary).toContain(
+      "collectLocalScope: collectLocalAccountCleanupScope",
+    );
+    expect(boundary).toContain("resolvePersonalWorkspaceId");
+    expect(boundary).toContain("persistMarker");
+  });
+
   it("requires exact DELETE confirmation and blocks active recordings", () => {
     expect(deleteScreen).toContain('const REQUIRED_CONFIRMATION = "DELETE"');
     expect(deleteScreen).toContain(

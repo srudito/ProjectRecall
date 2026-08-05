@@ -262,3 +262,18 @@ workflow error screen derives its retry marker from the newest successfully
 persisted in-memory marker rather than from the older React effect closure. A
 subsequent retry therefore cannot erase evidence that the server request may
 have started.
+
+## Phase 5C release hardening
+
+Phase 5C narrows whole-session local cleanup to sessions inside workspaces
+known to be owned by the deleted account. User authorship alone no longer
+expands the cleanup graph through a shared/non-owned session, preserving other
+users' cached rows on a shared device.
+
+The root boundary also observes an already-running same-process deletion
+workflow after remount and reloads the durable marker when it settles.
+
+SQLite now enables `PRAGMA secure_delete = ON`, and account cleanup requires a
+successful `PRAGMA wal_checkpoint(TRUNCATE)` after its scoped transaction.
+Automatic `VACUUM` remains intentionally out of scope for the shared-device
+database.
