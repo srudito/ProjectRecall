@@ -341,11 +341,15 @@ export default function ActiveRecording() {
     await ingestAsset({ uri: asset.uri, mime: asset.mimeType ?? "image/jpeg", fileName: asset.fileName ?? `photo_${Date.now()}.jpg`, size: asset.fileSize ?? 0, width: asset.width, height: asset.height, kind: "image" });
   };
 
+  const hasMediaLibraryPermission = async (): Promise<boolean> => {
+    if (Platform.OS !== "ios") return true;
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    return permission.granted;
+  };
+
   const attachFromLibrary = async () => {
     setShowEvidenceSheet(false);
-    if (!session) return;
-    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) return;
+    if (!session || !(await hasMediaLibraryPermission())) return;
     const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.9 });
     if (result.canceled) return;
     const asset = result.assets[0];
@@ -354,9 +358,7 @@ export default function ActiveRecording() {
 
   const attachVideo = async () => {
     setShowEvidenceSheet(false);
-    if (!session) return;
-    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) return;
+    if (!session || !(await hasMediaLibraryPermission())) return;
     const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Videos });
     if (result.canceled) return;
     const asset = result.assets[0];

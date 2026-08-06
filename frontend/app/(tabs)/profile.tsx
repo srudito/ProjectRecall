@@ -7,7 +7,13 @@ import { ConnectGoogleIdentityButton } from "@/src/components/ConnectGoogleIdent
 import { DisconnectGoogleIdentityButton } from "@/src/components/DisconnectGoogleIdentityButton";
 import { Card } from "@/src/components/Card";
 import { Screen } from "@/src/components/Screen";
-import { branding } from "@/src/config/branding";
+import {
+  branding,
+  hasConfiguredPrivacyPolicy,
+  hasConfiguredSupportEmail,
+  hasConfiguredTermsOfService,
+} from "@/src/config/branding";
+import { getAppDisplayVersion } from "@/src/config/release";
 import { appLanguages, displayLanguageName } from "@/src/i18n/languages";
 import { useI18n } from "@/src/i18n/I18nProvider";
 import {
@@ -38,6 +44,7 @@ export default function Profile() {
   const [identitiesLoading, setIdentitiesLoading] = useState(true);
   const [identitiesError, setIdentitiesError] = useState(false);
   const mountedRef = useRef(true);
+  const appVersion = getAppDisplayVersion();
 
   const loadConnectedIdentities = useCallback(async (): Promise<void> => {
     if (mountedRef.current) {
@@ -384,28 +391,35 @@ export default function Profile() {
 
         <View style={{ height: spacing.md }} />
 
-        <Button
-          testID="profile-privacy-button"
-          label={t("profile", "privacyPolicy")}
-          variant="ghost"
-          onPress={() => Linking.openURL(branding.privacyPolicyUrl)}
-        />
-        <Button
-          testID="profile-terms-button"
-          label={t("profile", "terms")}
-          variant="ghost"
-          onPress={() => Linking.openURL(branding.termsOfServiceUrl)}
-        />
-        <Button
-          testID="profile-support-button"
-          label={t("profile", "support")}
-          variant="ghost"
-          onPress={() => Linking.openURL(`mailto:${branding.supportEmail}`)}
-        />
+        {hasConfiguredPrivacyPolicy() ? (
+          <Button
+            testID="profile-privacy-button"
+            label={t("profile", "privacyPolicy")}
+            variant="ghost"
+            onPress={() => Linking.openURL(branding.privacyPolicyUrl)}
+          />
+        ) : null}
+        {hasConfiguredTermsOfService() ? (
+          <Button
+            testID="profile-terms-button"
+            label={t("profile", "terms")}
+            variant="ghost"
+            onPress={() => Linking.openURL(branding.termsOfServiceUrl)}
+          />
+        ) : null}
+        {hasConfiguredSupportEmail() ? (
+          <Button
+            testID="profile-support-button"
+            label={t("profile", "support")}
+            variant="ghost"
+            onPress={() => Linking.openURL(`mailto:${branding.supportEmail}`)}
+          />
+        ) : null}
         <Text
+          testID="profile-app-version"
           style={[typography.overline, { color: colors.textTertiary, marginTop: spacing.md }]}
         >
-          {t("profile", "version")} 1.0.0 (Milestone 1) • {displayLanguageName(language)}
+          {t("profile", "version")} {appVersion} • {displayLanguageName(language)}
         </Text>
       </Card>
     </Screen>

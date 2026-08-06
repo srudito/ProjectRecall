@@ -1,20 +1,40 @@
-# Project Recall — Milestone 1
+# Project Recall
 
-**Tagline:** *Capture every conversation. Remember every detail.*
+**Capture every conversation. Remember every detail.**
 
-Android-first multimodal recording and knowledge-capture application. Milestone 1
-delivers a reliable **local-to-cloud recording workflow** with no AI features.
+Project Recall is an Android-first Expo/React Native application for local-first
+recording, evidence capture, project/session organization, and private
+Supabase synchronization.
 
-See `/app/docs/` for the complete architecture, database, recording, sync,
-language, security, navigation, and roadmap documents.
+## Current status
 
-## Quickstart
+Milestone 1 feature development is complete. The current release-closure pass
+covers Android backup policy, permission minimization, reproducible build tool
+versions, public legal/support configuration, version display, and final
+release verification. Milestone 2 transcription has not started.
 
-1. Create a Supabase project. Copy the URL, anon key, service role key, and JWT secret.
-2. Populate `/app/frontend/.env` (public only) and `/app/backend/.env` (private).
-3. Apply migrations from `/app/supabase/migrations/` in order.
-4. `sudo supervisorctl restart backend expo`
-5. Sign up an account in the app to receive an auto-created personal workspace.
-6. To exercise real microphone recording, generate an Android dev build (see docs).
+## Source of truth
 
-The full README is in `/app/docs/README.md`.
+- Repository branch: `milestone1sync`
+- Current committed source and tests override historical patches or chat notes.
+- Applied Supabase migrations must never be edited or rerun on an existing
+  environment.
+
+## Local setup
+
+```bash
+cd frontend
+nvm use
+corepack disable 2>/dev/null || true
+yarn install --frozen-lockfile
+cp .env.example .env
+npx expo start --dev-client
+```
+
+Only public/publishable values belong in `frontend/.env`. Supabase secret or
+service-role keys, Google client secrets, JWT secrets, database passwords,
+access tokens, and signing credentials must remain server-side and must never
+be committed.
+
+See [`docs/README.md`](docs/README.md) for architecture, migrations, validation,
+Android build, and release instructions.

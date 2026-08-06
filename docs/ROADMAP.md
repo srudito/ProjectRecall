@@ -1,68 +1,44 @@
 # Roadmap
 
-Milestone 1 is still being closed in verified, dependency-ordered passes.
+## Milestone 1 — Capture, evidence, cloud sync, and account security
 
-## Milestone 1 — Capture and cloud foundation
+Feature implementation is complete and verified in dependency-ordered passes:
 
-Completed and verified before this pass:
+- local-first project/session persistence and synchronization;
+- notes, bookmarks, timeline events, recordings, and evidence sync;
+- private Storage upload, signed restoration, retry, and orphan cleanup;
+- cloud-aware session deletion;
+- project context, Library organization, stars, sorting, and scrolling UX;
+- email/password and Google authentication;
+- connected accounts, safe Google linking/unlinking, and password recovery;
+- authenticated route protection;
+- permanent account deletion with distributed gating, crash-safe local cleanup,
+  and release hardening.
 
-- Supabase authentication and personal workspace creation;
-- project and session local-to-cloud synchronization;
-- dependency-ordered offline retry with stable UUIDs;
-- session lifecycle, duration, language settings, and cloud-to-local merge;
-- note, bookmark, and recording/timeline-event synchronization;
-- web timeline reads and native cloud-to-local restoration;
-- durable primary recording metadata and private audio Storage upload;
-- signed audio playback, Wi-Fi-only upload, reinstall recovery, and Storage RLS
-  smoke tests.
+Current release-closure gates:
 
-Completed and verified in Evidence Storage Sync v1:
+- Android backup disabled and merged-manifest permissions verified;
+- real support, privacy, and terms values configured for production;
+- reproducible Node/Yarn and EAS versioning configuration verified;
+- preview APK tested without Metro;
+- production build configuration audited;
+- migrations `0001–0012` smoke-tested in an isolated environment;
+- final Milestone 1 regression checklist signed off.
 
-- durable local persistence for image, video, and document evidence;
-- media metadata synchronization to `public.media_assets`;
-- private binary upload to `session-assets`;
-- session-before-evidence and evidence-before-timeline dependency ordering;
-- signed image/video/document restoration on web and native;
-- offline retry, Wi-Fi-only behavior, and stable media UUIDs/Storage paths.
-
-Implemented in the current Cloud-Aware Deletion v1 pass and awaiting
-real-environment verification:
-
-- durable offline session deletion queue;
-- recording, note, bookmark, timeline, and evidence database cleanup;
-- private Storage prefix deletion and orphan discovery;
-- local recording/evidence file cleanup;
-- restart-safe partial-deletion recovery.
-
-Remaining Milestone 1 work:
-
-- audio-attachment evidence and post-recording Add Evidence UI;
-- project-level deletion and cleanup management UI;
-- remaining playback, timeline-seek, onboarding, and edit-flow gaps;
-- Android development-build verification, including picker interruptions and
-  background recording;
-- authentication hardening/social login before public beta.
-
-Completed in Starred Sessions v1:
-
-- personal per-user session stars on Card and Compact views;
-- Starred filter and Starred-first sort;
-- local-first offline persistence and cloud restoration;
-- self-only RLS and session-deletion cascade cleanup.
+Milestone 2 must not begin until the final release audit is PASS or explicitly
+accepted as a documented conditional release.
 
 ## Milestone 2 — Batch transcription
 
-- `TranscriptionProvider` interface with a single real provider.
+- `TranscriptionProvider` interface with one real provider.
 - Automatic language detection.
-- Single-language transcription.
-- Multilingual transcription with English and Bahasa Indonesia code-switching.
-- Transcript editor.
-- Multiple transcript versions.
+- Single-language and multilingual transcription.
+- English/Bahasa Indonesia code-switching.
+- Transcript editor and version history.
 
 ## Milestone 3 — Multimodal analysis
 
-- OCR.
-- Document text extraction.
+- OCR and document text extraction.
 - Image captioning.
 - AI summaries, decisions, and action items.
 
@@ -74,20 +50,14 @@ Completed in Starred Sessions v1:
 
 ## Milestone 5 — Live transcription
 
-- Live draft transcript and final verified transcript.
+- Live draft and final verified transcript.
 - Reconnection handling.
-- Live language detection and multilingual output.
-- Live bilingual subtitles.
-- Live translation.
+- Live language detection, subtitles, and translation.
 
 ## Milestone 6 — Multi-provider
 
-- Provider registry, selection, routing, and fallback.
-- BYOK support.
+- Provider registry, selection, routing, fallback, and BYOK.
 
 ## Milestone 7 — Commerce
 
-- Subscription.
-- Credit purchases.
-- Advertising, including optional rewarded ads.
-- Administration control panel.
+- Subscription, credits, advertising, and administration.

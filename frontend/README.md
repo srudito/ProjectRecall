@@ -1,50 +1,59 @@
-# Welcome to your Expo app 👋
+# Project Recall mobile app
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Expo Router / React Native / TypeScript client for Project Recall.
 
-## Get started
+## Requirements
 
-1. Install dependencies
-
-   ```bash
-   npm install
-   ```
-
-2. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
-
-```bash
-npm run reset-project
+```text
+Node 20.19.4
+Yarn 1.22.22
+Expo SDK 54
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+From the repository root:
 
-## Learn more
+```bash
+cd frontend
+nvm use
+yarn install --frozen-lockfile
+cp .env.example .env
+```
 
-To learn more about developing your project with Expo, look at the following resources:
+Only public Expo configuration belongs in `.env`. The Supabase value must be a
+publishable key or legacy `anon` key. Never place secret/service-role keys, OAuth
+client secrets, JWT secrets, database passwords, or user tokens there.
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+## Development build
 
-## Join the community
+```bash
+npx expo start --dev-client --clear
+```
 
-Join our community of developers creating universal apps.
+The installed development build is required for real microphone recording,
+background audio, native pickers, secure storage, and deep links.
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+## Verification
+
+```bash
+npx tsc --noEmit
+npx jest --runInBand
+npx expo-doctor
+```
+
+Run targeted ESLint for changed files. For release configuration:
+
+```bash
+node ./scripts/validate-release-readiness.js --production
+```
+
+This command expects real production public environment values.
+
+## EAS builds
+
+```bash
+npx eas-cli@latest build --platform android --profile development
+npx eas-cli@latest build --platform android --profile preview
+npx eas-cli@latest build --platform android --profile production
+```
+
+`preview` produces an internally distributed APK that runs without Metro.

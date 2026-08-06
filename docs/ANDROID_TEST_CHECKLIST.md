@@ -1,88 +1,113 @@
-# Android physical-device test checklist
+# Android Milestone 1 release checklist
 
-Nothing here can be marked "tested" until executed on a real Android device
-using a development build. Expo Go is not sufficient for any item.
+Run this checklist on the same installed development/preview build unless a
+step explicitly says fresh install. Expo Go is not sufficient.
 
-## Setup
+## Build and configuration
 
-- [ ] Fresh install from EAS development build
+- [ ] New binary built after `android.allowBackup=false` and permission changes
+- [ ] Preview APK installs and runs without Metro
+- [ ] App version in Profile matches `app.json`
+- [ ] Merged manifest has `android:allowBackup="false"`
+- [ ] Merged manifest does not request `READ_MEDIA_AUDIO`, `READ_MEDIA_IMAGES`,
+      or `READ_MEDIA_VIDEO`
+- [ ] Legacy read/write external-storage permissions are absent or constrained
+      with library-provided `maxSdkVersion` values (not app-wide/unbounded)
+- [ ] Microphone and camera permissions remain available
+- [ ] Production EAS release check passes with real legal/support values
+
+## Setup and localization
+
+- [ ] Fresh install opens Welcome
 - [ ] English is the default language
-- [ ] Switch to Bahasa Indonesia in Profile → App language
+- [ ] Switch to Bahasa Indonesia in Profile
 - [ ] Language persists after app restart
-- [ ] Switching app language does NOT alter spoken-language preferences
+- [ ] App language does not alter spoken-language preferences
 
-## Permissions
+## Authentication and account security
 
-- [ ] Microphone permission prompt appears on first record
-- [ ] Denying microphone shows a friendly error with Open Settings link
-- [ ] Camera permission prompt appears when taking a photo
-- [ ] Media library permission prompt appears when picking a photo/video
-- [ ] Notifications permission prompt appears when starting a foreground recording
+- [ ] Email sign-up/verification/sign-in
+- [ ] Normal Google sign-in
+- [ ] Connect Google identity and refresh Connected Accounts
+- [ ] Safely disconnect Google while another identity remains
+- [ ] Password reset link opens the dedicated recovery flow
+- [ ] Replayed/direct reset route cannot change a password
+- [ ] Protected deep links do not flash private UI while signed out
 
-## Recording — basic
+## Permissions and recording
 
-- [ ] Start recording
-- [ ] Timer increments exactly 1s per second
-- [ ] Recording status indicator turns red
-- [ ] Pause — timer freezes
-- [ ] Resume — timer continues; paused seconds excluded
-- [ ] Stop — session appears in Review
+- [ ] Microphone prompt appears on first recording
+- [ ] Denial shows a friendly error and Open Settings action
+- [ ] Camera prompt appears when taking a photo
+- [ ] Image/video system picker works on Android without a broad media-library
+      permission prompt
+- [ ] Foreground recording notification appears when required
+- [ ] Start, pause, resume, and stop recording
+- [ ] Timer excludes paused duration
+- [ ] Background/screen-lock recording remains consistent
+- [ ] Long recording playback is not truncated
 
-## Recording — background / lock
+## Evidence and timeline
 
-- [ ] Home button → recording continues in foreground service
-- [ ] Foreground-service notification shows and cannot be dismissed
-- [ ] Screen lock → recording continues
-- [ ] Return to app — offset is consistent (no double-counted paused time)
+- [ ] Take/select photo
+- [ ] Select video
+- [ ] Select PDF/DOCX/TXT document
+- [ ] Add note and timestamped bookmark
+- [ ] Evidence opens after cloud restoration
+- [ ] Timeline sorting and seek behavior remain correct
 
-## Evidence — mid-recording
+## Offline, retry, and synchronization
 
-- [ ] Take photo → returned to recording, note & bookmark still work
-- [ ] Select existing photo
-- [ ] Select existing video
-- [ ] Select document (PDF)
-- [ ] Add text note (multiline, keyboard dismiss doesn't lose draft)
-- [ ] Add bookmark (rapid tap → single bookmark, not duplicates)
+- [ ] Cold start offline preserves local projects/sessions
+- [ ] Recording/evidence queues survive restart
+- [ ] Wi-Fi-only behavior is respected
+- [ ] Reconnect drains queues without duplicates
+- [ ] Reinstall restoration downloads private cloud metadata/files correctly
+- [ ] User A cannot read or mutate User B data
 
-## Offset correctness
+## Library and navigation
 
-- [ ] Record 60s, pause 30s, resume, record 10s
-- [ ] Add a bookmark after resume → offset ≈ 70s (not 100s)
-- [ ] Add note during recording → offset matches wall clock elapsed active time
+- [ ] Projects and Sessions filters/sorts work
+- [ ] Card/Compact layouts persist
+- [ ] Starred filter and sort work
+- [ ] Sessions controls scroll away and Back to top works
+- [ ] Android Back does not reveal protected content after sign-out/deletion
 
-## Interruptions
+## Session deletion
 
-- [ ] Incoming phone call → recording pauses; app surfaces status; user can resume
-- [ ] Bluetooth mic connect/disconnect during recording
+- [ ] Cancel confirmation leaves session unchanged
+- [ ] Online deletion removes database rows, private Storage, and local files
+- [ ] Offline deletion hides session and resumes cleanup on reconnect
+- [ ] Deletion during upload does not recreate metadata or objects
+- [ ] Partial cloud cleanup remains visible and retryable
 
-## Storage
+## Delete Account
 
-- [ ] Low storage → warning is shown; recording still works within limits
+Use disposable accounts only.
 
-## Networking
+- [ ] Exact `DELETE` confirmation is required
+- [ ] Active recording blocks account deletion
+- [ ] Missing/old authentication requests safe reauthentication
+- [ ] Server blocker does not erase local data
+- [ ] Active durable lease returns safe retry state
+- [ ] Successful deletion removes Auth user, workspaces, Storage, SQLite rows,
+      and app-owned files
+- [ ] Force-close without uninstall resumes cleanup and never shows private UI
+- [ ] Deleted account cannot sign in again
+- [ ] Shared-device data for another user remains intact
 
-- [ ] Offline while recording → recording continues locally
-- [ ] Connectivity restored → upload queue drains
-- [ ] Failed upload → manual retry works
-- [ ] Wi-Fi only preference respected on cellular
+## Backup and reinstall semantics
 
-## Restart & durability
+- [ ] Uninstall/reinstall does not restore a deleted user's private app data
+- [ ] Fresh install begins at Welcome
+- [ ] A cloud account that still exists can restore only through authenticated
+      sync, not Android backup
 
-- [ ] Force-stop app, relaunch → completed session still shows
-- [ ] Recording file still plays after relaunch
-- [ ] Upload queue survives relaunch
+## Final release result
 
-## Playback & timeline
-
-- [ ] Play recorded audio
-- [ ] Tap timeline timestamp → audio seeks
-
-## Deletion
-
-- [ ] Delete confirmation can be cancelled without changing the session
-- [ ] Delete a session — recording, evidence, notes, bookmarks, timeline, and cloud objects removed
-- [ ] Delete while offline — session hides immediately and cleanup resumes after reconnect
-- [ ] Delete while binary upload is in progress — no object or metadata is recreated
-- [ ] Orphan object below the session prefix is removed
-- [ ] Cloud deletion partial failure surfaces as "cloud cleanup pending"
-- [ ] Deleted session does not return after Expo Go reinstall
+- [ ] TypeScript passes
+- [ ] Full Jest passes
+- [ ] Targeted ESLint passes with zero warnings
+- [ ] Expo Doctor passes
+- [ ] Preview APK regression passes without Metro
+- [ ] Fresh migration smoke test passes in an isolated environment

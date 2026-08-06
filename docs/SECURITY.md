@@ -42,9 +42,12 @@ Perform each of these with two accounts (A and B) after applying migrations:
 
 ## Token handling
 
-- Only anon key + Supabase URL live in the mobile bundle (`EXPO_PUBLIC_*`).
-- The service-role key is confined to `backend/.env` and never returned in
-  any API response.
+- Only public runtime configuration may be embedded through `EXPO_PUBLIC_*`.
+  The Supabase frontend credential must be a publishable key or legacy
+  `anon`-role key.
+- Supabase secret/service-role keys and all privileged credentials are
+  forbidden in every mobile build profile, remain confined to trusted backend
+  or Edge Function environments, and are never returned in an API response.
 - Logs never include tokens, signed URLs, note content, or file content in
   routine operation.
 
@@ -78,3 +81,20 @@ Every accepted upload passes `services/files/validation.ts`:
   just-uploaded object if deletion started during the upload.
 - User-isolation testing must verify that User B cannot delete User A's session
   row, list its Storage prefix, or remove its objects.
+
+## Release privacy controls
+
+- Android application backup is disabled so private SQLite, recordings,
+  evidence, Auth/deletion state, and caches are not restored by cloud backup.
+- Broad Android media-library access is explicitly blocked for audio, images,
+  and video. The Android system picker supplies only user-selected image/video
+  items; legacy picker permissions must not be app-wide and must remain
+  max-SDK constrained in the merged manifest.
+- Support, privacy-policy, and terms destinations are public release
+  configuration; production builds fail when they are missing or are not
+  credential-free HTTPS destinations on valid public multi-label DNS hosts.
+- Public Expo variables are not secrets, but only a Supabase publishable key or
+  legacy `anon` JWT may be placed in the frontend key variable. Every EAS build
+  profile rejects Supabase secret/service-role, privileged, malformed, and
+  placeholder frontend keys. OAuth client secrets, JWT secrets, database
+  passwords, and signing credentials remain server-side only.
