@@ -134,6 +134,7 @@ describe("Milestone 1 release readiness configuration", () => {
       "android.permission.READ_MEDIA_AUDIO",
       "android.permission.READ_MEDIA_IMAGES",
       "android.permission.READ_MEDIA_VIDEO",
+      "android.permission.WRITE_EXTERNAL_STORAGE",
     ]) {
       expect(app.expo.android.blockedPermissions).toContain(permission);
     }
