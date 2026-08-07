@@ -5,6 +5,11 @@ const { FileStore } = require('metro-cache');
 
 const config = getDefaultConfig(__dirname);
 
+// Supabase realtime-js currently pulls the Node-only "ws" path when
+// Metro package-exports resolution is enabled. Use classic resolution
+// so React Native uses the browser-compatible WebSocket path.
+config.resolver.unstable_enablePackageExports = false;
+
 // Use a stable on-disk store (shared across web/android)
 const root = process.env.METRO_CACHE_ROOT || path.join(__dirname, '.metro-cache');
 config.cacheStores = [

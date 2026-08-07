@@ -92,6 +92,27 @@ describe("Milestone 1 release readiness configuration", () => {
   const eas = readFrontendJson<EasConfig>("eas.json");
   const pkg = readFrontendJson<PackageConfig>("package.json");
 
+
+  it("uses classic Metro package resolution for Supabase React Native compatibility", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        [
+          'const config = require("./metro.config.js");',
+          'process.stdout.write(String(config.resolver?.unstable_enablePackageExports));',
+        ].join("\n"),
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe("false");
+  });
+
   it("disables Android backup for private local evidence", () => {
     expect(app.expo.android.allowBackup).toBe(false);
   });
