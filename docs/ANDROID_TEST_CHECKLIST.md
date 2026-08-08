@@ -11,8 +11,9 @@ step explicitly says fresh install. Expo Go is not sufficient.
 - [ ] Merged manifest has `android:allowBackup="false"`
 - [ ] Merged manifest does not request `READ_MEDIA_AUDIO`, `READ_MEDIA_IMAGES`,
       or `READ_MEDIA_VIDEO`
-- [ ] Legacy read/write external-storage permissions are absent or constrained
-      with library-provided `maxSdkVersion` values (not app-wide/unbounded)
+- [ ] `WRITE_EXTERNAL_STORAGE` is absent
+- [ ] `READ_EXTERNAL_STORAGE` is absent or constrained to `maxSdkVersion=32`
+- [ ] Production AAB base manifest does not request `SYSTEM_ALERT_WINDOW`
 - [ ] Microphone and camera permissions remain available
 - [ ] Production EAS release check passes with real legal/support values
 

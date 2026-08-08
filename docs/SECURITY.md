@@ -86,10 +86,13 @@ Every accepted upload passes `services/files/validation.ts`:
 
 - Android application backup is disabled so private SQLite, recordings,
   evidence, Auth/deletion state, and caches are not restored by cloud backup.
-- Broad Android media-library access is explicitly blocked for audio, images,
-  and video. The Android system picker supplies only user-selected image/video
-  items; legacy picker permissions must not be app-wide and must remain
-  max-SDK constrained in the merged manifest.
+- Broad Android media-library access and legacy external-storage write access
+  are explicitly blocked. The Android system picker supplies only user-selected
+  image/video items; legacy read access may remain only with
+  `maxSdkVersion=32` in the merged manifest.
+- `SYSTEM_ALERT_WINDOW` is blocked only in resolved production app config.
+  Non-production configs remain unchanged while the production AAB is required
+  not to request overlay capability.
 - Support, privacy-policy, and terms destinations are public release
   configuration; production builds fail when they are missing or are not
   credential-free HTTPS destinations on valid public multi-label DNS hosts.

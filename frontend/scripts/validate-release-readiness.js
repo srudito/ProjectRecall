@@ -9,6 +9,10 @@ const readJson = (relativePath) =>
   JSON.parse(fs.readFileSync(path.join(root, relativePath), "utf8"));
 
 const app = readJson("app.json");
+const {
+  resolveProjectRecallConfig,
+  systemAlertWindowPermission,
+} = require("../app.config.js");
 const eas = readJson("eas.json");
 const pkg = readJson("package.json");
 const nvmrc = fs.readFileSync(path.join(root, ".nvmrc"), "utf8").trim();
@@ -28,6 +32,7 @@ const forbiddenExplicitPermissions = [
   "android.permission.READ_MEDIA_VIDEO",
   "android.permission.READ_EXTERNAL_STORAGE",
   "android.permission.WRITE_EXTERNAL_STORAGE",
+  systemAlertWindowPermission,
 ];
 const requiredBlockedPermissions = [
   "android.permission.READ_MEDIA_AUDIO",
@@ -46,6 +51,22 @@ if (app.expo?.android?.allowBackup !== false) {
 
 const declaredPermissions = new Set(app.expo?.android?.permissions ?? []);
 const blockedPermissions = new Set(app.expo?.android?.blockedPermissions ?? []);
+const resolvedProductionApp = resolveProjectRecallConfig(app.expo ?? {}, {
+  EAS_BUILD_PROFILE: "production",
+  EXPO_PUBLIC_APP_ENV: "production",
+});
+const resolvedProductionBlockedPermissions = new Set(
+  resolvedProductionApp.android?.blockedPermissions ?? [],
+);
+const resolvedNonProductionBlockedPermissions = ["development", "preview"].map(
+  (profileName) =>
+    new Set(
+      resolveProjectRecallConfig(app.expo ?? {}, {
+        EAS_BUILD_PROFILE: profileName,
+        EXPO_PUBLIC_APP_ENV: profileName,
+      }).android?.blockedPermissions ?? [],
+    ),
+);
 
 for (const permission of forbiddenExplicitPermissions) {
   if (declaredPermissions.has(permission)) {
@@ -56,6 +77,24 @@ for (const permission of forbiddenExplicitPermissions) {
 for (const permission of requiredBlockedPermissions) {
   if (!blockedPermissions.has(permission)) {
     fail(`${permission} must be blocked explicitly.`);
+  }
+}
+
+if (blockedPermissions.has(systemAlertWindowPermission)) {
+  fail(
+    `${systemAlertWindowPermission} must be applied through the production-only app.config.js rule.`,
+  );
+}
+
+if (!resolvedProductionBlockedPermissions.has(systemAlertWindowPermission)) {
+  fail(`${systemAlertWindowPermission} must be blocked in production config.`);
+}
+
+for (const nonProductionBlockedPermissions of resolvedNonProductionBlockedPermissions) {
+  if (nonProductionBlockedPermissions.has(systemAlertWindowPermission)) {
+    fail(
+      `${systemAlertWindowPermission} must remain production-only to preserve non-production build behavior.`,
+    );
   }
 }
 

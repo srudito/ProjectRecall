@@ -12,9 +12,13 @@ Milestone 1 domain behavior.
 - Sets `expo.android.allowBackup` to `false` so cloud backup cannot restore the
   app's SQLite, recordings, evidence, or deletion state.
 - Removes broad storage permissions from the app-level declaration and
-  explicitly blocks `READ_MEDIA_AUDIO`, `READ_MEDIA_IMAGES`, and
-  `READ_MEDIA_VIDEO`. Library-scoped legacy permissions may remain only with
-  Android max-SDK limits for older picker compatibility.
+  explicitly blocks `READ_MEDIA_AUDIO`, `READ_MEDIA_IMAGES`,
+  `READ_MEDIA_VIDEO`, and `WRITE_EXTERNAL_STORAGE`. Library-scoped legacy read
+  permission may remain only with an Android max-SDK limit for older picker
+  compatibility.
+- Uses a production-only dynamic app-config rule to block
+  `SYSTEM_ALERT_WINDOW` from release binaries. Development and preview
+  configs remain unchanged while the production AAB fails closed.
 - Uses the Android system image/video picker without requesting media-library
   permission. The existing iOS media-library permission flow remains
   platform-gated.

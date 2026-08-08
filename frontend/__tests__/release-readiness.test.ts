@@ -87,6 +87,35 @@ const runEasCheck = (
     },
   );
 
+const readResolvedBlockedPermissions = (
+  profile: "development" | "preview" | "production",
+): string[] => {
+  const result = spawnSync(
+    process.execPath,
+    [
+      "-e",
+      [
+        'const base = require("./app.json").expo;',
+        'const { resolveProjectRecallConfig } = require("./app.config.js");',
+        'const resolved = resolveProjectRecallConfig(base, process.env);',
+        'process.stdout.write(JSON.stringify(resolved.android?.blockedPermissions ?? []));',
+      ].join("\n"),
+    ],
+    {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        EAS_BUILD_PROFILE: profile,
+        EXPO_PUBLIC_APP_ENV: profile,
+      },
+      encoding: "utf8",
+    },
+  );
+
+  expect(result.status).toBe(0);
+  return JSON.parse(result.stdout) as string[];
+};
+
 describe("Milestone 1 release readiness configuration", () => {
   const app = readFrontendJson<AppConfig>("app.json");
   const eas = readFrontendJson<EasConfig>("eas.json");
@@ -115,6 +144,18 @@ describe("Milestone 1 release readiness configuration", () => {
 
   it("disables Android backup for private local evidence", () => {
     expect(app.expo.android.allowBackup).toBe(false);
+  });
+
+  it("blocks SYSTEM_ALERT_WINDOW only in resolved production config", () => {
+    const permission = "android.permission.SYSTEM_ALERT_WINDOW";
+
+    expect(app.expo.android.permissions).not.toContain(permission);
+    expect(app.expo.android.blockedPermissions).not.toContain(permission);
+    expect(readResolvedBlockedPermissions("development")).not.toContain(
+      permission,
+    );
+    expect(readResolvedBlockedPermissions("preview")).not.toContain(permission);
+    expect(readResolvedBlockedPermissions("production")).toContain(permission);
   });
 
   it("uses scoped pickers without broad Android media-library permissions", () => {

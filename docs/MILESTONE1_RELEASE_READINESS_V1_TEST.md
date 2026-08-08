@@ -8,6 +8,7 @@ npx tsc --noEmit
 npx jest __tests__/release-readiness.test.ts __tests__/localization.test.ts --runInBand
 npx jest --runInBand
 npx eslint \
+  "./app.config.js" \
   "./app/(tabs)/profile.tsx" \
   "./app/record/active.tsx" \
   "./src/config/branding.ts" \
@@ -62,11 +63,23 @@ android:allowBackup="false"
 READ_MEDIA_AUDIO absent
 READ_MEDIA_IMAGES absent
 READ_MEDIA_VIDEO absent
-READ_EXTERNAL_STORAGE absent or max-SDK constrained
-WRITE_EXTERNAL_STORAGE absent or max-SDK constrained
+READ_EXTERNAL_STORAGE absent or maxSdkVersion=32
+WRITE_EXTERNAL_STORAGE absent
 RECORD_AUDIO present
 CAMERA present
 ```
+
+## Production binary verification
+
+Generate an APK set from the production AAB with `bundletool`, inspect the base
+manifest, and verify:
+
+```text
+SYSTEM_ALERT_WINDOW absent
+```
+
+The overlay permission may be present in React Native debug/preview binaries,
+but it must be removed by the production-only app-config rule.
 
 ## UI verification
 
