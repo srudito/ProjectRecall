@@ -1,0 +1,156 @@
+:root {
+  color-scheme: light dark;
+  --bg: #0d1526;
+  --surface: #151f33;
+  --text: #f6f8fc;
+  --muted: #b7c1d6;
+  --accent: #8cb4ff;
+  --border: #2d3a55;
+  --max-width: 880px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  line-height: 1.65;
+}
+
+main,
+header,
+footer {
+  width: min(calc(100% - 2rem), var(--max-width));
+  margin-inline: auto;
+}
+
+header {
+  padding: 3rem 0 1.5rem;
+}
+
+main {
+  padding-bottom: 3rem;
+}
+
+footer {
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  padding: 1.5rem 0 3rem;
+}
+
+h1,
+h2,
+h3 {
+  line-height: 1.25;
+}
+
+h1 {
+  margin: 0 0 0.5rem;
+  font-size: clamp(2rem, 6vw, 3.25rem);
+}
+
+h2 {
+  margin-top: 2.25rem;
+  font-size: 1.45rem;
+}
+
+h3 {
+  margin-top: 1.5rem;
+  font-size: 1.1rem;
+}
+
+a {
+  color: var(--accent);
+}
+
+nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  margin-top: 1.25rem;
+}
+
+nav a,
+.card a {
+  font-weight: 650;
+}
+
+.card,
+.notice {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.9rem;
+  padding: 1.25rem;
+}
+
+.card + .card,
+.notice + .notice {
+  margin-top: 1rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+}
+
+.muted,
+.meta {
+  color: var(--muted);
+}
+
+.meta {
+  margin: 0;
+}
+
+.lang-block {
+  border-top: 1px solid var(--border);
+  margin-top: 3rem;
+  padding-top: 2rem;
+}
+
+ul,
+ol {
+  padding-left: 1.4rem;
+}
+
+code {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.35rem;
+  padding: 0.1rem 0.35rem;
+}
+
+.button {
+  display: inline-block;
+  background: var(--accent);
+  border-radius: 0.6rem;
+  color: #07111f;
+  font-weight: 750;
+  padding: 0.7rem 1rem;
+  text-decoration: none;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f7f9fc;
+    --surface: #ffffff;
+    --text: #152033;
+    --muted: #596579;
+    --accent: #1759bd;
+    --border: #d8dfeb;
+  }
+
+  .button {
+    color: #ffffff;
+  }
+}

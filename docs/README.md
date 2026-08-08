@@ -128,3 +128,29 @@ verification artifact. Production uses remote app-version management with
 - Complete the final Milestone 1 release checklist.
 
 See `ROADMAP.md` and `MILESTONE1_RELEASE_READINESS_V1_TEST.md`.
+
+## Public legal pages
+
+Static, tracking-free legal pages are stored under `docs/legal/` and can be
+published with GitHub Pages.
+
+Recommended GitHub Pages settings:
+
+```text
+Source: Deploy from a branch
+Branch: milestone1sync
+Folder: /docs
+```
+
+Expected public URLs:
+
+```text
+https://srudito.github.io/ProjectRecall/legal/privacy-policy/
+https://srudito.github.io/ProjectRecall/legal/terms-of-service/
+https://srudito.github.io/ProjectRecall/legal/account-deletion/
+```
+
+The first two URLs are intended for the public Expo/EAS variables used by the
+Profile screen. The account-deletion URL is intended for the Google Play Data
+Safety account-deletion field. Confirm all three URLs load over HTTPS without a
+login before configuring production EAS or Play Console.
