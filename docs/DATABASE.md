@@ -19,9 +19,10 @@
 | `timeline_events`        | Unified event stream for the chronological timeline.        |
 | `upload_queue_records`   | Server-side mirror of the mobile upload queue.              |
 | `feature_flags`          | Boolean flags read by clients.                              |
-| `processing_jobs`        | Foundation for future async processing.                     |
-| `transcription_runs`     | Foundation for future transcription pipelines.              |
-| `transcript_versions`    | Foundation for future transcript editing.                   |
+| `processing_jobs`        | Durable batch-processing jobs with leases, retry, and idempotency. |
+| `transcription_runs`     | Provider execution attempts linked to one durable job.      |
+| `transcript_versions`    | Versioned transcript text and language summary.              |
+| `transcript_segments`    | Timestamped, language-aware transcript segments.             |
 
 ## Relationships
 
@@ -37,6 +38,10 @@
   `timeline_events.session_id`.
 - `upload_queue_records (user_id, idempotency_key)` unique.
 - `account_deletion_requests.user_id` is a one-row-per-user primary key and cascades from `auth.users`.
+- `processing_jobs(recording_id, session_id, workspace_id)` is bound to the canonical recording scope.
+- `transcription_runs(processing_job_id, run_attempt)` records retry/provider attempts without overwriting history and cascades with its durable job.
+- `transcript_versions(session_id, version)` is unique, with at most one `is_current=true` row per session. Run-linked versions use one canonical composite FK that clears only `transcription_run_id` when a provider run/job is removed; the version remains session-scoped until its session or workspace is deleted.
+- `transcript_segments(transcript_version_id, segment_index)` is unique and cascades with the version.
 
 ## Constraints & checks
 
@@ -45,6 +50,9 @@ Enum-like check constraints:
 - `default_spoken_language_mode` ∈ `{AUTO_DETECT, SINGLE_LANGUAGE, MULTILINGUAL}`
 - `session.status` — free text but validated by state machine on client.
 - `upload_status` / `queue_status` — bounded set (see migration 0001).
+- processing jobs enforce bounded attempts, active leases, and non-empty idempotency keys.
+- transcription runs enforce provider/model identity, request mode, language cardinality, and positive attempt numbers.
+- transcript segments enforce ordered non-negative timestamps, non-empty text, and confidence in `[0, 1]`.
 
 ## Indexes
 
@@ -58,6 +66,13 @@ indexes:
   `idx_session_user_preferences_starred`
 - `idx_media_session`
 - `idx_timeline_session(session_id, recording_offset_ms)`
+- `idx_processing_jobs_claim(status, next_attempt_at, priority, created_at)`
+- `idx_transcription_runs_session(session_id, created_at)`
+- `idx_transcription_runs_creator(created_by, created_at)`
+- `idx_transcript_versions_one_current(session_id) WHERE is_current`
+- `idx_transcript_versions_run_scope(transcription_run_id, session_id, workspace_id)` for non-null run links
+- `idx_transcript_versions_creator(created_by, created_at)`
+- `idx_transcript_segments_session_time(session_id, start_ms, segment_index)`
 
 ## Row Level Security
 
@@ -85,6 +100,17 @@ direct field dereferences. `0012_profile_account_deletion_gate.sql` adds a
 profile-specific write guard so profile updates are also frozen while the
 durable account-deletion gate is active.
 
+`0013_transcription_foundation_v1.sql` hardens the three disabled foundation
+tables, adds transcript segments, binds every row to canonical recording and
+session scope, replaces the legacy run/version FK with one deterministic
+scoped relationship and explicit run-reference nulling, and replaces broad
+authenticated write policies with read-only member policies. It also defines
+an explicit Data API privilege matrix: no anonymous table access,
+authenticated SELECT-only access, and server-side DML for `service_role`.
+Direct provider/result writes are server-only. Delete Account
+preflight and final-reference checks include all three new `created_by`
+relationships. It also keeps `transcription_enabled=false`.
+
 ## Storage policies
 
 Bucket `session-assets` (private, 500 MB / object). Insert / select / update /
@@ -108,3 +134,19 @@ persistent deletion marker can be removed. This preserves other users' rows in
 the shared database while preventing deleted account metadata from remaining
 in reusable pages or the WAL journal. Automatic `VACUUM` is not used during
 account deletion.
+
+
+## Milestone 2A local SQLite tables
+
+SQLite schema version `10` adds provider-neutral local cache/queue tables. JSON
+arrays and objects are stored as text and parsed by repositories in later
+phases. The schema is intentionally created before any UI is enabled so app
+restart, offline request queuing, session deletion, and Delete Account cleanup
+have a durable contract from the beginning.
+
+The semantic request idempotency key includes contract version, workspace,
+session, recording, spoken-language mode, and normalized language hints. Cloud
+jobs deduplicate that key per workspace. The retained local request queue adds
+`user_id` to its unique constraint, so two users sharing one device can keep the
+same semantic request independently; a changed language request still creates
+a different key.

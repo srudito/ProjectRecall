@@ -26,6 +26,9 @@ interface PreflightRow {
   notes_in_non_owned_workspaces: number;
   bookmarks_in_non_owned_workspaces: number;
   timeline_events_in_non_owned_workspaces: number;
+  processing_jobs_created_in_non_owned_workspaces: number;
+  transcription_runs_created_in_non_owned_workspaces: number;
+  transcript_versions_created_in_non_owned_workspaces: number;
   owned_workspace_content_by_other_users: number;
   user_owned_storage_objects_in_non_owned_workspaces: number;
   user_owned_storage_objects_outside_supported_bucket: number;
@@ -165,6 +168,36 @@ const loadPreflightWithSql = async (
       ) as timeline_events_in_non_owned_workspaces,
 
       (
+        select count(*)::int
+        from public.processing_jobs processing_job
+        join target
+          on processing_job.created_by = target.id
+        where processing_job.workspace_id not in (
+          select id from owned_workspaces
+        )
+      ) as processing_jobs_created_in_non_owned_workspaces,
+
+      (
+        select count(*)::int
+        from public.transcription_runs transcription_run
+        join target
+          on transcription_run.created_by = target.id
+        where transcription_run.workspace_id not in (
+          select id from owned_workspaces
+        )
+      ) as transcription_runs_created_in_non_owned_workspaces,
+
+      (
+        select count(*)::int
+        from public.transcript_versions transcript_version
+        join target
+          on transcript_version.created_by = target.id
+        where transcript_version.workspace_id not in (
+          select id from owned_workspaces
+        )
+      ) as transcript_versions_created_in_non_owned_workspaces,
+
+      (
         (
           select count(*)::int
           from public.projects project
@@ -213,6 +246,27 @@ const loadPreflightWithSql = async (
           join target on true
           where event_record.workspace_id in (select id from owned_workspaces)
             and event_record.created_by <> target.id
+        ) +
+        (
+          select count(*)::int
+          from public.processing_jobs processing_job
+          join target on true
+          where processing_job.workspace_id in (select id from owned_workspaces)
+            and processing_job.created_by <> target.id
+        ) +
+        (
+          select count(*)::int
+          from public.transcription_runs transcription_run
+          join target on true
+          where transcription_run.workspace_id in (select id from owned_workspaces)
+            and transcription_run.created_by <> target.id
+        ) +
+        (
+          select count(*)::int
+          from public.transcript_versions transcript_version
+          join target on true
+          where transcript_version.workspace_id in (select id from owned_workspaces)
+            and transcript_version.created_by <> target.id
         )
       ) as owned_workspace_content_by_other_users,
 
@@ -311,6 +365,12 @@ const loadPreflightWithSql = async (
       row.bookmarks_in_non_owned_workspaces,
     timelineEventsInNonOwnedWorkspaces:
       row.timeline_events_in_non_owned_workspaces,
+    processingJobsCreatedInNonOwnedWorkspaces:
+      row.processing_jobs_created_in_non_owned_workspaces,
+    transcriptionRunsCreatedInNonOwnedWorkspaces:
+      row.transcription_runs_created_in_non_owned_workspaces,
+    transcriptVersionsCreatedInNonOwnedWorkspaces:
+      row.transcript_versions_created_in_non_owned_workspaces,
     ownedWorkspaceContentByOtherUsers:
       row.owned_workspace_content_by_other_users,
     userOwnedStorageObjectsInNonOwnedWorkspaces:
@@ -684,6 +744,23 @@ export const createDeleteAccountDatabase = (databaseUrl: string) => {
           );
         }
 
+        if (expectedWorkspaceIds.length > 0) {
+          // Transcript versions intentionally survive ordinary provider-run or
+          // job deletion through ON DELETE SET NULL. During Delete Account the
+          // durable gate is active, so that referential UPDATE would be
+          // rejected by guard_account_deletion_write if job/session cascades
+          // happen before the session cascade deletes the version. Delete the
+          // owned-workspace versions explicitly first; segment rows cascade,
+          // and the later workspace delete can then remove jobs/runs without
+          // relying on foreign-key trigger ordering.
+          await transactionSql`
+            delete from public.transcript_versions transcript_version
+            where transcript_version.workspace_id in ${transactionSql([
+              ...expectedWorkspaceIds,
+            ])}
+          `;
+        }
+
         const rows = expectedWorkspaceIds.length > 0
           ? await transactionSql<{ id: string }[]>`
               delete from public.workspaces workspace
@@ -718,7 +795,10 @@ export const createDeleteAccountDatabase = (databaseUrl: string) => {
           (select count(*) from public.attachment_events where created_by = ${userId}::uuid) +
           (select count(*) from public.user_notes where created_by = ${userId}::uuid) +
           (select count(*) from public.bookmarks where created_by = ${userId}::uuid) +
-          (select count(*) from public.timeline_events where created_by = ${userId}::uuid)
+          (select count(*) from public.timeline_events where created_by = ${userId}::uuid) +
+          (select count(*) from public.processing_jobs where created_by = ${userId}::uuid) +
+          (select count(*) from public.transcription_runs where created_by = ${userId}::uuid) +
+          (select count(*) from public.transcript_versions where created_by = ${userId}::uuid)
         )::int as row_count
       `;
       return row?.row_count ?? 0;

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-redeclare -- Intentional const/type pairs provide runtime values and matching TypeScript unions. */
 // Explicit domain enums.
 
 export const SpokenLanguageMode = {
@@ -108,3 +109,49 @@ export const AttachmentEventType = {
   ASSET_REMOVED: "asset_removed",
 } as const;
 export type AttachmentEventType = (typeof AttachmentEventType)[keyof typeof AttachmentEventType];
+
+export const ProcessingJobStatus = {
+  QUEUED: "queued",
+  LEASED: "leased",
+  PROCESSING: "processing",
+  SUCCEEDED: "succeeded",
+  FAILED: "failed",
+  CANCELLED: "cancelled",
+} as const;
+export type ProcessingJobStatus =
+  (typeof ProcessingJobStatus)[keyof typeof ProcessingJobStatus];
+
+export const TranscriptionRunStatus = {
+  QUEUED: "queued",
+  PROCESSING: "processing",
+  SUCCEEDED: "succeeded",
+  FAILED: "failed",
+  CANCELLED: "cancelled",
+} as const;
+export type TranscriptionRunStatus =
+  (typeof TranscriptionRunStatus)[keyof typeof TranscriptionRunStatus];
+
+export const TranscriptVersionOrigin = {
+  PROVIDER: "provider",
+  USER_EDIT: "user_edit",
+  IMPORT: "import",
+} as const;
+export type TranscriptVersionOrigin =
+  (typeof TranscriptVersionOrigin)[keyof typeof TranscriptVersionOrigin];
+
+export const TranscriptVersionStatus = {
+  DRAFT: "draft",
+  FINAL: "final",
+} as const;
+export type TranscriptVersionStatus =
+  (typeof TranscriptVersionStatus)[keyof typeof TranscriptVersionStatus];
+
+export const TranscriptionRequestStatus = {
+  PENDING: "pending",
+  SUBMITTING: "submitting",
+  SUBMITTED: "submitted",
+  FAILED: "failed",
+  CANCELLED: "cancelled",
+} as const;
+export type TranscriptionRequestStatus =
+  (typeof TranscriptionRequestStatus)[keyof typeof TranscriptionRequestStatus];

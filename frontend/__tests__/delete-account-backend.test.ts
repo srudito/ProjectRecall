@@ -25,6 +25,14 @@ const edgeIndexSource = readFileSync(
   ),
   "utf8",
 );
+const databaseSource = readFileSync(
+  resolve(
+    process.cwd(),
+    "../supabase/functions/delete-account/database.ts",
+  ),
+  "utf8",
+);
+const normalizedDatabaseSource = databaseSource.replace(/\s+/g, " ");
 
 const claims = (
   overrides: Partial<VerifiedUserClaims> = {},
@@ -51,6 +59,9 @@ const preflight = (
   notesInNonOwnedWorkspaces: 0,
   bookmarksInNonOwnedWorkspaces: 0,
   timelineEventsInNonOwnedWorkspaces: 0,
+  processingJobsCreatedInNonOwnedWorkspaces: 0,
+  transcriptionRunsCreatedInNonOwnedWorkspaces: 0,
+  transcriptVersionsCreatedInNonOwnedWorkspaces: 0,
   ownedWorkspaceContentByOtherUsers: 0,
   userOwnedStorageObjectsInNonOwnedWorkspaces: 0,
   userOwnedStorageObjectsOutsideSupportedBucket: 0,
@@ -222,6 +233,109 @@ describe("delete-account backend core", () => {
       "OTHER_USER_STORAGE_INSIDE_OWNED_WORKSPACES",
       "UNOWNED_STORAGE_INSIDE_OWNED_WORKSPACES",
     ]);
+  });
+
+  it("includes transcription actor references in preflight and final-reference SQL", () => {
+    const tables = [
+      ["processing_jobs", "processing_job"],
+      ["transcription_runs", "transcription_run"],
+      ["transcript_versions", "transcript_version"],
+    ] as const;
+
+    for (const [tableName, alias] of tables) {
+      expect(normalizedDatabaseSource).toContain(
+        `from public.${tableName} ${alias} join target on ${alias}.created_by = target.id where ${alias}.workspace_id not in ( select id from owned_workspaces )`,
+      );
+      expect(normalizedDatabaseSource).toContain(
+        `from public.${tableName} ${alias} join target on true where ${alias}.workspace_id in (select id from owned_workspaces) and ${alias}.created_by <> target.id`,
+      );
+      expect(normalizedDatabaseSource).toContain(
+        `(select count(*) from public.${tableName} where created_by =`,
+      );
+    }
+
+    expect(normalizedDatabaseSource).toContain(
+      "processing_jobs_created_in_non_owned_workspaces",
+    );
+    expect(normalizedDatabaseSource).toContain(
+      "transcription_runs_created_in_non_owned_workspaces",
+    );
+    expect(normalizedDatabaseSource).toContain(
+      "transcript_versions_created_in_non_owned_workspaces",
+    );
+    expect(normalizedDatabaseSource).toContain(
+      ") as owned_workspace_content_by_other_users",
+    );
+  });
+
+  it("deletes owned-workspace transcript versions before workspace cascades", () => {
+    const transcriptVersionDelete = normalizedDatabaseSource.indexOf(
+      "delete from public.transcript_versions transcript_version where transcript_version.workspace_id in",
+    );
+    const workspaceDelete = normalizedDatabaseSource.indexOf(
+      "delete from public.workspaces workspace where workspace.owner_user_id",
+    );
+
+    expect(transcriptVersionDelete).toBeGreaterThanOrEqual(0);
+    expect(workspaceDelete).toBeGreaterThan(transcriptVersionDelete);
+  });
+
+  it.each([
+    "processingJobsCreatedInNonOwnedWorkspaces",
+    "transcriptionRunsCreatedInNonOwnedWorkspaces",
+    "transcriptVersionsCreatedInNonOwnedWorkspaces",
+  ] as const)(
+    "blocks %s before destructive cleanup",
+    async (field) => {
+      const removeStoragePaths = jest.fn<
+        Promise<void>,
+        [readonly string[]]
+      >(async (_paths) => undefined);
+      const deleteOwnedWorkspacesIfStillSafe = jest.fn(async () => [
+        WORKSPACE_ID,
+      ]);
+      const deleteAuthUser = jest.fn(async () => "deleted" as const);
+      const deps = dependencies({
+        beginDeletionAttempt: jest.fn(async () =>
+          attempt({ [field]: 1 }, undefined, false),
+        ),
+        removeStoragePaths,
+        deleteOwnedWorkspacesIfStillSafe,
+        deleteAuthUser,
+      });
+
+      await expect(
+        executeDeleteAccount(
+          {
+            userId: USER_ID,
+            requestId: REQUEST_ID,
+            claims: claims(),
+            confirmation: "DELETE",
+            now: NOW,
+          },
+          deps,
+        ),
+      ).rejects.toMatchObject({
+        code: "ACCOUNT_DELETION_BLOCKED",
+        status: 409,
+        blockers: ["CROSS_WORKSPACE_CONTENT"],
+        gateActive: false,
+      });
+
+      expect(removeStoragePaths).not.toHaveBeenCalled();
+      expect(deleteOwnedWorkspacesIfStillSafe).not.toHaveBeenCalled();
+      expect(deleteAuthUser).not.toHaveBeenCalled();
+    },
+  );
+
+  it("blocks other-user content in an owned workspace before deletion", () => {
+    expect(
+      getDeleteAccountBlockers(
+        preflight({
+          ownedWorkspaceContentByOtherUsers: 1,
+        }),
+      ),
+    ).toContain("OWNED_WORKSPACE_CONTENT_BY_OTHER_USERS");
   });
 
   it("blocks user-owned files in unsupported Storage buckets before deletion", async () => {

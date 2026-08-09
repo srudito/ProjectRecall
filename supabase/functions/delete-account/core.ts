@@ -87,6 +87,9 @@ export interface DeleteAccountPreflight {
   notesInNonOwnedWorkspaces: number;
   bookmarksInNonOwnedWorkspaces: number;
   timelineEventsInNonOwnedWorkspaces: number;
+  processingJobsCreatedInNonOwnedWorkspaces: number;
+  transcriptionRunsCreatedInNonOwnedWorkspaces: number;
+  transcriptVersionsCreatedInNonOwnedWorkspaces: number;
   ownedWorkspaceContentByOtherUsers: number;
   userOwnedStorageObjectsInNonOwnedWorkspaces: number;
   userOwnedStorageObjectsOutsideSupportedBucket: number;
@@ -311,7 +314,10 @@ const hasCrossWorkspaceContent = (preflight: DeleteAccountPreflight): boolean =>
   preflight.attachmentEventsInNonOwnedWorkspaces > 0 ||
   preflight.notesInNonOwnedWorkspaces > 0 ||
   preflight.bookmarksInNonOwnedWorkspaces > 0 ||
-  preflight.timelineEventsInNonOwnedWorkspaces > 0;
+  preflight.timelineEventsInNonOwnedWorkspaces > 0 ||
+  preflight.processingJobsCreatedInNonOwnedWorkspaces > 0 ||
+  preflight.transcriptionRunsCreatedInNonOwnedWorkspaces > 0 ||
+  preflight.transcriptVersionsCreatedInNonOwnedWorkspaces > 0;
 
 export const getDeleteAccountBlockers = (
   preflight: DeleteAccountPreflight,

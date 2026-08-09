@@ -3150,6 +3150,26 @@ export const hardDeleteLocalSessionData = async (
               ))`,
       [sessionId, sessionId, sessionId, sessionId, sessionId],
     );
+    await db.runAsync(
+      `DELETE FROM local_transcript_segments WHERE session_id = ?`,
+      [sessionId],
+    );
+    await db.runAsync(
+      `DELETE FROM local_transcript_versions WHERE session_id = ?`,
+      [sessionId],
+    );
+    await db.runAsync(
+      `DELETE FROM local_transcription_runs WHERE session_id = ?`,
+      [sessionId],
+    );
+    await db.runAsync(
+      `DELETE FROM local_processing_jobs WHERE session_id = ?`,
+      [sessionId],
+    );
+    await db.runAsync(
+      `DELETE FROM local_transcription_request_queue WHERE session_id = ?`,
+      [sessionId],
+    );
     await db.runAsync(`DELETE FROM local_upload_queue WHERE session_id = ?`, [sessionId]);
     await db.runAsync(`DELETE FROM local_timeline_events WHERE session_id = ?`, [sessionId]);
     await db.runAsync(`DELETE FROM local_notes WHERE session_id = ?`, [sessionId]);
@@ -3350,6 +3370,65 @@ export const deleteLocalAccountData = async (input: {
   const sessionClause = sqlInClause(sessionIds);
 
   await runSerializedLocalTransaction(db, async () => {
+    await db.runAsync(
+      `DELETE FROM local_transcript_segments
+        WHERE workspace_id IN ${workspaceClause.sql}
+           OR session_id IN ${sessionClause.sql}
+           OR transcript_version_id IN (
+                SELECT id
+                  FROM local_transcript_versions
+                 WHERE created_by = ?
+              )`,
+      [
+        ...workspaceClause.params,
+        ...sessionClause.params,
+        input.userId,
+      ],
+    );
+    await db.runAsync(
+      `DELETE FROM local_transcript_versions
+        WHERE created_by = ?
+           OR workspace_id IN ${workspaceClause.sql}
+           OR session_id IN ${sessionClause.sql}`,
+      [
+        input.userId,
+        ...workspaceClause.params,
+        ...sessionClause.params,
+      ],
+    );
+    await db.runAsync(
+      `DELETE FROM local_transcription_runs
+        WHERE created_by = ?
+           OR workspace_id IN ${workspaceClause.sql}
+           OR session_id IN ${sessionClause.sql}`,
+      [
+        input.userId,
+        ...workspaceClause.params,
+        ...sessionClause.params,
+      ],
+    );
+    await db.runAsync(
+      `DELETE FROM local_processing_jobs
+        WHERE created_by = ?
+           OR workspace_id IN ${workspaceClause.sql}
+           OR session_id IN ${sessionClause.sql}`,
+      [
+        input.userId,
+        ...workspaceClause.params,
+        ...sessionClause.params,
+      ],
+    );
+    await db.runAsync(
+      `DELETE FROM local_transcription_request_queue
+        WHERE user_id = ?
+           OR workspace_id IN ${workspaceClause.sql}
+           OR session_id IN ${sessionClause.sql}`,
+      [
+        input.userId,
+        ...workspaceClause.params,
+        ...sessionClause.params,
+      ],
+    );
     await db.runAsync(
       `DELETE FROM local_metadata_sync_queue
         WHERE user_id = ?

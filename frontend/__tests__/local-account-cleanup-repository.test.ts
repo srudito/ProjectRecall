@@ -6,6 +6,7 @@ import { runSerializedLocalTransaction } from "@/src/services/sqlite/transaction
 import {
   collectLocalAccountCleanupScope,
   deleteLocalAccountData,
+  hardDeleteLocalSessionData,
 } from "@/src/services/sqlite/repository";
 
 jest.mock("@/src/services/sqlite/schema", () => ({
@@ -128,6 +129,11 @@ describe("SQLite account cleanup scope", () => {
     const sql = runAsync.mock.calls.map(([statement]) => statement).join("\n");
 
     for (const tableName of [
+      "local_transcript_segments",
+      "local_transcript_versions",
+      "local_transcription_runs",
+      "local_processing_jobs",
+      "local_transcription_request_queue",
       "local_metadata_sync_queue",
       "local_upload_queue",
       "local_session_deletion_queue",
@@ -145,6 +151,11 @@ describe("SQLite account cleanup scope", () => {
     }
 
     expect(sql).toContain("WHERE created_by = ?");
+    expect(
+      runAsync.mock.calls.find(([statement]) =>
+        statement.includes("DELETE FROM local_processing_jobs"),
+      )?.[0],
+    ).toContain("WHERE created_by = ?");
     expect(sql).toContain("WHERE added_by = ?");
     expect(sql).toContain("WHERE user_id = ?");
 
@@ -168,6 +179,50 @@ describe("SQLite account cleanup scope", () => {
         /^\s*DELETE\s+FROM\s+local_meta(?:\s|$)/i.test(statement),
     );
     expect(deletesWholeLocalMetaTable).toBe(false);
+  });
+
+  it("removes local transcription rows before hard-deleting a session", async () => {
+    const runAsync = jest.fn(
+      async (_sql: string, _params?: readonly unknown[]): Promise<void> =>
+        undefined,
+    );
+    const db = { runAsync };
+    mockedOpenLocalDb.mockResolvedValue(db as never);
+
+    await hardDeleteLocalSessionData(SESSION_ID);
+
+    const sqlStatements = runAsync.mock.calls.map(([statement]) =>
+      String(statement),
+    );
+    const joinedSql = sqlStatements.join("\n");
+
+    for (const tableName of [
+      "local_transcript_segments",
+      "local_transcript_versions",
+      "local_transcription_runs",
+      "local_processing_jobs",
+      "local_transcription_request_queue",
+    ]) {
+      expect(joinedSql).toContain(`DELETE FROM ${tableName}`);
+    }
+
+    const sessionDeleteIndex = sqlStatements.findIndex((statement) =>
+      statement.includes("DELETE FROM local_sessions"),
+    );
+
+    for (const tableName of [
+      "local_transcript_segments",
+      "local_transcript_versions",
+      "local_transcription_runs",
+      "local_processing_jobs",
+      "local_transcription_request_queue",
+    ]) {
+      expect(
+        sqlStatements.findIndex((statement) =>
+          statement.includes(`DELETE FROM ${tableName}`),
+        ),
+      ).toBeLessThan(sessionDeleteIndex);
+    }
   });
 
   it("fails closed when the WAL cannot be truncated after scoped cleanup", async () => {

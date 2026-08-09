@@ -102,8 +102,11 @@ describe("local SQLite migration runner", () => {
 
     const result = await runMigrations(db, MIGRATIONS);
 
-    expect(LATEST_LOCAL_SCHEMA_VERSION).toBe(9);
-    expect(result).toEqual({ appliedVersions: [3, 4, 5, 6, 7, 8, 9], finalVersion: 9 });
+    expect(LATEST_LOCAL_SCHEMA_VERSION).toBe(10);
+    expect(result).toEqual({
+      appliedVersions: [3, 4, 5, 6, 7, 8, 9, 10],
+      finalVersion: 10,
+    });
     expect(
       state.executed.some((sql) => sql.includes("upsert:project:")),
     ).toBe(true);
@@ -114,7 +117,10 @@ describe("local SQLite migration runner", () => {
 
     const result = await runMigrations(db, MIGRATIONS);
 
-    expect(result).toEqual({ appliedVersions: [4, 5, 6, 7, 8, 9], finalVersion: 9 });
+    expect(result).toEqual({
+      appliedVersions: [4, 5, 6, 7, 8, 9, 10],
+      finalVersion: 10,
+    });
     expect(
       state.executed.some((sql) =>
         sql.includes("ALTER TABLE local_sessions ADD COLUMN last_synced_at"),
@@ -133,7 +139,10 @@ describe("local SQLite migration runner", () => {
 
     const result = await runMigrations(db, MIGRATIONS);
 
-    expect(result).toEqual({ appliedVersions: [5, 6, 7, 8, 9], finalVersion: 9 });
+    expect(result).toEqual({
+      appliedVersions: [5, 6, 7, 8, 9, 10],
+      finalVersion: 10,
+    });
     expect(
       state.executed.some((sql) =>
         sql.includes("ALTER TABLE local_notes ADD COLUMN last_synced_at"),
@@ -158,7 +167,10 @@ describe("local SQLite migration runner", () => {
 
     const result = await runMigrations(db, MIGRATIONS);
 
-    expect(result).toEqual({ appliedVersions: [6, 7, 8, 9], finalVersion: 9 });
+    expect(result).toEqual({
+      appliedVersions: [6, 7, 8, 9, 10],
+      finalVersion: 10,
+    });
     expect(
       state.executed.some((sql) =>
         sql.includes("idx_recordings_session_unique"),
@@ -172,13 +184,15 @@ describe("local SQLite migration runner", () => {
     ).toBe(true);
   });
 
-
   it("adds media evidence upload and timeline synchronization at version 7", async () => {
     const { db, state } = createFakeDb(6);
 
     const result = await runMigrations(db, MIGRATIONS);
 
-    expect(result).toEqual({ appliedVersions: [7, 8, 9], finalVersion: 9 });
+    expect(result).toEqual({
+      appliedVersions: [7, 8, 9, 10],
+      finalVersion: 10,
+    });
     expect(
       state.executed.some((sql) => sql.includes("upload:media_asset:")),
     ).toBe(true);
@@ -190,13 +204,15 @@ describe("local SQLite migration runner", () => {
     ).toBe(true);
   });
 
-
   it("adds durable cloud-aware session deletion at version 8", async () => {
     const { db, state } = createFakeDb(7);
 
     const result = await runMigrations(db, MIGRATIONS);
 
-    expect(result).toEqual({ appliedVersions: [8, 9], finalVersion: 9 });
+    expect(result).toEqual({
+      appliedVersions: [8, 9, 10],
+      finalVersion: 10,
+    });
     expect(
       state.executed.some((sql) =>
         sql.includes("CREATE TABLE IF NOT EXISTS local_session_deletion_queue"),
@@ -221,7 +237,10 @@ describe("local SQLite migration runner", () => {
 
     const result = await runMigrations(db, MIGRATIONS);
 
-    expect(result).toEqual({ appliedVersions: [9], finalVersion: 9 });
+    expect(result).toEqual({
+      appliedVersions: [9, 10],
+      finalVersion: 10,
+    });
     expect(
       state.executed.some((sql) =>
         sql.includes(
@@ -234,6 +253,121 @@ describe("local SQLite migration runner", () => {
         sql.includes("idx_session_preferences_user_starred"),
       ),
     ).toBe(true);
+  });
+
+  it("adds the durable local transcription foundation at version 10", async () => {
+    const { db, state } = createFakeDb(9);
+
+    const result = await runMigrations(db, MIGRATIONS);
+
+    expect(result).toEqual({ appliedVersions: [10], finalVersion: 10 });
+
+    for (const tableName of [
+      "local_processing_jobs",
+      "local_transcription_runs",
+      "local_transcript_versions",
+      "local_transcript_segments",
+      "local_transcription_request_queue",
+    ]) {
+      expect(
+        state.executed.some((sql) =>
+          sql.includes(`CREATE TABLE IF NOT EXISTS ${tableName}`),
+        ),
+      ).toBe(true);
+    }
+
+    expect(
+      state.executed.some((sql) =>
+        sql.includes("UNIQUE(processing_job_id, run_attempt)"),
+      ),
+    ).toBe(true);
+    expect(
+      state.executed.some((sql) =>
+        sql.includes("idx_local_transcript_versions_current"),
+      ),
+    ).toBe(true);
+    expect(
+      state.executed.some((sql) =>
+        sql.includes("idx_local_transcription_request_next"),
+      ),
+    ).toBe(true);
+    expect(
+      state.executed.some((sql) =>
+        sql.includes("CHECK(attempt_count <= max_attempts)"),
+      ),
+    ).toBe(true);
+    expect(
+      state.executed.some((sql) =>
+        sql.includes("status NOT IN ('leased','processing')"),
+      ),
+    ).toBe(true);
+    const requestQueueDdl = state.executed.find((sql) =>
+      sql.includes(
+        "CREATE TABLE IF NOT EXISTS local_transcription_request_queue",
+      ),
+    );
+    expect(requestQueueDdl).toContain(
+      "UNIQUE(user_id, workspace_id, idempotency_key)",
+    );
+    expect(requestQueueDdl).not.toMatch(
+      /UNIQUE\(workspace_id, idempotency_key\)/,
+    );
+    expect(
+      state.executed.some((sql) =>
+        sql.includes(
+          "ON local_transcription_request_queue(user_id, queue_status",
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      state.executed.some((sql) =>
+        sql.includes(
+          "ON local_transcription_request_queue(user_id, session_id",
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps identical semantic transcription requests independent per local user", async () => {
+    const { db, state } = createFakeDb(9);
+
+    await runMigrations(db, MIGRATIONS);
+
+    const requestQueueDdl = state.executed.find((sql) =>
+      sql.includes(
+        "CREATE TABLE IF NOT EXISTS local_transcription_request_queue",
+      ),
+    );
+
+    expect(requestQueueDdl).toBeDefined();
+
+    const uniqueMatch = requestQueueDdl?.match(/UNIQUE\(([^)]+)\)/);
+    expect(uniqueMatch?.[1]).toBeDefined();
+
+    const uniqueColumns = (uniqueMatch?.[1] ?? "")
+      .split(",")
+      .map((column) => column.trim());
+
+    expect(uniqueColumns).toEqual([
+      "user_id",
+      "workspace_id",
+      "idempotency_key",
+    ]);
+
+    const semanticRequest = {
+      workspace_id: "workspace-1",
+      idempotency_key: "batch-transcription:v1:shared-request",
+    };
+    const uniqueKeyFor = (userId: string): string =>
+      JSON.stringify(
+        uniqueColumns?.map((column) =>
+          column === "user_id"
+            ? userId
+            : semanticRequest[column as keyof typeof semanticRequest],
+        ),
+      );
+
+    expect(uniqueKeyFor("user-a")).not.toBe(uniqueKeyFor("user-b"));
   });
 
   it("rejects duplicate migration versions", async () => {

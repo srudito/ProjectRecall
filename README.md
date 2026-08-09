@@ -8,10 +8,10 @@ Supabase synchronization.
 
 ## Current status
 
-Milestone 1 feature development is complete. The current release-closure pass
-covers Android backup policy, permission minimization, reproducible build tool
-versions, public legal/support configuration, version display, and final
-release verification. Milestone 2 transcription has not started.
+Milestone 1 engineering and production-binary verification are complete.
+Milestone 2A now establishes the provider-neutral batch-transcription data,
+queue, scope, and retry contracts while keeping the transcription feature flag
+disabled. No mobile code calls a transcription provider yet.
 
 ## Source of truth
 

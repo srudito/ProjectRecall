@@ -31,6 +31,9 @@ Perform each of these with two accounts (A and B) after applying migrations:
 | 9 | User B reads User A's media assets                              | ❌       |
 | 10 | User B modifies User A's notes / bookmarks                     | ❌       |
 | 11 | User B deletes User A's data                                   | ❌       |
+| 12 | Workspace member reads scoped transcription status/transcript rows | ✅       |
+| 13 | Authenticated mobile client directly inserts transcript results     | ❌       |
+| 14 | User B reads User A's processing jobs or transcripts                | ❌       |
 
 ## Storage privacy
 
@@ -101,3 +104,38 @@ Every accepted upload passes `services/files/validation.ts`:
   profile rejects Supabase secret/service-role, privileged, malformed, and
   placeholder frontend keys. OAuth client secrets, JWT secrets, database
   passwords, and signing credentials remain server-side only.
+
+## Batch transcription foundation security
+
+- `transcription_enabled` remains false throughout Milestone 2A.
+- Mobile request preparation accepts only synchronized recordings whose private
+  Storage path matches the canonical workspace/session/recording scope.
+- Stable idempotency keys are derived from non-secret identifiers and normalized
+  language settings; local file URIs and provider credentials are excluded.
+- Authenticated clients have read-only access to workspace-visible processing
+  jobs, provider runs, transcript versions, and transcript segments. Migration
+  `0013` explicitly removes anonymous access, grants authenticated SELECT only,
+  and grants server-side DML to the PostgreSQL `service_role`; the role name in
+  SQL is not a credential, and its secret key remains backend-only. A reviewed
+  server worker will write results in Phase 2B.
+- Provider API keys, webhook secrets, privileged Supabase keys, and signed input
+  URLs must remain server-side and must never be written to job payloads,
+  provider metadata, safe error fields, mobile logs, or `EXPO_PUBLIC_*`.
+- Durable jobs use bounded retries and active leases. Each provider attempt is
+  stored separately so retry history is not overwritten.
+- Recording, job, run, version, and segment rows are bound through composite
+  scope constraints to prevent cross-workspace identifier substitution. The
+  legacy single-column run/version FK is removed so one deterministic composite
+  FK clears only the nullable run reference when a run/job is removed, while
+  session/workspace cascades still delete versions and segments.
+- Delete Account preflight and final-reference checks include transcription
+  creator relationships. Rows created by the deleting user in non-owned
+  workspaces, or by other users in an owned workspace, block before destructive
+  Storage/workspace/Auth cleanup begins.
+- New local transcription tables participate in session deletion and scoped
+  Delete Account cleanup before parent session/profile rows are removed. Local
+  request uniqueness is user-scoped on shared devices; cloud job idempotency
+  remains workspace-scoped.
+- Transcription request preparation rejects prefix-only and non-canonical
+  private Storage keys, including empty, dot, dot-dot, backslash, NUL, and
+  edge-whitespace object-path segments.

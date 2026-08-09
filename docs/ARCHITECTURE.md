@@ -1,38 +1,40 @@
 # Architecture
 
-Project Recall Milestone 1 is a two-tier mobile + backend architecture with
-Supabase as the cloud data platform.
+Project Recall is a local-first mobile application with Supabase as the cloud
+data platform. Milestone 2A adds a provider-neutral batch-transcription control
+plane without enabling transcription or calling an AI provider.
 
 ## Layers
 
-```
-┌───────────────────────────────────────────────┐
-│  Mobile (Expo React Native + expo-router)     │
-│  ├─ Screens (app/*)                           │
-│  ├─ Providers (Theme, i18n, Query, Keyboard)  │
-│  ├─ Stores (zustand: auth, recording)         │
-│  ├─ Services                                  │
-│  │  ├─ recording/  (state machine, offset)    │
-│  │  ├─ session/    (CRUD + timeline events)   │
-│  │  ├─ files/      (validation, sanitisation) │
-│  │  ├─ language/   (precedence, validation)   │
-│  │  ├─ timeline/   (ordering)                 │
-│  │  ├─ upload-queue/ (backoff, idempotency)   │
-│  │  ├─ sqlite/     (durable local metadata)   │
-│  │  └─ supabase/   (auth, client)             │
-│  └─ Domain (enums, Zod models, error codes)   │
-├───────────────────────────────────────────────┤
-│  Backend (FastAPI /api/v1)                    │
-│  ├─ /health                                   │
-│  ├─ /config    (public runtime config)        │
-│  ├─ /me        (JWT-verified whoami)          │
-│  └─ Supabase JWT verification helper          │
-├───────────────────────────────────────────────┤
-│  Supabase (managed)                           │
-│  ├─ Auth        (email/password + triggers)   │
-│  ├─ Postgres    (schema + RLS)                │
-│  └─ Storage     (private `session-assets`)    │
-└───────────────────────────────────────────────┘
+```text
+┌─────────────────────────────────────────────────────────┐
+│  Mobile (Expo React Native + expo-router)               │
+│  ├─ Screens (app/*)                                     │
+│  ├─ Providers (Theme, i18n, Query, Keyboard)            │
+│  ├─ Stores (zustand: auth, recording)                   │
+│  ├─ Services                                            │
+│  │  ├─ recording/     state machine and offsets         │
+│  │  ├─ session/       CRUD and timeline events          │
+│  │  ├─ files/         validation and sanitisation       │
+│  │  ├─ language/      precedence and validation         │
+│  │  ├─ transcription/ provider-neutral request contract │
+│  │  ├─ upload-queue/  backoff and idempotency            │
+│  │  ├─ sqlite/        durable local metadata/queues     │
+│  │  └─ supabase/      Auth and data repositories        │
+│  └─ Domain (enums, Zod models, error codes)             │
+├─────────────────────────────────────────────────────────┤
+│  Backend (FastAPI /api/v1)                              │
+│  ├─ /health                                             │
+│  ├─ /config    public runtime config                    │
+│  ├─ /me        JWT-verified whoami                      │
+│  └─ Supabase JWT verification helper                    │
+├─────────────────────────────────────────────────────────┤
+│  Supabase (managed)                                     │
+│  ├─ Auth        email/password + provider metadata      │
+│  ├─ Postgres    schema, RLS, durable processing state   │
+│  ├─ Storage     private `session-assets`                │
+│  └─ Edge Functions (Delete Account; future job intake)  │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ## Mobile architecture
@@ -42,50 +44,72 @@ Supabase as the cloud data platform.
 - **Theme** is a pure token layer (`src/theme/tokens.ts`) exposed through a
   provider that supports light/dark/system.
 - **i18n** wraps `i18n-js` with a namespaced translator and English fallback.
-  `Localization.getLocales()` seeds the initial value; user choice persists via
-  `@/src/utils/storage`.
-- **State**: `zustand` for local UI state (auth session, recording snapshot);
-  `@tanstack/react-query` reserved for cloud fetches.
+- **State** uses `zustand` for local UI/auth/recording state.
+- **Cloud query support** uses `@tanstack/react-query` where appropriate.
 
 ## Local persistence
 
-- `expo-sqlite` for durable metadata (`local_sessions`, `local_notes`,
-  `local_bookmarks`, `local_media_assets`, `local_timeline_events`,
-  `local_upload_queue`, etc.).
-- Files (recording audio, images, videos, documents) live on disk in the
-  application-controlled directory (`FileSystem.documentDirectory + sessions/<id>/…`).
-- The same UUIDs are used locally and in Supabase so uploads can reconcile.
+- `expo-sqlite` stores durable metadata, sync queues, deletion queues, and the
+  Milestone 2A transcription request/cache tables.
+- Files live under the application-controlled document directory.
+- Stable UUIDs are reused locally and in Supabase so offline work can reconcile
+  without generating duplicate cloud entities.
+- SQLite migration version `10` creates:
+  - `local_processing_jobs`;
+  - `local_transcription_runs`;
+  - `local_transcript_versions`;
+  - `local_transcript_segments`;
+  - `local_transcription_request_queue`.
+- Session deletion and scoped Delete Account cleanup remove these tables'
+  relevant rows before deleting parent sessions or profiles.
 
 ## Cloud synchronisation
 
-- Upload queue is persisted in SQLite. On sync:
-  1. Attempt file upload to `session-assets/{workspace_id}/{session_id}/{asset_id}/{filename}`.
-  2. Insert metadata row via Supabase JS with RLS.
-  3. Only when both succeed and the session/asset row can be re-read is the
-     item marked `synchronized`.
-- Retries use exponential backoff with jitter (`services/upload-queue/backoff.ts`).
-- Idempotency keys prevent duplicates across retries.
+- Upload queues are persisted in SQLite.
+- Recording/evidence files are uploaded to private Storage before metadata is
+  considered synchronized.
+- Retries use exponential backoff with jitter.
+- Idempotency keys prevent duplicates across app restarts and safe retries.
 
 ## Authentication flow
 
-1. Root layout initializes `useAuthStore` via `supabase.auth.getSession()` +
-   `onAuthStateChange`. Session tokens are stored in `expo-secure-store`.
-2. `app/index.tsx` redirects to `(auth)/welcome` if unauthenticated and
-   `(tabs)/home` otherwise.
-3. Sign-up triggers a Supabase database trigger that creates the profile,
-   personal workspace, and owner membership atomically.
+1. Root layout initializes auth state through Supabase Auth.
+2. Session tokens are stored in `expo-secure-store`.
+3. Route guards suppress private routes while unauthenticated or during
+   crash-safe account deletion.
+4. Sign-up bootstrap creates a profile, personal workspace, and owner
+   membership atomically.
 
 ## Storage architecture
 
 - Bucket: `session-assets`, private, 500 MB per-object limit.
-- Path convention: `{workspace_id}/{session_id}/{asset_id}/{sanitized_filename}`.
-- RLS policies on `storage.objects` enforce workspace membership by parsing the
-  first folder segment as a UUID and passing it to `public.is_workspace_member`.
+- Path convention:
+  `{workspace_id}/{session_id}/{asset_id}/{sanitized_filename}`.
+- Storage policies enforce active workspace membership and account-deletion
+  write gating.
 
-## Future AI boundary
+## Milestone 2A transcription boundary
 
-- **Nothing** in Milestone 1 calls an AI provider or exposes AI menus.
-- Extension points exist as future foundation tables (`processing_jobs`,
-  `transcription_runs`, `transcript_versions`) and the language metadata fields
-  already on `sessions`.
-- Feature flags gate the corresponding UI in later milestones.
+Phase 2A is a control-plane and data-contract milestone only:
+
+1. A recording must already be marked `synchronized` and have a private Storage
+   path matching its workspace/session/recording scope.
+2. Language hints are normalized before an idempotency key is generated.
+3. The mobile request contract never includes a local file URI, provider key,
+   provider secret, or privileged Supabase credential.
+4. Postgres stores jobs, retry/lease state, provider attempts, transcript
+   versions, and timestamped segments.
+5. Authenticated clients may read workspace-visible processing/transcript data
+   but cannot directly insert, update, or delete those cloud tables.
+6. A reviewed server-side worker in Phase 2B will use privileged server
+   credentials and private Storage access; no provider secret belongs in the
+   mobile bundle or `EXPO_PUBLIC_*`.
+7. The `transcription_enabled` feature flag remains false, so no transcription
+   UI or provider execution path is exposed.
+
+## Future provider execution
+
+Provider selection and execution are intentionally deferred to Phase 2B. The
+worker must claim durable jobs by lease, record each provider attempt, avoid
+holding long-running work inside a mobile request, and write only safe error
+codes/messages to user-visible state. Provider credentials remain server-side.

@@ -760,6 +760,156 @@ const v9Ddl: readonly string[] = [
      ON local_session_user_preferences(session_id)`,
 ];
 
+// Version 10: provider-neutral batch-transcription cache and durable request queue.
+// The feature flag remains disabled; these tables only establish local-first
+// contracts for later Milestone 2 workers and UI.
+const v10Ddl: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS local_processing_jobs (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    recording_id TEXT NOT NULL,
+    created_by TEXT,
+    job_type TEXT NOT NULL DEFAULT 'batch_transcription'
+      CHECK(job_type = 'batch_transcription'),
+    status TEXT NOT NULL DEFAULT 'queued'
+      CHECK(status IN ('queued','leased','processing','succeeded','failed','cancelled')),
+    idempotency_key TEXT NOT NULL CHECK(length(trim(idempotency_key)) > 0),
+    priority INTEGER NOT NULL DEFAULT 100 CHECK(priority >= 0),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+    max_attempts INTEGER NOT NULL DEFAULT 5 CHECK(max_attempts > 0),
+    next_attempt_at TEXT,
+    lease_owner TEXT,
+    lease_expires_at TEXT,
+    started_at TEXT,
+    completed_at TEXT,
+    cancelled_at TEXT,
+    last_error_code TEXT,
+    last_safe_error TEXT,
+    request_payload TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK(attempt_count <= max_attempts),
+    CHECK(
+      status NOT IN ('leased','processing')
+      OR (lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL)
+    ),
+    UNIQUE(workspace_id, idempotency_key)
+  )`,
+  `CREATE TABLE IF NOT EXISTS local_transcription_runs (
+    id TEXT PRIMARY KEY,
+    processing_job_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    recording_id TEXT NOT NULL,
+    created_by TEXT,
+    run_attempt INTEGER NOT NULL DEFAULT 1 CHECK(run_attempt > 0),
+    provider_key TEXT NOT NULL CHECK(length(trim(provider_key)) > 0),
+    provider_model TEXT NOT NULL CHECK(length(trim(provider_model)) > 0),
+    request_mode TEXT NOT NULL DEFAULT 'AUTO_DETECT'
+      CHECK(request_mode IN ('AUTO_DETECT','SINGLE_LANGUAGE','MULTILINGUAL')),
+    requested_languages TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'queued'
+      CHECK(status IN ('queued','processing','succeeded','failed','cancelled')),
+    provider_job_id TEXT,
+    detected_languages TEXT NOT NULL DEFAULT '[]',
+    primary_detected_language TEXT,
+    language_detection_status TEXT NOT NULL DEFAULT 'NOT_STARTED'
+      CHECK(language_detection_status IN (
+        'NOT_STARTED','DETECTING','DETECTED','PARTIALLY_DETECTED',
+        'USER_CONFIRMED','FAILED'
+      )),
+    provider_metadata TEXT NOT NULL DEFAULT '{}',
+    started_at TEXT,
+    completed_at TEXT,
+    last_error_code TEXT,
+    last_safe_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(processing_job_id, run_attempt)
+  )`,
+  `CREATE TABLE IF NOT EXISTS local_transcript_versions (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    transcription_run_id TEXT,
+    created_by TEXT,
+    version INTEGER NOT NULL CHECK(version > 0),
+    version_origin TEXT NOT NULL DEFAULT 'provider'
+      CHECK(version_origin IN ('provider','user_edit','import')),
+    version_status TEXT NOT NULL DEFAULT 'final'
+      CHECK(version_status IN ('draft','final')),
+    parent_version_id TEXT,
+    plain_text TEXT NOT NULL DEFAULT '',
+    language_summary TEXT NOT NULL DEFAULT '{}',
+    content_checksum_sha256 TEXT CHECK(
+      content_checksum_sha256 IS NULL
+      OR length(content_checksum_sha256) = 64
+    ),
+    is_current INTEGER NOT NULL DEFAULT 0 CHECK(is_current IN (0, 1)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(session_id, version)
+  )`,
+  `CREATE TABLE IF NOT EXISTS local_transcript_segments (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    transcript_version_id TEXT NOT NULL,
+    segment_index INTEGER NOT NULL CHECK(segment_index >= 0),
+    start_ms INTEGER NOT NULL CHECK(start_ms >= 0),
+    end_ms INTEGER NOT NULL CHECK(end_ms >= start_ms),
+    text TEXT NOT NULL CHECK(length(trim(text)) > 0),
+    language_code TEXT,
+    speaker_label TEXT,
+    confidence REAL CHECK(confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
+    provider_segment_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(transcript_version_id, segment_index)
+  )`,
+  `CREATE TABLE IF NOT EXISTS local_transcription_request_queue (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    recording_id TEXT NOT NULL,
+    spoken_language_mode TEXT NOT NULL
+      CHECK(spoken_language_mode IN ('AUTO_DETECT','SINGLE_LANGUAGE','MULTILINGUAL')),
+    expected_spoken_languages TEXT NOT NULL DEFAULT '[]',
+    queue_status TEXT NOT NULL DEFAULT 'pending'
+      CHECK(queue_status IN ('pending','submitting','submitted','failed','cancelled')),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+    max_attempts INTEGER NOT NULL DEFAULT 5 CHECK(max_attempts > 0),
+    next_retry_at TEXT,
+    server_job_id TEXT,
+    last_error_code TEXT,
+    last_safe_error TEXT,
+    idempotency_key TEXT NOT NULL CHECK(length(trim(idempotency_key)) > 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK(attempt_count <= max_attempts),
+    UNIQUE(user_id, workspace_id, idempotency_key)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_local_processing_jobs_claim
+     ON local_processing_jobs(status, next_attempt_at, priority, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_local_processing_jobs_session
+     ON local_processing_jobs(session_id, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_local_transcription_runs_session
+     ON local_transcription_runs(session_id, created_at DESC)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_local_transcription_runs_provider_job
+     ON local_transcription_runs(provider_key, provider_job_id)
+     WHERE provider_job_id IS NOT NULL`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_local_transcript_versions_current
+     ON local_transcript_versions(session_id) WHERE is_current = 1`,
+  `CREATE INDEX IF NOT EXISTS idx_local_transcript_segments_time
+     ON local_transcript_segments(session_id, start_ms, segment_index)`,
+  `CREATE INDEX IF NOT EXISTS idx_local_transcription_request_next
+     ON local_transcription_request_queue(user_id, queue_status, next_retry_at, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_local_transcription_request_session
+     ON local_transcription_request_queue(user_id, session_id, created_at DESC)`,
+];
+
 export const MIGRATIONS: readonly Migration[] = [
   {
     version: 1,
@@ -838,6 +988,15 @@ export const MIGRATIONS: readonly Migration[] = [
     description: "Per-user starred-session preferences and synchronization.",
     up: async ({ db }) => {
       for (const stmt of v9Ddl) {
+        await db.execAsync(stmt);
+      }
+    },
+  },
+  {
+    version: 10,
+    description: "Batch-transcription cache and durable request queue.",
+    up: async ({ db }) => {
+      for (const stmt of v10Ddl) {
         await db.execAsync(stmt);
       }
     },

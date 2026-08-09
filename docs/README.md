@@ -1,4 +1,4 @@
-# Project Recall — Milestone 1
+# Project Recall — Milestone 1 + Milestone 2A foundation
 
 **Tagline:** *Capture every conversation. Remember every detail.*
 
@@ -25,8 +25,11 @@ Supabase.
   cleanup, scoped SQLite/file cleanup, worker quiescence, and restart recovery.
 - English and Bahasa Indonesia localization with key-parity tests.
 
-Milestone 1 does **not** include transcription, OCR, AI summaries, Ask AI,
-embeddings, diarization, billing, advertising, or team collaboration.
+Milestone 1 does **not** include functional transcription, OCR, AI summaries,
+Ask AI, embeddings, diarization, billing, advertising, or team collaboration.
+Milestone 2A adds only the disabled, provider-neutral transcription schema,
+local queue/cache, scope validation, and test contracts. No provider is called
+and no transcription UI is exposed.
 
 ## Repository layout
 
@@ -82,7 +85,9 @@ are missing or still use example/reserved domains.
 ## Supabase migrations
 
 Fresh environments apply migrations in filename order from `0001` through
-`0012`. Existing environments must not rerun or edit applied migrations.
+`0013`. Existing environments must not rerun or edit applied migrations. An
+existing Milestone 1 environment applies only new migration `0013` once after
+review; it must not rerun `0001–0012`.
 
 The development project's remote CLI migration ledger is not authoritative
 because migrations were applied manually through SQL Editor. Do not run
@@ -118,16 +123,25 @@ The preview APK runs without Metro and is the minimum final release-mode
 verification artifact. Production uses remote app-version management with
 `autoIncrement: true`.
 
-## Release gates before Milestone 2
+## Milestone transition
 
-- Configure real support, privacy-policy, and terms URLs in EAS production.
-- Build and test a new native binary after Android backup/permission changes.
-- Inspect the merged Android manifest.
-- Run preview APK regression without Metro.
-- Run a fresh migration smoke test on an isolated project/database.
-- Complete the final Milestone 1 release checklist.
+Milestone 1 engineering, runtime, migration, legal-page, and production-binary
+verification are complete at tag `milestone1-release-candidate-v1`. Google Play
+testing is deferred until the broader product is closer to public release.
 
-See `ROADMAP.md` and `MILESTONE1_RELEASE_READINESS_V1_TEST.md`.
+Milestone 2A is intentionally limited to provider-neutral foundations. Before
+Phase 2B begins:
+
+- review and commit the Milestone 2A patch;
+- smoke-test fresh migrations `0001–0013`, privilege/RLS checks, and
+  transcription behavior in an isolated disposable project;
+- only after the isolated test passes, apply migration `0013` once to the
+  development project;
+- keep `transcription_enabled=false`;
+- do not add provider credentials to mobile/EAS public variables.
+
+See `ROADMAP.md`, `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_IMPLEMENTATION.md`,
+and `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_TEST.md`.
 
 ## Public legal pages
 

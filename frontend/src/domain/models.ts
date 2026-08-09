@@ -4,11 +4,16 @@ import {
   AssetType,
   LanguageDetectionStatus,
   MembershipStatus,
+  ProcessingJobStatus,
   ProjectStatus,
   SessionStatus,
   SpokenLanguageMode,
   TimelineEventType,
+  TranscriptionRequestStatus,
+  TranscriptionRunStatus,
   TranscriptDisplayMode,
+  TranscriptVersionOrigin,
+  TranscriptVersionStatus,
   UploadStatus,
   WorkspaceRole,
   WorkspaceType,
@@ -233,3 +238,207 @@ export const uploadQueueSchema = z.object({
   updated_at: isoTimestampSchema,
 });
 export type UploadQueueRecord = z.infer<typeof uploadQueueSchema>;
+
+export const processingJobSchema = z
+  .object({
+    id: uuidSchema,
+    workspace_id: uuidSchema,
+    session_id: uuidSchema,
+    recording_id: uuidSchema,
+    created_by: uuidSchema.nullable(),
+    job_type: z.literal("batch_transcription"),
+    status: z.enum(
+      Object.values(ProcessingJobStatus) as [
+        ProcessingJobStatus,
+        ...ProcessingJobStatus[],
+      ],
+    ),
+    idempotency_key: z.string().trim().min(1),
+    priority: z.number().int().nonnegative(),
+    attempt_count: z.number().int().nonnegative(),
+    max_attempts: z.number().int().positive(),
+    next_attempt_at: isoTimestampSchema.nullable(),
+    lease_owner: z.string().trim().min(1).nullable(),
+    lease_expires_at: isoTimestampSchema.nullable(),
+    started_at: isoTimestampSchema.nullable(),
+    completed_at: isoTimestampSchema.nullable(),
+    cancelled_at: isoTimestampSchema.nullable(),
+    last_error_code: z.string().nullable(),
+    last_safe_error: z.string().nullable(),
+    request_payload: z.unknown(),
+    created_at: isoTimestampSchema,
+    updated_at: isoTimestampSchema,
+  })
+  .superRefine((job, context) => {
+    if (job.attempt_count > job.max_attempts) {
+      context.addIssue({
+        code: "custom",
+        message: "attempt_count must not exceed max_attempts.",
+        path: ["attempt_count"],
+      });
+    }
+
+    if (
+      (job.status === ProcessingJobStatus.LEASED ||
+        job.status === ProcessingJobStatus.PROCESSING) &&
+      (!job.lease_owner || !job.lease_expires_at)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Active processing jobs require a lease owner and expiry.",
+        path: ["lease_owner"],
+      });
+    }
+  });
+export type ProcessingJob = z.infer<typeof processingJobSchema>;
+
+export const transcriptionRunSchema = z
+  .object({
+    id: uuidSchema,
+    processing_job_id: uuidSchema,
+    workspace_id: uuidSchema,
+    session_id: uuidSchema,
+    recording_id: uuidSchema,
+    created_by: uuidSchema.nullable(),
+    run_attempt: z.number().int().positive(),
+    provider_key: z.string().trim().min(1),
+    provider_model: z.string().trim().min(1),
+    request_mode: z.enum([
+      SpokenLanguageMode.AUTO_DETECT,
+      SpokenLanguageMode.SINGLE_LANGUAGE,
+      SpokenLanguageMode.MULTILINGUAL,
+    ]),
+    requested_languages: z.array(z.string().trim().min(1)),
+    status: z.enum(
+      Object.values(TranscriptionRunStatus) as [
+        TranscriptionRunStatus,
+        ...TranscriptionRunStatus[],
+      ],
+    ),
+    provider_job_id: z.string().nullable(),
+    detected_languages: z.array(z.string().trim().min(1)),
+    primary_detected_language: z.string().nullable(),
+    language_detection_status: z.enum(
+      Object.values(LanguageDetectionStatus) as [
+        LanguageDetectionStatus,
+        ...LanguageDetectionStatus[],
+      ],
+    ),
+    provider_metadata: z.unknown(),
+    started_at: isoTimestampSchema.nullable(),
+    completed_at: isoTimestampSchema.nullable(),
+    last_error_code: z.string().nullable(),
+    last_safe_error: z.string().nullable(),
+    created_at: isoTimestampSchema,
+    updated_at: isoTimestampSchema,
+  })
+  .superRefine((run, context) => {
+    const languageCount = run.requested_languages.length;
+    const validLanguageSelection =
+      run.request_mode === SpokenLanguageMode.AUTO_DETECT ||
+      (run.request_mode === SpokenLanguageMode.SINGLE_LANGUAGE &&
+        languageCount === 1) ||
+      (run.request_mode === SpokenLanguageMode.MULTILINGUAL &&
+        languageCount >= 2);
+
+    if (!validLanguageSelection) {
+      context.addIssue({
+        code: "custom",
+        message: "requested_languages does not match request_mode.",
+        path: ["requested_languages"],
+      });
+    }
+  });
+export type TranscriptionRun = z.infer<typeof transcriptionRunSchema>;
+
+export const transcriptVersionSchema = z.object({
+  id: uuidSchema,
+  workspace_id: uuidSchema,
+  session_id: uuidSchema,
+  transcription_run_id: uuidSchema.nullable(),
+  created_by: uuidSchema.nullable(),
+  version: z.number().int().positive(),
+  version_origin: z.enum(
+    Object.values(TranscriptVersionOrigin) as [
+      TranscriptVersionOrigin,
+      ...TranscriptVersionOrigin[],
+    ],
+  ),
+  version_status: z.enum(
+    Object.values(TranscriptVersionStatus) as [
+      TranscriptVersionStatus,
+      ...TranscriptVersionStatus[],
+    ],
+  ),
+  parent_version_id: uuidSchema.nullable(),
+  plain_text: z.string(),
+  language_summary: z.unknown(),
+  content_checksum_sha256: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/i)
+    .nullable(),
+  is_current: z.boolean(),
+  created_at: isoTimestampSchema,
+  updated_at: isoTimestampSchema,
+});
+export type TranscriptVersion = z.infer<typeof transcriptVersionSchema>;
+
+export const transcriptSegmentSchema = z
+  .object({
+    id: uuidSchema,
+    workspace_id: uuidSchema,
+    session_id: uuidSchema,
+    transcript_version_id: uuidSchema,
+    segment_index: z.number().int().nonnegative(),
+    start_ms: z.number().int().nonnegative(),
+    end_ms: z.number().int().nonnegative(),
+    text: z.string().trim().min(1),
+    language_code: z.string().trim().min(1).nullable(),
+    speaker_label: z.string().trim().min(1).nullable(),
+    confidence: z.number().min(0).max(1).nullable(),
+    provider_segment_id: z.string().nullable(),
+    created_at: isoTimestampSchema,
+    updated_at: isoTimestampSchema,
+  })
+  .refine((segment) => segment.end_ms >= segment.start_ms, {
+    message: "Transcript segment end_ms must be greater than or equal to start_ms.",
+    path: ["end_ms"],
+  });
+export type TranscriptSegment = z.infer<typeof transcriptSegmentSchema>;
+
+export const transcriptionRequestQueueSchema = z
+  .object({
+    id: uuidSchema,
+    user_id: uuidSchema,
+    workspace_id: uuidSchema,
+    session_id: uuidSchema,
+    recording_id: uuidSchema,
+    spoken_language_mode: z.enum([
+      SpokenLanguageMode.AUTO_DETECT,
+      SpokenLanguageMode.SINGLE_LANGUAGE,
+      SpokenLanguageMode.MULTILINGUAL,
+    ]),
+    expected_spoken_languages: z.array(z.string().trim().min(1)),
+    queue_status: z.enum(
+      Object.values(TranscriptionRequestStatus) as [
+        TranscriptionRequestStatus,
+        ...TranscriptionRequestStatus[],
+      ],
+    ),
+    attempt_count: z.number().int().nonnegative(),
+    max_attempts: z.number().int().positive(),
+    next_retry_at: isoTimestampSchema.nullable(),
+    server_job_id: uuidSchema.nullable(),
+    last_error_code: z.string().nullable(),
+    last_safe_error: z.string().nullable(),
+    idempotency_key: z.string().trim().min(1),
+    created_at: isoTimestampSchema,
+    updated_at: isoTimestampSchema,
+  })
+  .refine((request) => request.attempt_count <= request.max_attempts, {
+    message: "attempt_count must not exceed max_attempts.",
+    path: ["attempt_count"],
+  });
+export type TranscriptionRequestQueueRecord = z.infer<
+  typeof transcriptionRequestQueueSchema
+>;
