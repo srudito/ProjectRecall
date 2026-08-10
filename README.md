@@ -9,8 +9,9 @@ Supabase synchronization.
 ## Current status
 
 Milestone 1 engineering and production-binary verification are complete.
-Milestone 2A now establishes the provider-neutral batch-transcription data,
-queue, scope, and retry contracts while keeping the transcription feature flag
+Milestone 2A establishes the provider-neutral batch-transcription data, queue,
+scope, and retry contracts. Milestone 2B.1A adds a server-only AssemblyAI
+Universal-2 adapter foundation while keeping the transcription feature flag
 disabled. No mobile code calls a transcription provider yet.
 
 ## Source of truth

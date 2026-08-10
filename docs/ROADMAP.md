@@ -50,16 +50,37 @@ Implemented in this phase:
 Phase 2A does **not** select or call a transcription provider, expose provider
 credentials, enable transcription UI, or process recordings.
 
-### Phase 2B — one real provider and server worker
+### Phase 2B.1A — AssemblyAI provider adapter foundation
 
-Planned after Phase 2A is reviewed, committed, and migration `0013` is applied
-once in the development environment:
+Implemented without live provider execution:
 
-- server-side `TranscriptionProvider` interface;
-- one real provider implementation;
-- authenticated request endpoint and durable worker claiming;
-- private Storage input access without exposing provider credentials;
-- safe retry, cancellation, polling/webhook handling, and result ingestion.
+- server-only `TranscriptionProvider` interface;
+- AssemblyAI Universal-2 REST adapter;
+- EU endpoint by default with explicit US override only;
+- automatic, single-language, and initial English/Indonesian code-switching
+  request mapping;
+- optional speaker diarization;
+- polling status normalization;
+- safe retry/error classification;
+- word-level canonical transcript normalization;
+- idempotent provider-artifact deletion;
+- mock transport and secret-leakage tests;
+- `transcription_enabled=false` remains enforced.
+
+This phase does not create an AssemblyAI key, worker, request endpoint, Cron,
+signed-URL generator, migration `0014`, mobile UI, or live provider spend.
+
+### Phase 2B.1B — authenticated intake and durable polling worker
+
+Planned after Phase 2B.1A source review:
+
+- atomic job request and claim database functions;
+- authenticated transcription request Edge Function;
+- server-only polling worker;
+- short-lived private Storage signed URL generation after lease claim;
+- atomic transcript/version/segment ingestion;
+- provider artifact cleanup retry;
+- no Cron schedule until a controlled live smoke test passes.
 
 ### Later Milestone 2 phases
 

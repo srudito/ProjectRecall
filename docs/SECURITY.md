@@ -139,3 +139,49 @@ Every accepted upload passes `services/files/validation.ts`:
 - Transcription request preparation rejects prefix-only and non-canonical
   private Storage keys, including empty, dot, dot-dot, backslash, NUL, and
   edge-whitespace object-path segments.
+
+## AssemblyAI adapter security
+
+- Milestone 2B.1A adds only a pure server-side adapter. It does not read an
+  AssemblyAI secret, deploy a worker, create a Cron schedule, or call the live
+  provider.
+- The default provider endpoint is the AssemblyAI EU asynchronous transcription
+  endpoint. An arbitrary base URL cannot be supplied to the adapter.
+- Provider input URLs must use HTTPS and cannot contain URL credentials,
+  fragments, edge whitespace, raw controls, or malformed Unicode. Provider fetches
+  reject redirects so EU routing cannot silently cross an origin or region.
+- A future worker may generate a short-lived Supabase private Storage signed URL
+  only after acquiring a durable job lease. The adapter sends the URL to the
+  provider but never returns it in submission, polling, transcript, metadata,
+  error, or cleanup results.
+- Provider Authorization values and raw provider error bodies are never logged
+  or included in safe errors. Fixed error codes/messages are stored instead.
+- Ambiguous submission transport/server outcomes are not marked automatically
+  retryable, because a lost response can occur after AssemblyAI accepted and
+  billed the transcript. A future worker must reconcile or require manual review
+  rather than creating a duplicate provider job. If the response contains a valid
+  provider job ID, the safe failure preserves it for polling or cleanup.
+- AssemblyAI job results are validated before ingestion. Malformed IDs, states,
+  unsafe timestamps, malformed Unicode, inconsistent language metadata, unverified
+  model provenance, confidence values, or word payloads fail closed rather than
+  creating partial canonical transcripts.
+- Explicit language hints and manual selections are deliberately limited to
+  reviewed English variants, Bahasa Indonesia, and exactly English/Indonesian
+  code switching. `AUTO_DETECT` without hints intentionally allows the
+  provider's supported-language detection and records the provider-reported
+  language; unsupported explicit configurations fail before any provider
+  request.
+- Provider retry hints are treated as untrusted scheduling metadata. Only RFC
+  decimal seconds or IMF-fixdate values yielding at most 24 hours are accepted;
+  malformed or larger values are ignored in favor of bounded local backoff.
+- Parsed but incomplete polling envelopes are retryable because polling is
+  idempotent, while mismatched provider IDs and unknown statuses fail closed.
+  Known provider job IDs are normalized and preserved on polling/cleanup
+  failures for durable reconciliation.
+- Provider-side transcript deletion is idempotent. HTTP `404` is treated as an
+  already-absent cleanup result; a `2xx` response must still confirm the exact
+  requested transcript ID. Malformed or mismatched confirmations remain retryable
+  and preserve the provider job ID for a future cleanup queue.
+- The AssemblyAI API key must later be stored only as a Supabase Edge Function
+  project secret. It must never use an `EXPO_PUBLIC_*` name or appear in Git,
+  migrations, job payloads, provider metadata, logs, or client responses.

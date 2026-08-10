@@ -1,4 +1,4 @@
-# Project Recall — Milestone 1 + Milestone 2A foundation
+# Project Recall — Milestone 1 + Milestone 2 transcription foundations
 
 **Tagline:** *Capture every conversation. Remember every detail.*
 
@@ -27,9 +27,10 @@ Supabase.
 
 Milestone 1 does **not** include functional transcription, OCR, AI summaries,
 Ask AI, embeddings, diarization, billing, advertising, or team collaboration.
-Milestone 2A adds only the disabled, provider-neutral transcription schema,
-local queue/cache, scope validation, and test contracts. No provider is called
-and no transcription UI is exposed.
+Milestone 2A adds the disabled, provider-neutral transcription schema, local
+queue/cache, scope validation, and test contracts. Milestone 2B.1A adds only a
+server-side AssemblyAI Universal-2 adapter with EU-default routing and mock
+transport tests. No live provider is called and no transcription UI is exposed.
 
 ## Repository layout
 
@@ -129,19 +130,20 @@ Milestone 1 engineering, runtime, migration, legal-page, and production-binary
 verification are complete at tag `milestone1-release-candidate-v1`. Google Play
 testing is deferred until the broader product is closer to public release.
 
-Milestone 2A is intentionally limited to provider-neutral foundations. Before
-Phase 2B begins:
+Milestone 2A is complete at tag
+`milestone2a-transcription-foundation-v1`. Milestone 2B.1A is intentionally
+limited to a pure server-side provider adapter:
 
-- review and commit the Milestone 2A patch;
-- smoke-test fresh migrations `0001–0013`, privilege/RLS checks, and
-  transcription behavior in an isolated disposable project;
-- only after the isolated test passes, apply migration `0013` once to the
-  development project;
 - keep `transcription_enabled=false`;
-- do not add provider credentials to mobile/EAS public variables.
+- do not create a provider secret yet;
+- do not add migration `0014`, a worker, Cron, or mobile UI;
+- keep signed private Storage URLs out of durable state and logs;
+- require final source review before any provider account or live request.
 
 See `ROADMAP.md`, `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_IMPLEMENTATION.md`,
-and `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_TEST.md`.
+`MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_TEST.md`,
+`MILESTONE2B1_ASSEMBLYAI_PROVIDER_ADAPTER_V1_IMPLEMENTATION.md`, and
+`MILESTONE2B1_ASSEMBLYAI_PROVIDER_ADAPTER_V1_TEST.md`.
 
 ## Public legal pages
 

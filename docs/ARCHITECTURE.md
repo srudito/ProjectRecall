@@ -2,7 +2,8 @@
 
 Project Recall is a local-first mobile application with Supabase as the cloud
 data platform. Milestone 2A adds a provider-neutral batch-transcription control
-plane without enabling transcription or calling an AI provider.
+plane. Milestone 2B.1A adds a pure server-side AssemblyAI adapter without
+enabling transcription or making a live provider call.
 
 ## Layers
 
@@ -107,9 +108,37 @@ Phase 2A is a control-plane and data-contract milestone only:
 7. The `transcription_enabled` feature flag remains false, so no transcription
    UI or provider execution path is exposed.
 
+## Milestone 2B.1A provider boundary
+
+The first provider adapter lives under:
+
+```text
+supabase/functions/_shared/transcription/
+```
+
+The provider-neutral module defines submission, polling, normalization, safe
+failure, and cleanup contracts. The AssemblyAI adapter:
+
+1. defaults to `https://api.eu.assemblyai.com`;
+2. pins `speech_models=["universal-2"]`;
+3. maps initial English/Bahasa Indonesia language configurations;
+4. optionally enables speaker diarization;
+5. normalizes completed word results into canonical timestamped segments;
+6. excludes signed URLs, API keys, and raw provider responses from returned
+   metadata;
+7. treats provider deletion as idempotent.
+
+The adapter receives an API key through constructor injection but does not read
+environment variables itself. This keeps the pure provider module testable and
+prevents an accidental mobile import from implicitly acquiring provider
+credentials.
+
 ## Future provider execution
 
-Provider selection and execution are intentionally deferred to Phase 2B. The
-worker must claim durable jobs by lease, record each provider attempt, avoid
-holding long-running work inside a mobile request, and write only safe error
-codes/messages to user-visible state. Provider credentials remain server-side.
+Phase 2B.1B will create the authenticated request endpoint and durable polling
+worker. The worker must claim durable jobs by lease, generate a short-lived
+private Storage signed URL only after claim, record each provider attempt,
+avoid holding long-running work inside a mobile request, and write only stable
+safe error codes/messages to user-visible state. Provider credentials remain
+server-side. No Cron schedule or feature activation occurs until controlled
+live verification passes.
