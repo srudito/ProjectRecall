@@ -889,6 +889,7 @@ language plpgsql
 security definer
 set search_path = public, extensions, pg_temp
 as $$
+#variable_conflict use_column
 declare
   actor_id uuid := auth.uid();
   recording_record record;

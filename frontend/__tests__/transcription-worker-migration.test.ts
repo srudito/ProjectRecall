@@ -106,6 +106,24 @@ describe("Milestone 2B.1B transcription request/worker migration", () => {
     );
   });
 
+  it("resolves PL/pgSQL output-column ambiguity in request idempotency insert", () => {
+    const requestStart = normalized.indexOf(
+      "create or replace function public.request_transcription_job",
+    );
+    const requestEnd = normalized.indexOf(
+      "revoke all on function public.request_transcription_job(uuid)",
+      requestStart,
+    );
+    const requestBody = normalized.slice(requestStart, requestEnd);
+
+    expect(requestStart).toBeGreaterThanOrEqual(0);
+    expect(requestEnd).toBeGreaterThan(requestStart);
+    expect(requestBody).toContain("#variable_conflict use_column");
+    expect(requestBody).toContain(
+      "on conflict (workspace_id, idempotency_key) do nothing",
+    );
+  });
+
   it("claims work atomically, reuses queued runs, and bounds recovery", () => {
     expect(normalized).toContain("for update skip locked");
     expect(normalized).toContain(

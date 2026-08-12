@@ -85,6 +85,7 @@ declare
 
   recovery_result record;
   gate_error text;
+  caught_error_message text;
   metadata_rejected boolean := false;
   metadata_case_rejected boolean;
   metadata_case jsonb;
@@ -128,7 +129,8 @@ begin
   begin
     perform public.request_transcription_job(gen_random_uuid());
   exception when others then
-    if message_text = 'TRANSCRIPTION_FEATURE_DISABLED' then
+    get stacked diagnostics caught_error_message = message_text;
+    if caught_error_message = 'TRANSCRIPTION_FEATURE_DISABLED' then
       feature_disabled_rejected := true;
     else
       raise;
@@ -222,7 +224,8 @@ begin
       30
     );
   exception when others then
-    if message_text = 'TRANSCRIPTION_FAILURE_INPUT_INVALID' then
+    get stacked diagnostics caught_error_message = message_text;
+    if caught_error_message = 'TRANSCRIPTION_FAILURE_INPUT_INVALID' then
       null_retryable_rejected := true;
     else
       raise;
@@ -282,7 +285,7 @@ begin
     workspace_id, user_id, role, membership_status
   ) values (
     workspace_id, secondary_actor_id, 'member', 'active'
-  ) on conflict (workspace_id, user_id) do update
+  ) on conflict on constraint workspace_members_workspace_id_user_id_key do update
     set membership_status = 'active', role = 'member';
 
   insert into public.sessions (
@@ -351,7 +354,7 @@ begin
     workspace_id, user_id, role, membership_status
   ) values (
     workspace_id, secondary_actor_id, 'member', 'active'
-  ) on conflict (workspace_id, user_id) do update
+  ) on conflict on constraint workspace_members_workspace_id_user_id_key do update
     set membership_status = 'active', role = 'member';
 
   insert into public.sessions (
@@ -431,7 +434,7 @@ begin
     workspace_id, user_id, role, membership_status
   ) values (
     workspace_id, secondary_actor_id, 'member', 'active'
-  ) on conflict (workspace_id, user_id) do update
+  ) on conflict on constraint workspace_members_workspace_id_user_id_key do update
     set membership_status = 'active', role = 'member';
 
   insert into public.sessions (
@@ -514,7 +517,7 @@ begin
     workspace_id, user_id, role, membership_status
   ) values (
     workspace_id, secondary_actor_id, 'member', 'active'
-  ) on conflict (workspace_id, user_id) do update
+  ) on conflict on constraint workspace_members_workspace_id_user_id_key do update
     set membership_status = 'active', role = 'member';
 
   insert into public.sessions (
@@ -602,7 +605,7 @@ begin
     workspace_id, user_id, role, membership_status
   ) values (
     workspace_id, secondary_actor_id, 'member', 'active'
-  ) on conflict (workspace_id, user_id) do update
+  ) on conflict on constraint workspace_members_workspace_id_user_id_key do update
     set membership_status = 'active', role = 'member';
 
   insert into public.sessions (
@@ -764,22 +767,38 @@ begin
   end if;
   raise notice 'TRANSCRIPTION_AMBIGUOUS_SUBMISSION_RECOVERY_CHECK=PASS';
 
-  if not public.confirm_transcription_provider_absence(ambiguous_claim.run_id)
-     or not exists (
-       select 1 from public.transcription_runs
-       where id = ambiguous_claim.run_id
-         and provider_job_id is null
-         and provider_cleanup_status = 'succeeded'
-         and provider_cleanup_completed_at is not null
-     )
-     or not exists (
-       select 1 from public.processing_jobs
-       where id = ambiguous_job_id
-         and status = 'queued'
-         and completed_at is null
-         and next_attempt_at is not null
-     ) then
-    raise exception using errcode = 'P0001', message = 'TRANSCRIPTION_CONFIRMED_ABSENCE_CHECK_FAILED';
+  if public.confirm_transcription_provider_absence(
+       ambiguous_claim.run_id
+     ) is not true then
+    raise exception using
+      errcode = 'P0001',
+      message = 'TRANSCRIPTION_CONFIRMED_ABSENCE_FUNCTION_FALSE';
+  end if;
+
+  if not exists (
+    select 1
+    from public.transcription_runs
+    where id = ambiguous_claim.run_id
+      and provider_job_id is null
+      and provider_cleanup_status = 'succeeded'
+      and provider_cleanup_completed_at is not null
+  ) then
+    raise exception using
+      errcode = 'P0001',
+      message = 'TRANSCRIPTION_CONFIRMED_ABSENCE_RUN_NOT_CLEAN';
+  end if;
+
+  if not exists (
+    select 1
+    from public.processing_jobs
+    where id = ambiguous_job_id
+      and status = 'queued'
+      and completed_at is null
+      and next_attempt_at is not null
+  ) then
+    raise exception using
+      errcode = 'P0001',
+      message = 'TRANSCRIPTION_CONFIRMED_ABSENCE_JOB_NOT_REQUEUED';
   end if;
   raise notice 'TRANSCRIPTION_CONFIRMED_ABSENCE_CHECK=PASS';
 
@@ -991,7 +1010,8 @@ begin
       '30addc6b7cb964fcc87804aea7c968dcc97ab5f0c15ebb9b2926ad60c89999ea'
     );
   exception when others then
-    if message_text = 'TRANSCRIPTION_RESULT_INVALID' then
+    get stacked diagnostics caught_error_message = message_text;
+    if caught_error_message = 'TRANSCRIPTION_RESULT_INVALID' then
       completion_intent_rejected := true;
     else
       raise;
