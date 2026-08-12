@@ -5,6 +5,7 @@ import {
   LanguageDetectionStatus,
   MembershipStatus,
   ProcessingJobStatus,
+  ProviderCleanupStatus,
   ProjectStatus,
   SessionStatus,
   SpokenLanguageMode,
@@ -278,14 +279,17 @@ export const processingJobSchema = z
       });
     }
 
+    const leaseIsComplete =
+      job.lease_owner !== null && job.lease_expires_at !== null;
+    const leaseIsEmpty =
+      job.lease_owner === null && job.lease_expires_at === null;
     if (
-      (job.status === ProcessingJobStatus.LEASED ||
-        job.status === ProcessingJobStatus.PROCESSING) &&
-      (!job.lease_owner || !job.lease_expires_at)
+      (job.status === ProcessingJobStatus.LEASED && !leaseIsComplete) ||
+      (job.status !== ProcessingJobStatus.LEASED && !leaseIsEmpty)
     ) {
       context.addIssue({
         code: "custom",
-        message: "Active processing jobs require a lease owner and expiry.",
+        message: "Only leased processing jobs may retain a complete lease.",
         path: ["lease_owner"],
       });
     }
@@ -303,6 +307,7 @@ export const transcriptionRunSchema = z
     run_attempt: z.number().int().positive(),
     provider_key: z.string().trim().min(1),
     provider_model: z.string().trim().min(1),
+    provider_region: z.enum(["EU", "US"]),
     request_mode: z.enum([
       SpokenLanguageMode.AUTO_DETECT,
       SpokenLanguageMode.SINGLE_LANGUAGE,
@@ -325,6 +330,22 @@ export const transcriptionRunSchema = z
       ],
     ),
     provider_metadata: z.unknown(),
+    submission_started_at: isoTimestampSchema.nullable(),
+    provider_processing_deadline_at: isoTimestampSchema.nullable(),
+    provider_cleanup_status: z.enum(
+      Object.values(ProviderCleanupStatus) as [
+        ProviderCleanupStatus,
+        ...ProviderCleanupStatus[],
+      ],
+    ),
+    provider_cleanup_attempt_count: z.number().int().nonnegative(),
+    provider_cleanup_max_attempts: z.number().int().positive(),
+    provider_cleanup_next_attempt_at: isoTimestampSchema.nullable(),
+    provider_cleanup_lease_owner: z.string().trim().min(1).nullable(),
+    provider_cleanup_lease_expires_at: isoTimestampSchema.nullable(),
+    provider_cleanup_completed_at: isoTimestampSchema.nullable(),
+    provider_cleanup_last_error_code: z.string().nullable(),
+    provider_cleanup_last_safe_error: z.string().nullable(),
     started_at: isoTimestampSchema.nullable(),
     completed_at: isoTimestampSchema.nullable(),
     last_error_code: z.string().nullable(),
@@ -335,17 +356,116 @@ export const transcriptionRunSchema = z
   .superRefine((run, context) => {
     const languageCount = run.requested_languages.length;
     const validLanguageSelection =
-      run.request_mode === SpokenLanguageMode.AUTO_DETECT ||
+      (run.request_mode === SpokenLanguageMode.AUTO_DETECT &&
+        languageCount <= 2) ||
       (run.request_mode === SpokenLanguageMode.SINGLE_LANGUAGE &&
         languageCount === 1) ||
       (run.request_mode === SpokenLanguageMode.MULTILINGUAL &&
-        languageCount >= 2);
+        languageCount === 2);
 
     if (!validLanguageSelection) {
       context.addIssue({
         code: "custom",
         message: "requested_languages does not match request_mode.",
         path: ["requested_languages"],
+      });
+    }
+
+    if (
+      run.provider_cleanup_attempt_count > run.provider_cleanup_max_attempts
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "provider cleanup attempts must remain bounded.",
+        path: ["provider_cleanup_attempt_count"],
+      });
+    }
+
+    const cleanupLeaseIsComplete =
+      run.provider_cleanup_lease_owner !== null &&
+      run.provider_cleanup_lease_expires_at !== null;
+    const cleanupLeaseIsEmpty =
+      run.provider_cleanup_lease_owner === null &&
+      run.provider_cleanup_lease_expires_at === null;
+    const cleanupHasProviderJob = run.provider_job_id !== null;
+
+    const cleanupStateIsValid =
+      (run.provider_cleanup_status === ProviderCleanupStatus.NOT_REQUIRED &&
+        run.provider_cleanup_next_attempt_at === null &&
+        cleanupLeaseIsEmpty &&
+        run.provider_cleanup_completed_at === null) ||
+      (run.provider_cleanup_status === ProviderCleanupStatus.PENDING &&
+        cleanupHasProviderJob &&
+        run.provider_cleanup_next_attempt_at !== null &&
+        cleanupLeaseIsEmpty &&
+        run.provider_cleanup_completed_at === null) ||
+      (run.provider_cleanup_status === ProviderCleanupStatus.LEASED &&
+        cleanupHasProviderJob &&
+        run.provider_cleanup_next_attempt_at === null &&
+        cleanupLeaseIsComplete &&
+        run.provider_cleanup_completed_at === null) ||
+      (run.provider_cleanup_status === ProviderCleanupStatus.SUCCEEDED &&
+        run.provider_cleanup_next_attempt_at === null &&
+        cleanupLeaseIsEmpty &&
+        run.provider_cleanup_completed_at !== null) ||
+      (run.provider_cleanup_status === ProviderCleanupStatus.MANUAL_REVIEW &&
+        run.provider_cleanup_next_attempt_at === null &&
+        cleanupLeaseIsEmpty &&
+        run.provider_cleanup_completed_at === null);
+
+    if (!cleanupStateIsValid) {
+      context.addIssue({
+        code: "custom",
+        message: "Provider cleanup fields do not match the durable cleanup status.",
+        path: ["provider_cleanup_status"],
+      });
+    }
+
+    if (
+      run.provider_job_id !== null &&
+      (run.status === TranscriptionRunStatus.SUCCEEDED ||
+        run.status === TranscriptionRunStatus.FAILED ||
+        run.status === TranscriptionRunStatus.CANCELLED) &&
+      run.provider_cleanup_status === ProviderCleanupStatus.NOT_REQUIRED
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Terminal provider runs with an artifact require durable cleanup state.",
+        path: ["provider_cleanup_status"],
+      });
+    }
+
+    const hasProviderJob = run.provider_job_id !== null;
+    const executionStateIsValid =
+      (run.status === TranscriptionRunStatus.QUEUED &&
+        !hasProviderJob &&
+        run.submission_started_at === null &&
+        run.provider_processing_deadline_at === null &&
+        run.completed_at === null) ||
+      (run.status === TranscriptionRunStatus.SUBMITTING &&
+        !hasProviderJob &&
+        run.submission_started_at !== null &&
+        run.provider_processing_deadline_at === null &&
+        run.completed_at === null) ||
+      (run.status === TranscriptionRunStatus.PROCESSING &&
+        hasProviderJob &&
+        run.submission_started_at !== null &&
+        run.provider_processing_deadline_at !== null &&
+        run.completed_at === null) ||
+      (run.status === TranscriptionRunStatus.SUCCEEDED &&
+        hasProviderJob &&
+        run.submission_started_at !== null &&
+        run.provider_processing_deadline_at !== null &&
+        run.completed_at !== null) ||
+      ((run.status === TranscriptionRunStatus.FAILED ||
+        run.status === TranscriptionRunStatus.CANCELLED) &&
+        run.completed_at !== null);
+
+    if (!executionStateIsValid) {
+      context.addIssue({
+        code: "custom",
+        message: "Transcription run fields do not match the durable status.",
+        path: ["status"],
       });
     }
   });

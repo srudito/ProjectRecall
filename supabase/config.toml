@@ -2,3 +2,9 @@ project_id = "project-recall"
 
 [functions.delete-account]
 verify_jwt = true
+
+[functions.transcription-request]
+verify_jwt = true
+
+[functions.transcription-worker]
+verify_jwt = false

@@ -131,19 +131,29 @@ verification are complete at tag `milestone1-release-candidate-v1`. Google Play
 testing is deferred until the broader product is closer to public release.
 
 Milestone 2A is complete at tag
-`milestone2a-transcription-foundation-v1`. Milestone 2B.1A is intentionally
-limited to a pure server-side provider adapter:
+`milestone2a-transcription-foundation-v1`, and Milestone 2B.1A is complete at
+`milestone2b1a-assemblyai-provider-adapter-v1`. Milestone 2B.1B now contains the
+source foundation for authenticated intake and a durable server worker, but it
+remains rollout-disabled:
 
 - keep `transcription_enabled=false`;
-- do not create a provider secret yet;
-- do not add migration `0014`, a worker, Cron, or mobile UI;
+- migration `0014` must not be applied before disposable migration/behavior
+  verification and source approval;
+- do not create an AssemblyAI secret or worker token yet;
+- do not create a Cron schedule or run a live provider request yet;
 - keep signed private Storage URLs out of durable state and logs;
-- require final source review before any provider account or live request.
+- after migration `0014`, deploy/bundle the updated `delete-account` function
+  from the same commit before deploying request/worker functions or admitting
+  provider work;
+- deploy/bundle request and worker functions only after the rollout gates in the
+  2B.1B test plan pass.
 
 See `ROADMAP.md`, `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_IMPLEMENTATION.md`,
 `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_TEST.md`,
-`MILESTONE2B1_ASSEMBLYAI_PROVIDER_ADAPTER_V1_IMPLEMENTATION.md`, and
-`MILESTONE2B1_ASSEMBLYAI_PROVIDER_ADAPTER_V1_TEST.md`.
+`MILESTONE2B1_ASSEMBLYAI_PROVIDER_ADAPTER_V1_IMPLEMENTATION.md`,
+`MILESTONE2B1_ASSEMBLYAI_PROVIDER_ADAPTER_V1_TEST.md`,
+`MILESTONE2B1_DURABLE_REQUEST_WORKER_V1_IMPLEMENTATION.md`, and
+`MILESTONE2B1_DURABLE_REQUEST_WORKER_V1_TEST.md`.
 
 ## Public legal pages
 

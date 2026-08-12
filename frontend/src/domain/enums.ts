@@ -123,6 +123,7 @@ export type ProcessingJobStatus =
 
 export const TranscriptionRunStatus = {
   QUEUED: "queued",
+  SUBMITTING: "submitting",
   PROCESSING: "processing",
   SUCCEEDED: "succeeded",
   FAILED: "failed",
@@ -130,6 +131,16 @@ export const TranscriptionRunStatus = {
 } as const;
 export type TranscriptionRunStatus =
   (typeof TranscriptionRunStatus)[keyof typeof TranscriptionRunStatus];
+
+export const ProviderCleanupStatus = {
+  NOT_REQUIRED: "not_required",
+  PENDING: "pending",
+  LEASED: "leased",
+  SUCCEEDED: "succeeded",
+  MANUAL_REVIEW: "manual_review",
+} as const;
+export type ProviderCleanupStatus =
+  (typeof ProviderCleanupStatus)[keyof typeof ProviderCleanupStatus];
 
 export const TranscriptVersionOrigin = {
   PROVIDER: "provider",

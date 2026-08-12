@@ -116,8 +116,9 @@ Every accepted upload passes `services/files/validation.ts`:
   jobs, provider runs, transcript versions, and transcript segments. Migration
   `0013` explicitly removes anonymous access, grants authenticated SELECT only,
   and grants server-side DML to the PostgreSQL `service_role`; the role name in
-  SQL is not a credential, and its secret key remains backend-only. A reviewed
-  server worker will write results in Phase 2B.
+  SQL is not a credential, and its secret key remains backend-only. Milestone
+  2B.1B adds the reviewed server request/worker source boundary, but rollout and
+  provider secrets remain disabled until its validation gates pass.
 - Provider API keys, webhook secrets, privileged Supabase keys, and signed input
   URLs must remain server-side and must never be written to job payloads,
   provider metadata, safe error fields, mobile logs, or `EXPO_PUBLIC_*`.
@@ -150,17 +151,19 @@ Every accepted upload passes `services/files/validation.ts`:
 - Provider input URLs must use HTTPS and cannot contain URL credentials,
   fragments, edge whitespace, raw controls, or malformed Unicode. Provider fetches
   reject redirects so EU routing cannot silently cross an origin or region.
-- A future worker may generate a short-lived Supabase private Storage signed URL
-  only after acquiring a durable job lease. The adapter sends the URL to the
-  provider but never returns it in submission, polling, transcript, metadata,
-  error, or cleanup results.
+- The 2B.1B worker generates a bounded short-lived Supabase private Storage
+  signed URL only after acquiring a durable job lease. The URL is created before
+  the durable `submitting` transition, is never persisted, and the adapter never
+  returns it in submission, polling, transcript, metadata, error, or cleanup
+  results.
 - Provider Authorization values and raw provider error bodies are never logged
   or included in safe errors. Fixed error codes/messages are stored instead.
 - Ambiguous submission transport/server outcomes are not marked automatically
   retryable, because a lost response can occur after AssemblyAI accepted and
-  billed the transcript. A future worker must reconcile or require manual review
-  rather than creating a duplicate provider job. If the response contains a valid
-  provider job ID, the safe failure preserves it for polling or cleanup.
+  billed the transcript. The durable worker requires reconciliation/manual
+  review rather than creating a duplicate provider job. A no-ID ambiguous run
+  may re-use the same immutable job only after explicit provider-absence
+  confirmation; a known provider job ID is preserved for polling or cleanup.
 - AssemblyAI job results are validated before ingestion. Malformed IDs, states,
   unsafe timestamps, malformed Unicode, inconsistent language metadata, unverified
   model provenance, confidence values, or word payloads fail closed rather than
@@ -182,6 +185,15 @@ Every accepted upload passes `services/files/validation.ts`:
   already-absent cleanup result; a `2xx` response must still confirm the exact
   requested transcript ID. Malformed or mismatched confirmations remain retryable
   and preserve the provider job ID for a future cleanup queue.
+- Direct recording/session deletion is blocked while a run is submitting,
+  processing, or awaiting provider cleanup. Membership loss removes only
+  provider-safe request/terminal graphs with no linked transcript version; if
+  cleanup finishes after membership was removed, the safe failed graph is
+  pruned only after provider absence/deletion is confirmed.
+- The reviewed `delete-account` Edge Function must be redeployed from the same
+  commit after migration `0014` and before any live transcription work. Its
+  provider-state preflight runs before private Storage deletion; database delete
+  guards remain the final defense against losing unresolved provider state.
 - The AssemblyAI API key must later be stored only as a Supabase Edge Function
   project secret. It must never use an `EXPO_PUBLIC_*` name or appear in Git,
   migrations, job payloads, provider metadata, logs, or client responses.

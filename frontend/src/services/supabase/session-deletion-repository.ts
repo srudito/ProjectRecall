@@ -4,6 +4,34 @@ import { getSupabase } from "./client";
 import { ProjectSyncError } from "./project-repository";
 import { normalizeSessionSyncError } from "./session-repository";
 
+const normalizeSessionDeletionError = (
+  error: unknown,
+  status?: number | null,
+): ProjectSyncError => {
+  const message =
+    error && typeof error === "object" && "message" in error
+      ? String((error as { message?: unknown }).message ?? "")
+      : String(error ?? "");
+
+  if (message.includes("TRANSCRIPTION_PROVIDER_SUBMISSION_IN_PROGRESS")) {
+    return new ProjectSyncError(
+      "TRANSCRIPTION_PROVIDER_SUBMISSION_IN_PROGRESS",
+      "Transcription submission is still in progress. Session cleanup will retry automatically.",
+      { retryable: true, status, cause: error },
+    );
+  }
+
+  if (message.includes("TRANSCRIPTION_PROVIDER_CLEANUP_REQUIRED")) {
+    return new ProjectSyncError(
+      "TRANSCRIPTION_PROVIDER_CLEANUP_REQUIRED",
+      "Transcription provider cleanup is still pending. Session cleanup will retry automatically.",
+      { retryable: true, status, cause: error },
+    );
+  }
+
+  return normalizeSessionSyncError(error, status);
+};
+
 const requireAuthenticatedClient = async (
   clientOverride?: SupabaseClient,
 ): Promise<SupabaseClient> => {
@@ -47,6 +75,6 @@ export const deleteRemoteSessionCascade = async (input: {
     .select("id");
 
   if (response.error) {
-    throw normalizeSessionSyncError(response.error, response.status);
+    throw normalizeSessionDeletionError(response.error, response.status);
   }
 };

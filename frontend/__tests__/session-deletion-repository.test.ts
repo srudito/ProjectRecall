@@ -63,4 +63,33 @@ describe("remote session deletion repository", () => {
       deleteRemoteSessionCascade({ sessionId, workspaceId, client }),
     ).resolves.toBeUndefined();
   });
+
+  it.each([
+    "TRANSCRIPTION_PROVIDER_SUBMISSION_IN_PROGRESS",
+    "TRANSCRIPTION_PROVIDER_CLEANUP_REQUIRED",
+  ] as const)("maps database gate %s to a retryable safe error", async (code) => {
+    const select = jest.fn(async () => ({
+      data: null,
+      error: { code: "P0001", message: code },
+      status: 400,
+    }));
+    const eqWorkspace = jest.fn(() => ({ select }));
+    const eqId = jest.fn(() => ({ eq: eqWorkspace }));
+    const remove = jest.fn(() => ({ eq: eqId }));
+    const from = jest.fn(() => ({ delete: remove }));
+    const client = {
+      auth: {
+        getSession: jest.fn(async () => ({
+          data: { session: { user: { id: userId } } },
+          error: null,
+        })),
+      },
+      from,
+    } as unknown as SupabaseClient;
+
+    await expect(
+      deleteRemoteSessionCascade({ sessionId, workspaceId, client }),
+    ).rejects.toMatchObject({ code, retryable: true });
+  });
+
 });

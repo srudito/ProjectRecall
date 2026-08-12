@@ -24,11 +24,14 @@ describe("Milestone 2 batch-transcription foundation migration", () => {
       .filter((fileName) => fileName.endsWith(".sql"))
       .sort();
 
-    expect(migrationFiles[migrationFiles.length - 2]).toBe(
+    expect(migrationFiles[migrationFiles.length - 3]).toBe(
       "0012_profile_account_deletion_gate.sql",
     );
-    expect(migrationFiles[migrationFiles.length - 1]).toBe(
+    expect(migrationFiles[migrationFiles.length - 2]).toBe(
       "0013_transcription_foundation_v1.sql",
+    );
+    expect(migrationFiles[migrationFiles.length - 1]).toBe(
+      "0014_transcription_request_worker_v1.sql",
     );
   });
 

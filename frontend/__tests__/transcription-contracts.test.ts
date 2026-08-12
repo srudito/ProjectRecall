@@ -257,7 +257,7 @@ describe("batch transcription request contract", () => {
 });
 
 describe("transcription domain validation", () => {
-  it("requires leases for active processing jobs", () => {
+  it("allows leases only while processing jobs are leased", () => {
     const baseJob = {
       id: "55555555-5555-4555-8555-555555555555",
       workspace_id: WORKSPACE_ID,
@@ -283,10 +283,24 @@ describe("transcription domain validation", () => {
       updated_at: NOW,
     };
 
-    expect(processingJobSchema.safeParse(baseJob).success).toBe(false);
+    expect(processingJobSchema.safeParse(baseJob).success).toBe(true);
     expect(
       processingJobSchema.safeParse({
         ...baseJob,
+        lease_owner: "worker-1",
+        lease_expires_at: NOW,
+      }).success,
+    ).toBe(false);
+    expect(
+      processingJobSchema.safeParse({
+        ...baseJob,
+        status: ProcessingJobStatus.LEASED,
+      }).success,
+    ).toBe(false);
+    expect(
+      processingJobSchema.safeParse({
+        ...baseJob,
+        status: ProcessingJobStatus.LEASED,
         lease_owner: "worker-1",
         lease_expires_at: NOW,
       }).success,

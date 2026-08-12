@@ -13,6 +13,8 @@ export type ProjectSyncErrorCode =
   | "REMOTE_ACCESS_DENIED"
   | "REMOTE_CONFLICT"
   | "REMOTE_VALIDATION_ERROR"
+  | "TRANSCRIPTION_PROVIDER_SUBMISSION_IN_PROGRESS"
+  | "TRANSCRIPTION_PROVIDER_CLEANUP_REQUIRED"
   | "REMOTE_UNKNOWN_ERROR";
 
 export class ProjectSyncError extends Error {
@@ -84,6 +86,10 @@ const safeMessageForCode = (code: ProjectSyncErrorCode): string => {
       return "The project could not be synchronized because of a data conflict.";
     case "REMOTE_VALIDATION_ERROR":
       return "The project data was rejected by the cloud database.";
+    case "TRANSCRIPTION_PROVIDER_SUBMISSION_IN_PROGRESS":
+      return "Transcription submission is still in progress. Session cleanup will retry automatically.";
+    case "TRANSCRIPTION_PROVIDER_CLEANUP_REQUIRED":
+      return "Transcription provider cleanup is still pending. Session cleanup will retry automatically.";
     default:
       return "The project could not be synchronized.";
   }

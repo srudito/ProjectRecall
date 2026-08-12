@@ -111,6 +111,19 @@ Direct provider/result writes are server-only. Delete Account
 preflight and final-reference checks include all three new `created_by`
 relationships. It also keeps `transcription_enabled=false`.
 
+
+`0014_transcription_request_worker_v1.sql` adds the disabled durable execution
+state machine: authenticated request RPC, one-active-job-per-recording index,
+`FOR UPDATE SKIP LOCKED` worker claims, `submitting` state before provider POST,
+finite polling deadlines, atomic transcript/version/segment completion, and
+provider-artifact cleanup leases. It guards direct processing-job/recording and
+session deletion while provider state is unresolved, removes safe provider-free
+terminal graphs after membership loss, and re-queues an ambiguous no-ID
+submission only after explicit provider-absence confirmation. Digest-using
+security-definer RPCs resolve `pgcrypto` through the fixed `extensions` search
+path. Worker RPCs remain `service_role` only and the migration ends with
+`transcription_enabled=false`.
+
 ## Storage policies
 
 Bucket `session-assets` (private, 500 MB / object). Insert / select / update /

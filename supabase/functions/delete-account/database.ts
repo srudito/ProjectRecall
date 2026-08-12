@@ -29,6 +29,8 @@ interface PreflightRow {
   processing_jobs_created_in_non_owned_workspaces: number;
   transcription_runs_created_in_non_owned_workspaces: number;
   transcript_versions_created_in_non_owned_workspaces: number;
+  transcription_provider_submission_in_flight: number;
+  transcription_provider_cleanup_required: number;
   owned_workspace_content_by_other_users: number;
   user_owned_storage_objects_in_non_owned_workspaces: number;
   user_owned_storage_objects_outside_supported_bucket: number;
@@ -196,6 +198,36 @@ const loadPreflightWithSql = async (
           select id from owned_workspaces
         )
       ) as transcript_versions_created_in_non_owned_workspaces,
+
+      (
+        select count(*)::int
+        from public.transcription_runs transcription_run
+        join target on true
+        where (
+          transcription_run.created_by = target.id
+          or transcription_run.workspace_id in (select id from owned_workspaces)
+        )
+          and transcription_run.status in ('submitting','processing')
+      ) as transcription_provider_submission_in_flight,
+
+      (
+        select count(*)::int
+        from public.transcription_runs transcription_run
+        join target on true
+        where (
+          transcription_run.created_by = target.id
+          or transcription_run.workspace_id in (select id from owned_workspaces)
+        )
+          and (
+            transcription_run.provider_cleanup_status in (
+              'pending','leased','manual_review'
+            )
+            or (
+              transcription_run.provider_job_id is not null
+              and transcription_run.provider_cleanup_status <> 'succeeded'
+            )
+          )
+      ) as transcription_provider_cleanup_required,
 
       (
         (
@@ -371,6 +403,10 @@ const loadPreflightWithSql = async (
       row.transcription_runs_created_in_non_owned_workspaces,
     transcriptVersionsCreatedInNonOwnedWorkspaces:
       row.transcript_versions_created_in_non_owned_workspaces,
+    transcriptionProviderSubmissionInFlight:
+      row.transcription_provider_submission_in_flight,
+    transcriptionProviderCleanupRequired:
+      row.transcription_provider_cleanup_required,
     ownedWorkspaceContentByOtherUsers:
       row.owned_workspace_content_by_other_users,
     userOwnedStorageObjectsInNonOwnedWorkspaces:

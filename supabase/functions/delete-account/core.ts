@@ -23,7 +23,9 @@ export type DeleteAccountBlocker =
   | "USER_STORAGE_IN_NON_OWNED_WORKSPACES"
   | "USER_STORAGE_OUTSIDE_SUPPORTED_BUCKET"
   | "OTHER_USER_STORAGE_INSIDE_OWNED_WORKSPACES"
-  | "UNOWNED_STORAGE_INSIDE_OWNED_WORKSPACES";
+  | "UNOWNED_STORAGE_INSIDE_OWNED_WORKSPACES"
+  | "TRANSCRIPTION_PROVIDER_SUBMISSION_IN_FLIGHT"
+  | "TRANSCRIPTION_PROVIDER_CLEANUP_REQUIRED";
 
 export class DeleteAccountDomainError extends Error {
   readonly code: DeleteAccountErrorCode;
@@ -90,6 +92,8 @@ export interface DeleteAccountPreflight {
   processingJobsCreatedInNonOwnedWorkspaces: number;
   transcriptionRunsCreatedInNonOwnedWorkspaces: number;
   transcriptVersionsCreatedInNonOwnedWorkspaces: number;
+  transcriptionProviderSubmissionInFlight: number;
+  transcriptionProviderCleanupRequired: number;
   ownedWorkspaceContentByOtherUsers: number;
   userOwnedStorageObjectsInNonOwnedWorkspaces: number;
   userOwnedStorageObjectsOutsideSupportedBucket: number;
@@ -347,6 +351,12 @@ export const getDeleteAccountBlockers = (
   }
   if (preflight.storageObjectsInOwnedWorkspacesWithoutOwner > 0) {
     blockers.push("UNOWNED_STORAGE_INSIDE_OWNED_WORKSPACES");
+  }
+  if (preflight.transcriptionProviderSubmissionInFlight > 0) {
+    blockers.push("TRANSCRIPTION_PROVIDER_SUBMISSION_IN_FLIGHT");
+  }
+  if (preflight.transcriptionProviderCleanupRequired > 0) {
+    blockers.push("TRANSCRIPTION_PROVIDER_CLEANUP_REQUIRED");
   }
 
   return blockers;

@@ -34,7 +34,7 @@ enabling transcription or making a live provider call.
 │  ├─ Auth        email/password + provider metadata      │
 │  ├─ Postgres    schema, RLS, durable processing state   │
 │  ├─ Storage     private `session-assets`                │
-│  └─ Edge Functions (Delete Account; future job intake)  │
+│  └─ Edge Functions (Delete Account; request + worker)   │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -133,12 +133,19 @@ environment variables itself. This keeps the pure provider module testable and
 prevents an accidental mobile import from implicitly acquiring provider
 credentials.
 
-## Future provider execution
+## Durable provider execution foundation
 
-Phase 2B.1B will create the authenticated request endpoint and durable polling
-worker. The worker must claim durable jobs by lease, generate a short-lived
-private Storage signed URL only after claim, record each provider attempt,
-avoid holding long-running work inside a mobile request, and write only stable
-safe error codes/messages to user-visible state. Provider credentials remain
-server-side. No Cron schedule or feature activation occurs until controlled
-live verification passes.
+Phase 2B.1B adds the source foundation for an authenticated request endpoint and
+durable polling worker. The database owns request intent, one-active-job and
+lease invariants, the pre-POST `submitting` boundary, atomic transcript
+completion, and durable provider cleanup. The worker generates a short-lived
+private Storage signed URL only after claim, never persists that URL, and keeps
+provider credentials server-side. Ambiguous no-ID submissions remain fail-closed
+until provider absence is explicitly confirmed; only then may the same immutable
+job be re-queued. Recording/session deletion and membership-loss cleanup cannot
+discard unresolved provider state. Because this milestone also changes Delete
+Account preflight, the updated `delete-account` function must be deployed from
+the same commit after migration `0014` and before request/worker deployment or
+live provider work. No Cron schedule, live provider secret, or feature activation
+occurs until disposable migration, all three function bundles, and controlled
+live verification pass.

@@ -72,15 +72,24 @@ signed-URL generator, migration `0014`, mobile UI, or live provider spend.
 
 ### Phase 2B.1B — authenticated intake and durable polling worker
 
-Planned after Phase 2B.1A source review:
+Source foundation implemented; rollout remains disabled pending disposable and
+Edge Function validation:
 
-- atomic job request and claim database functions;
+- append-only migration `0014` with atomic request, claim, lease, recovery,
+  completion, and cleanup RPCs;
 - authenticated transcription request Edge Function;
-- server-only polling worker;
-- short-lived private Storage signed URL generation after lease claim;
+- token-protected server-only polling worker;
+- short-lived private Storage signed URL generation after durable claim;
+- durable `submitting` boundary that prevents blind duplicate provider POSTs;
+- one active job per recording and recording-scoped unresolved-cleanup gates;
 - atomic transcript/version/segment ingestion;
-- provider artifact cleanup retry;
-- no Cron schedule until a controlled live smoke test passes.
+- provider artifact cleanup retry/manual-review handling and safe membership-loss
+  pruning after cleanup;
+- direct recording/session deletion guards while provider state is unresolved;
+- same-commit redeployment of the updated `delete-account` Edge Function is a
+  mandatory rollout gate before request/worker deployment or live provider work;
+- `transcription_enabled=false`, no provider secret, no Cron, and no live spend
+  until the controlled rollout gates pass.
 
 ### Later Milestone 2 phases
 

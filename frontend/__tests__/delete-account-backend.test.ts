@@ -62,6 +62,8 @@ const preflight = (
   processingJobsCreatedInNonOwnedWorkspaces: 0,
   transcriptionRunsCreatedInNonOwnedWorkspaces: 0,
   transcriptVersionsCreatedInNonOwnedWorkspaces: 0,
+  transcriptionProviderSubmissionInFlight: 0,
+  transcriptionProviderCleanupRequired: 0,
   ownedWorkspaceContentByOtherUsers: 0,
   userOwnedStorageObjectsInNonOwnedWorkspaces: 0,
   userOwnedStorageObjectsOutsideSupportedBucket: 0,
@@ -233,6 +235,38 @@ describe("delete-account backend core", () => {
       "OTHER_USER_STORAGE_INSIDE_OWNED_WORKSPACES",
       "UNOWNED_STORAGE_INSIDE_OWNED_WORKSPACES",
     ]);
+  });
+
+
+  it("blocks Delete Account before destructive work while provider work or cleanup remains", async () => {
+    for (const override of [
+      { transcriptionProviderSubmissionInFlight: 1 },
+      { transcriptionProviderCleanupRequired: 1 },
+    ]) {
+      const deps = dependencies({
+        beginDeletionAttempt: jest.fn(async () => attempt(override)),
+      });
+
+      await expect(
+        executeDeleteAccount(
+          {
+            userId: USER_ID,
+            requestId: REQUEST_ID,
+            claims: claims(),
+            confirmation: "DELETE",
+            now: NOW,
+          },
+          deps,
+        ),
+      ).rejects.toMatchObject({
+        code: "ACCOUNT_DELETION_BLOCKED",
+      });
+
+      expect(deps.listDeletionStoragePaths).not.toHaveBeenCalled();
+      expect(deps.removeStoragePaths).not.toHaveBeenCalled();
+      expect(deps.deleteOwnedWorkspacesIfStillSafe).not.toHaveBeenCalled();
+      expect(deps.deleteAuthUser).not.toHaveBeenCalled();
+    }
   });
 
   it("includes transcription actor references in preflight and final-reference SQL", () => {
@@ -872,4 +906,20 @@ describe("delete-account backend core", () => {
     release?.();
     await expect(Promise.all([first, second])).resolves.toEqual([7, 7]);
   });
+
+  it("includes provider submission and cleanup gates in database preflight", () => {
+    expect(normalizedDatabaseSource).toContain(
+      "transcription_provider_submission_in_flight",
+    );
+    expect(normalizedDatabaseSource).toContain(
+      "transcription_provider_cleanup_required",
+    );
+    expect(normalizedDatabaseSource).toContain(
+      "transcription_run.status in ('submitting','processing')",
+    );
+    expect(normalizedDatabaseSource).toContain(
+      "provider_cleanup_status in ( 'pending','leased','manual_review' )",
+    );
+  });
+
 });

@@ -258,4 +258,32 @@ describe("session deletion worker", () => {
     await first;
     expect(dependencies.removeStoragePaths).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    "TRANSCRIPTION_PROVIDER_SUBMISSION_IN_PROGRESS",
+    "TRANSCRIPTION_PROVIDER_CLEANUP_REQUIRED",
+  ] as const)("reschedules retryable provider deletion gate %s", async (code) => {
+    const dependencies = makeDependencies({
+      deleteCloudSession: jest.fn(async () => {
+        throw new ProjectSyncError(
+          code,
+          "Transcription provider cleanup is still pending.",
+          { retryable: true },
+        );
+      }),
+    });
+    const worker = createSessionDeletionWorker(dependencies);
+
+    const result = await worker.run();
+
+    expect(result.retried).toBe(1);
+    expect(dependencies.rescheduleOperation).toHaveBeenCalledWith(
+      deletionRow.id,
+      expect.any(String),
+      code,
+      expect.any(String),
+    );
+    expect(dependencies.hardDeleteLocalData).not.toHaveBeenCalled();
+  });
+
 });
