@@ -1,5 +1,5 @@
 -- Milestone 2A isolated PostgreSQL behavior verification.
--- Run only after migrations 0001-0013 have been applied to a disposable
+-- Run only after migrations 0001-0014 have been applied to a disposable
 -- Supabase project with at least two confirmed Auth users. The transaction is
 -- rolled back, so no verification rows persist.
 
@@ -272,10 +272,17 @@ begin
   );
 
   insert into public.processing_jobs (
-    id, workspace_id, session_id, recording_id, created_by, idempotency_key
+    id, workspace_id, session_id, recording_id, created_by, idempotency_key,
+    request_payload
   ) values (
     run_delete_job_id, personal_workspace_id, run_delete_session_id,
-    run_delete_recording_id, actor_id, 'smoke:run-delete'
+    run_delete_recording_id, actor_id, 'smoke:run-delete',
+    jsonb_build_object(
+      'contractVersion', 1,
+      'languageMode', 'AUTO_DETECT',
+      'requestedLanguages', jsonb_build_array(),
+      'speakerDiarization', false
+    )
   );
 
   insert into public.transcription_runs (
@@ -352,10 +359,17 @@ begin
   );
 
   insert into public.processing_jobs (
-    id, workspace_id, session_id, recording_id, created_by, idempotency_key
+    id, workspace_id, session_id, recording_id, created_by, idempotency_key,
+    request_payload
   ) values (
     job_delete_job_id, personal_workspace_id, job_delete_session_id,
-    job_delete_recording_id, actor_id, 'smoke:job-delete'
+    job_delete_recording_id, actor_id, 'smoke:job-delete',
+    jsonb_build_object(
+      'contractVersion', 1,
+      'languageMode', 'AUTO_DETECT',
+      'requestedLanguages', jsonb_build_array(),
+      'speakerDiarization', false
+    )
   );
 
   insert into public.transcription_runs (
@@ -437,10 +451,17 @@ begin
   );
 
   insert into public.processing_jobs (
-    id, workspace_id, session_id, recording_id, created_by, idempotency_key
+    id, workspace_id, session_id, recording_id, created_by, idempotency_key,
+    request_payload
   ) values (
     session_delete_job_id, personal_workspace_id, session_delete_session_id,
-    session_delete_recording_id, actor_id, 'smoke:session-delete'
+    session_delete_recording_id, actor_id, 'smoke:session-delete',
+    jsonb_build_object(
+      'contractVersion', 1,
+      'languageMode', 'AUTO_DETECT',
+      'requestedLanguages', jsonb_build_array(),
+      'speakerDiarization', false
+    )
   );
 
   insert into public.transcription_runs (
@@ -518,11 +539,18 @@ begin
   );
 
   insert into public.processing_jobs (
-    id, workspace_id, session_id, recording_id, created_by, idempotency_key
+    id, workspace_id, session_id, recording_id, created_by, idempotency_key,
+    request_payload
   ) values (
     workspace_delete_job_id, temporary_workspace_id,
     workspace_delete_session_id, workspace_delete_recording_id,
-    actor_id, 'smoke:workspace-delete'
+    actor_id, 'smoke:workspace-delete',
+    jsonb_build_object(
+      'contractVersion', 1,
+      'languageMode', 'AUTO_DETECT',
+      'requestedLanguages', jsonb_build_array(),
+      'speakerDiarization', false
+    )
   );
 
   insert into public.transcription_runs (
@@ -609,10 +637,17 @@ begin
   );
 
   insert into public.processing_jobs (
-    id, workspace_id, session_id, recording_id, created_by, idempotency_key
+    id, workspace_id, session_id, recording_id, created_by, idempotency_key,
+    request_payload
   ) values (
     owned_other_job_id, owned_other_workspace_id, owned_other_session_id,
-    owned_other_recording_id, collaborator_id, 'smoke:owned-other-user'
+    owned_other_recording_id, collaborator_id, 'smoke:owned-other-user',
+    jsonb_build_object(
+      'contractVersion', 1,
+      'languageMode', 'AUTO_DETECT',
+      'requestedLanguages', jsonb_build_array(),
+      'speakerDiarization', false
+    )
   );
 
   insert into public.transcription_runs (
@@ -690,10 +725,17 @@ begin
   );
 
   insert into public.processing_jobs (
-    id, workspace_id, session_id, recording_id, created_by, idempotency_key
+    id, workspace_id, session_id, recording_id, created_by, idempotency_key,
+    request_payload
   ) values (
     shared_job_id, shared_workspace_id, shared_session_id,
-    shared_recording_id, actor_id, 'smoke:shared-delete-account'
+    shared_recording_id, actor_id, 'smoke:shared-delete-account',
+    jsonb_build_object(
+      'contractVersion', 1,
+      'languageMode', 'AUTO_DETECT',
+      'requestedLanguages', jsonb_build_array(),
+      'speakerDiarization', false
+    )
   );
 
   insert into public.transcription_runs (
@@ -778,10 +820,17 @@ begin
   );
 
   insert into public.processing_jobs (
-    id, workspace_id, session_id, recording_id, created_by, idempotency_key
+    id, workspace_id, session_id, recording_id, created_by, idempotency_key,
+    request_payload
   ) values (
     active_gate_job_id, active_gate_workspace_id, active_gate_session_id,
-    active_gate_recording_id, actor_id, 'smoke:active-gate-delete'
+    active_gate_recording_id, actor_id, 'smoke:active-gate-delete',
+    jsonb_build_object(
+      'contractVersion', 1,
+      'languageMode', 'AUTO_DETECT',
+      'requestedLanguages', jsonb_build_array(),
+      'speakerDiarization', false
+    )
   );
 
   insert into public.transcription_runs (

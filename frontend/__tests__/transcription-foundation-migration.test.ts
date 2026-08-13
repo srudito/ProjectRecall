@@ -138,6 +138,25 @@ describe("Milestone 2 batch-transcription foundation migration", () => {
     );
   });
 
+  it("keeps every legacy processing-job smoke fixture valid after migration 0014", () => {
+    const processingJobInserts = behaviorVerification.match(
+      /insert\s+into\s+public\.processing_jobs\s*\([\s\S]*?\)\s*values\s*\([\s\S]*?\);/gi,
+    );
+
+    expect(processingJobInserts).toHaveLength(7);
+    for (const statement of processingJobInserts ?? []) {
+      const normalizedStatement = normalizeSql(statement);
+      expect(normalizedStatement).toContain("request_payload");
+      expect(normalizedStatement).toContain("jsonb_build_object");
+      expect(normalizedStatement).toContain("'contractversion', 1");
+      expect(normalizedStatement).toContain("'languagemode', 'auto_detect'");
+      expect(normalizedStatement).toContain(
+        "'requestedlanguages', jsonb_build_array()",
+      );
+      expect(normalizedStatement).toContain("'speakerdiarization', false");
+    }
+  });
+
   it("supports safe retry leases and multiple provider attempts", () => {
     expect(normalized).toContain(
       "status in ('queued','leased','processing','succeeded','failed','cancelled')",
