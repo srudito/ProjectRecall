@@ -68,6 +68,20 @@
       "synchronized": "Stored securely in the cloud",
       "failed": "Upload failed",
       "cancelled": "Upload cancelled"
+    },
+    "transcription": {
+      "request": "Request transcription",
+      "retry": "Retry transcription request",
+      "waitForUpload": "You can queue transcription now. It will be submitted after the recording is stored securely in the cloud.",
+      "requestFailed": "The transcription request could not be saved.",
+      "status": {
+        "pending": "Transcription queued",
+        "submitting": "Requesting transcription…",
+        "submitted": "Transcription requested",
+        "failed": "Transcription request failed",
+        "cancelled": "Transcription request cancelled"
+      },
+      "retryUploadFirst": "Retry the recording upload before requesting transcription."
     }
   },
   "evidence": {

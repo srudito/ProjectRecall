@@ -1605,6 +1605,321 @@ export const countPendingUploads = async (): Promise<number> => {
   return row?.n ?? 0;
 };
 
+
+export type TranscriptionRequestQueueStatus =
+  | "pending"
+  | "submitting"
+  | "submitted"
+  | "failed"
+  | "cancelled";
+
+interface LocalTranscriptionRequestQueueRow {
+  id: string;
+  user_id: string;
+  workspace_id: string;
+  session_id: string;
+  recording_id: string;
+  spoken_language_mode: string;
+  expected_spoken_languages: string;
+  queue_status: TranscriptionRequestQueueStatus;
+  attempt_count: number;
+  max_attempts: number;
+  next_retry_at: string | null;
+  server_job_id: string | null;
+  last_error_code: string | null;
+  last_safe_error: string | null;
+  idempotency_key: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TranscriptionRequestQueueRow {
+  id: string;
+  user_id: string;
+  workspace_id: string;
+  session_id: string;
+  recording_id: string;
+  spoken_language_mode: string;
+  expected_spoken_languages: string[];
+  queue_status: TranscriptionRequestQueueStatus;
+  attempt_count: number;
+  max_attempts: number;
+  next_retry_at: string | null;
+  server_job_id: string | null;
+  last_error_code: string | null;
+  last_safe_error: string | null;
+  idempotency_key: string;
+  created_at: string;
+  updated_at: string;
+}
+
+const parseTranscriptionRequestQueueRow = (
+  row: LocalTranscriptionRequestQueueRow,
+): TranscriptionRequestQueueRow => ({
+  ...row,
+  expected_spoken_languages: parseStringArray(row.expected_spoken_languages),
+});
+
+export const upsertTranscriptionRequestIntent = async (
+  row: TranscriptionRequestQueueRow,
+): Promise<TranscriptionRequestQueueRow> => {
+  const db = await openLocalDb();
+  if (!db) return row;
+
+  await db.runAsync(
+    `INSERT INTO local_transcription_request_queue
+      (id, user_id, workspace_id, session_id, recording_id,
+       spoken_language_mode, expected_spoken_languages, queue_status,
+       attempt_count, max_attempts, next_retry_at, server_job_id,
+       last_error_code, last_safe_error, idempotency_key, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(user_id, workspace_id, idempotency_key) DO UPDATE SET
+       session_id = excluded.session_id,
+       recording_id = excluded.recording_id,
+       spoken_language_mode = excluded.spoken_language_mode,
+       expected_spoken_languages = excluded.expected_spoken_languages,
+       queue_status = CASE
+         WHEN local_transcription_request_queue.queue_status IN ('submitting','submitted')
+           THEN local_transcription_request_queue.queue_status
+         ELSE 'pending'
+       END,
+       attempt_count = CASE
+         WHEN local_transcription_request_queue.queue_status IN ('submitting','submitted')
+           THEN local_transcription_request_queue.attempt_count
+         ELSE 0
+       END,
+       next_retry_at = CASE
+         WHEN local_transcription_request_queue.queue_status IN ('submitting','submitted')
+           THEN local_transcription_request_queue.next_retry_at
+         ELSE NULL
+       END,
+       server_job_id = CASE
+         WHEN local_transcription_request_queue.queue_status = 'submitted'
+           THEN local_transcription_request_queue.server_job_id
+         ELSE NULL
+       END,
+       last_error_code = CASE
+         WHEN local_transcription_request_queue.queue_status IN ('submitting','submitted')
+           THEN local_transcription_request_queue.last_error_code
+         ELSE NULL
+       END,
+       last_safe_error = CASE
+         WHEN local_transcription_request_queue.queue_status IN ('submitting','submitted')
+           THEN local_transcription_request_queue.last_safe_error
+         ELSE NULL
+       END,
+       updated_at = excluded.updated_at`,
+    [
+      row.id,
+      row.user_id,
+      row.workspace_id,
+      row.session_id,
+      row.recording_id,
+      row.spoken_language_mode,
+      JSON.stringify(row.expected_spoken_languages),
+      row.queue_status,
+      row.attempt_count,
+      row.max_attempts,
+      row.next_retry_at,
+      row.server_job_id,
+      row.last_error_code,
+      row.last_safe_error,
+      row.idempotency_key,
+      row.created_at,
+      row.updated_at,
+    ],
+  );
+
+  const saved = (await db.getFirstAsync(
+    `SELECT *
+       FROM local_transcription_request_queue
+      WHERE user_id = ? AND workspace_id = ? AND idempotency_key = ?
+      LIMIT 1`,
+    [row.user_id, row.workspace_id, row.idempotency_key],
+  )) as LocalTranscriptionRequestQueueRow | null;
+
+  return saved ? parseTranscriptionRequestQueueRow(saved) : row;
+};
+
+export const getTranscriptionRequestByIdempotencyKey = async (
+  userId: string,
+  workspaceId: string,
+  idempotencyKey: string,
+): Promise<TranscriptionRequestQueueRow | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+  const row = (await db.getFirstAsync(
+    `SELECT *
+       FROM local_transcription_request_queue
+      WHERE user_id = ? AND workspace_id = ? AND idempotency_key = ?
+      LIMIT 1`,
+    [userId, workspaceId, idempotencyKey],
+  )) as LocalTranscriptionRequestQueueRow | null;
+  return row ? parseTranscriptionRequestQueueRow(row) : null;
+};
+
+export const getNextEligibleTranscriptionRequest = async (
+  userId: string,
+  now: string,
+): Promise<TranscriptionRequestQueueRow | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+  const row = (await db.getFirstAsync(
+    `SELECT *
+       FROM local_transcription_request_queue
+      WHERE user_id = ?
+        AND queue_status = 'pending'
+        AND (next_retry_at IS NULL OR next_retry_at <= ?)
+      ORDER BY created_at ASC, id ASC
+      LIMIT 1`,
+    [userId, now],
+  )) as LocalTranscriptionRequestQueueRow | null;
+  return row ? parseTranscriptionRequestQueueRow(row) : null;
+};
+
+export const claimTranscriptionRequest = async (
+  id: string,
+): Promise<TranscriptionRequestQueueRow | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+  const now = nowIso();
+  const result = await db.runAsync(
+    `UPDATE local_transcription_request_queue
+        SET queue_status = 'submitting',
+            attempt_count = attempt_count + 1,
+            next_retry_at = NULL,
+            last_error_code = NULL,
+            last_safe_error = NULL,
+            updated_at = ?
+      WHERE id = ? AND queue_status = 'pending'`,
+    [now, id],
+  );
+  if (result.changes !== 1) return null;
+  const row = (await db.getFirstAsync(
+    `SELECT * FROM local_transcription_request_queue WHERE id = ?`,
+    [id],
+  )) as LocalTranscriptionRequestQueueRow | null;
+  return row ? parseTranscriptionRequestQueueRow(row) : null;
+};
+
+export const deferTranscriptionRequest = async (
+  id: string,
+  nextRetryAt: string,
+  errorCode: string,
+  safeError: string,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  await db.runAsync(
+    `UPDATE local_transcription_request_queue
+        SET queue_status = 'pending',
+            attempt_count = CASE WHEN attempt_count > 0 THEN attempt_count - 1 ELSE 0 END,
+            next_retry_at = ?,
+            last_error_code = ?,
+            last_safe_error = ?,
+            updated_at = ?
+      WHERE id = ?`,
+    [nextRetryAt, errorCode, safeError, nowIso(), id],
+  );
+};
+
+export const rescheduleTranscriptionRequest = async (
+  id: string,
+  nextRetryAt: string,
+  errorCode: string,
+  safeError: string,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  await db.runAsync(
+    `UPDATE local_transcription_request_queue
+        SET queue_status = 'pending',
+            next_retry_at = ?,
+            last_error_code = ?,
+            last_safe_error = ?,
+            updated_at = ?
+      WHERE id = ?`,
+    [nextRetryAt, errorCode, safeError, nowIso(), id],
+  );
+};
+
+export const markTranscriptionRequestSubmitted = async (
+  id: string,
+  serverJobId: string,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  await db.runAsync(
+    `UPDATE local_transcription_request_queue
+        SET queue_status = 'submitted',
+            server_job_id = ?,
+            next_retry_at = NULL,
+            last_error_code = NULL,
+            last_safe_error = NULL,
+            updated_at = ?
+      WHERE id = ?`,
+    [serverJobId, nowIso(), id],
+  );
+};
+
+export const markTranscriptionRequestFailed = async (
+  id: string,
+  errorCode: string,
+  safeError: string,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  await db.runAsync(
+    `UPDATE local_transcription_request_queue
+        SET queue_status = 'failed',
+            next_retry_at = NULL,
+            last_error_code = ?,
+            last_safe_error = ?,
+            updated_at = ?
+      WHERE id = ?`,
+    [errorCode, safeError, nowIso(), id],
+  );
+};
+
+export const markTranscriptionRequestCancelled = async (
+  id: string,
+  errorCode: string,
+  safeError: string,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  await db.runAsync(
+    `UPDATE local_transcription_request_queue
+        SET queue_status = 'cancelled',
+            next_retry_at = NULL,
+            last_error_code = ?,
+            last_safe_error = ?,
+            updated_at = ?
+      WHERE id = ?`,
+    [errorCode, safeError, nowIso(), id],
+  );
+};
+
+export const resetSubmittingTranscriptionRequests = async (
+  userId: string,
+): Promise<number> => {
+  const db = await openLocalDb();
+  if (!db) return 0;
+  const result = await db.runAsync(
+    `UPDATE local_transcription_request_queue
+        SET queue_status = 'pending',
+            attempt_count = CASE
+              WHEN attempt_count > 0 THEN attempt_count - 1
+              ELSE 0
+            END,
+            next_retry_at = NULL,
+            updated_at = ?
+      WHERE user_id = ? AND queue_status = 'submitting'`,
+    [nowIso(), userId],
+  );
+  return result.changes;
+};
+
 export interface AtomicCreateRecordingWithUploadInput {
   recording: RecordingRecord;
   upload: UploadQueueRow;

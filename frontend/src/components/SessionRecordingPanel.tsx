@@ -19,6 +19,9 @@ import { formatDurationMs } from "@/src/utils/format";
 
 import { Button } from "./Button";
 import { Card } from "./Card";
+import {
+  RecordingTranscriptionRequestControl,
+} from "./RecordingTranscriptionRequestControl";
 
 function RecordingAudioPlayer({ uri }: { uri: string }) {
   const { t } = useI18n();
@@ -260,6 +263,11 @@ export function SessionRecordingPanel({ session }: { session: SessionRecord }) {
               {t("session", "recording.playbackUnavailable")}
             </Text>
           ) : null}
+
+          <RecordingTranscriptionRequestControl
+            session={session}
+            recording={recording}
+          />
 
           {recording.upload_error_message ? (
             <Text

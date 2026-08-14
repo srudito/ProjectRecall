@@ -10,6 +10,7 @@ import { requestMetadataSync } from "./project-sync-worker";
 import { requestMediaUploadSync } from "./media-upload-worker";
 import { requestRecordingUploadSync } from "./recording-upload-worker";
 import { requestSessionDeletionSync } from "./session-deletion-worker";
+import { requestTranscriptionRequestSync } from "./transcription-request-worker";
 
 const requestAllSync = (): void => {
   if (isAccountDeletionLocallyPending()) return;
@@ -17,11 +18,12 @@ const requestAllSync = (): void => {
   requestMetadataSync();
   requestRecordingUploadSync();
   requestMediaUploadSync();
+  requestTranscriptionRequestSync();
 };
 
 /**
- * Starts the native metadata, recording-upload, and evidence-upload workers at lifecycle
- * boundaries that can make queued work eligible again. Web operations go
+ * Starts the native metadata, binary-upload, and transcription-request workers
+ * at lifecycle boundaries that can make queued work eligible again. Web operations go
  * directly to Supabase and therefore do not use the local SQLite queues.
  */
 export function ProjectSyncCoordinator() {
@@ -68,6 +70,7 @@ export function ProjectSyncCoordinator() {
       if (useAuthStore.getState().user?.id) {
         requestRecordingUploadSync();
         requestMediaUploadSync();
+        requestTranscriptionRequestSync();
       }
     });
   }, []);

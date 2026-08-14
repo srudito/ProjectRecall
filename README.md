@@ -11,11 +11,12 @@ Supabase synchronization.
 Milestone 1 engineering and production-binary verification are complete.
 Milestone 2A establishes the provider-neutral batch-transcription data, queue,
 scope, and retry contracts. Milestone 2B.1A adds the server-only AssemblyAI
-Universal-2 adapter, and Milestone 2B.1B adds the reviewed durable request,
-lease/polling worker, signed-URL, atomic ingestion, and provider-cleanup source
-foundation. The transcription feature flag remains disabled; no live provider
-secret, Cron schedule, or mobile provider execution is enabled by this source
-milestone.
+Universal-2 adapter, and Milestone 2B.1B adds the durable authenticated request,
+Cron-driven worker, signed-URL, atomic-ingestion, and provider-cleanup control
+plane. Its development rollout has passed controlled live validation; production
+remains untouched. Milestone 2B.2 connects the native local-first request queue
+to the authenticated request endpoint and recording UI. Transcript result
+synchronization/display remains a later milestone.
 
 ## Source of truth
 

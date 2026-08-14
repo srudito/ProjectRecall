@@ -68,6 +68,20 @@
       "synchronized": "Tersimpan aman di cloud",
       "failed": "Unggah gagal",
       "cancelled": "Unggah dibatalkan"
+    },
+    "transcription": {
+      "request": "Minta transkripsi",
+      "retry": "Coba lagi permintaan transkripsi",
+      "waitForUpload": "Anda dapat mengantrekan transkripsi sekarang. Permintaan akan dikirim setelah rekaman tersimpan dengan aman di cloud.",
+      "requestFailed": "Permintaan transkripsi tidak dapat disimpan.",
+      "status": {
+        "pending": "Transkripsi masuk antrean",
+        "submitting": "Meminta transkripsi…",
+        "submitted": "Transkripsi telah diminta",
+        "failed": "Permintaan transkripsi gagal",
+        "cancelled": "Permintaan transkripsi dibatalkan"
+      },
+      "retryUploadFirst": "Coba lagi unggahan rekaman sebelum meminta transkripsi."
     }
   },
   "evidence": {

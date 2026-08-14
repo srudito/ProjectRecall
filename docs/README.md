@@ -132,28 +132,26 @@ testing is deferred until the broader product is closer to public release.
 
 Milestone 2A is complete at tag
 `milestone2a-transcription-foundation-v1`, and Milestone 2B.1A is complete at
-`milestone2b1a-assemblyai-provider-adapter-v1`. Milestone 2B.1B now contains the
-source foundation for authenticated intake and a durable server worker, but it
-remains rollout-disabled:
+`milestone2b1a-assemblyai-provider-adapter-v1`. Milestone 2B.1B has completed its
+controlled development rollout: migration/runtime validation, same-commit Edge
+Function deployment, development-only secrets, live provider cleanup, durable
+worker execution, authenticated Cron, and development feature activation all
+passed. Production remains untouched.
 
-- keep `transcription_enabled=false`;
-- migration `0014` must not be applied before disposable migration/behavior
-  verification and source approval;
-- do not create an AssemblyAI secret or worker token yet;
-- do not create a Cron schedule or run a live provider request yet;
-- keep signed private Storage URLs out of durable state and logs;
-- after migration `0014`, deploy/bundle the updated `delete-account` function
-  from the same commit before deploying request/worker functions or admitting
-  provider work;
-- deploy/bundle request and worker functions only after the rollout gates in the
-  2B.1B test plan pass.
+Milestone 2B.2 connects the native app to that backend through the existing
+SQLite v10 request queue. The app never receives AssemblyAI or worker secrets,
+and the server-side feature flag remains authoritative. This milestone stops at
+accepted durable request state; transcript content synchronization/display is
+not included yet.
 
 See `ROADMAP.md`, `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_IMPLEMENTATION.md`,
 `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_TEST.md`,
 `MILESTONE2B1_ASSEMBLYAI_PROVIDER_ADAPTER_V1_IMPLEMENTATION.md`,
 `MILESTONE2B1_ASSEMBLYAI_PROVIDER_ADAPTER_V1_TEST.md`,
-`MILESTONE2B1_DURABLE_REQUEST_WORKER_V1_IMPLEMENTATION.md`, and
-`MILESTONE2B1_DURABLE_REQUEST_WORKER_V1_TEST.md`.
+`MILESTONE2B1_DURABLE_REQUEST_WORKER_V1_IMPLEMENTATION.md`,
+`MILESTONE2B1_DURABLE_REQUEST_WORKER_V1_TEST.md`,
+`MILESTONE2B2_MOBILE_TRANSCRIPTION_REQUEST_V1_IMPLEMENTATION.md`, and
+`MILESTONE2B2_MOBILE_TRANSCRIPTION_REQUEST_V1_TEST.md`.
 
 ## Public legal pages
 

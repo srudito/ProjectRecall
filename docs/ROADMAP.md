@@ -72,8 +72,8 @@ signed-URL generator, migration `0014`, mobile UI, or live provider spend.
 
 ### Phase 2B.1B — authenticated intake and durable polling worker
 
-Source foundation implemented; rollout remains disabled pending disposable and
-Edge Function validation:
+Source foundation implemented and controlled development rollout completed;
+production rollout remains disabled:
 
 - append-only migration `0014` with atomic request, claim, lease, recovery,
   completion, and cleanup RPCs;
@@ -88,17 +88,38 @@ Edge Function validation:
 - direct recording/session deletion guards while provider state is unresolved;
 - same-commit redeployment of the updated `delete-account` Edge Function is a
   mandatory rollout gate before request/worker deployment or live provider work;
-- `transcription_enabled=false`, no provider secret, no Cron, and no live spend
-  until the controlled rollout gates pass.
+- controlled development migration, deployment, live provider cleanup, durable
+  worker, authenticated Cron, and feature-activation gates have passed;
+- production remains untouched and requires its own later release-hardening gate.
+
+### Phase 2B.2 — mobile transcription request integration
+
+Implemented in this phase:
+
+- provider-neutral native `Request transcription` action on the recording card;
+- durable local request intent using the existing SQLite v10 transcription
+  request queue;
+- offline-first queueing before binary upload finishes;
+- lifecycle/network/metadata-triggered request synchronization;
+- authenticated mobile invocation of `transcription-request` only;
+- stable local idempotency and crash-safe submitting-row recovery;
+- server-scope validation and local server-job tracking;
+- non-authoritative cached feature availability with the server kill switch
+  remaining authoritative;
+- no provider secrets or service-role credentials in React Native.
+
+The development Milestone 2B.1B backend has completed controlled live provider,
+durable worker, Cron, and feature-activation validation. Production remains
+untouched. This phase stops after the backend accepts/reuses a durable job; it
+does not synchronize or display transcript content on mobile.
 
 ### Later Milestone 2 phases
 
-- automatic language detection;
+- transcript synchronization and display;
 - single-language and multilingual transcription;
 - English/Bahasa Indonesia code-switching;
-- transcript synchronization and display;
 - transcript editor and immutable version history;
-- release hardening before the feature flag is enabled.
+- release hardening before production feature activation.
 
 ## Milestone 3 — Multimodal analysis
 
