@@ -178,3 +178,10 @@ The first two URLs are intended for the public Expo/EAS variables used by the
 Profile screen. The account-deletion URL is intended for the Google Play Data
 Safety account-deletion field. Confirm all three URLs load over HTTPS without a
 login before configuring production EAS or Play Console.
+
+
+## Milestone 2B.3A transcript result sync
+
+- Implementation: `MILESTONE2B3A_TRANSCRIPT_RESULT_SYNC_V1_IMPLEMENTATION.md`
+- Test plan: `MILESTONE2B3A_TRANSCRIPT_RESULT_SYNC_V1_TEST.md`
+- Scope: authenticated RLS result reads, durable polling, paginated segments, and atomic SQLite persistence. Transcript UI remains deferred.

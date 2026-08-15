@@ -6,6 +6,13 @@ import * as SQLite from "expo-sqlite";
 import { openLocalDb } from "./schema";
 import { runSerializedLocalTransaction } from "./transaction";
 
+import type {
+  SyncedProcessingJob,
+  SyncedTranscriptSegment,
+  SyncedTranscriptVersion,
+  SyncedTranscriptionRun,
+} from "@/src/services/transcription/result-types";
+
 const nowIso = () => new Date().toISOString();
 
 interface LocalSessionRow {
@@ -1853,6 +1860,7 @@ export const markTranscriptionRequestSubmitted = async (
     `UPDATE local_transcription_request_queue
         SET queue_status = 'submitted',
             server_job_id = ?,
+            attempt_count = 0,
             next_retry_at = NULL,
             last_error_code = NULL,
             last_safe_error = NULL,
@@ -1918,6 +1926,606 @@ export const resetSubmittingTranscriptionRequests = async (
     [nowIso(), userId],
   );
   return result.changes;
+};
+
+
+// Transcription result synchronization -------------------------------------
+// The existing SQLite v10 foundation stores durable server status and current
+// transcript data. Result synchronization uses the submitted request row as
+// its stable per-user anchor and never stores provider credentials or raw
+// provider metadata.
+
+interface LocalProcessingJobRow
+  extends Omit<SyncedProcessingJob, "request_payload"> {
+  request_payload: string;
+}
+
+interface LocalTranscriptionRunRow
+  extends Omit<
+    SyncedTranscriptionRun,
+    | "requested_languages"
+    | "detected_languages"
+    | "provider_artifact_present"
+    | "provider_cleanup_status"
+  > {
+  requested_languages: string;
+  detected_languages: string;
+  provider_job_id: string | null;
+  provider_metadata: string;
+}
+
+interface LocalTranscriptVersionRow
+  extends Omit<SyncedTranscriptVersion, "language_summary" | "is_current"> {
+  language_summary: string;
+  is_current: number;
+}
+
+const parseLocalProcessingJob = (
+  row: LocalProcessingJobRow,
+): SyncedProcessingJob => ({
+  ...row,
+  request_payload: parseJsonObject(row.request_payload) ?? {},
+});
+
+const parseLocalTranscriptionRun = (
+  row: LocalTranscriptionRunRow,
+): SyncedTranscriptionRun => ({
+  id: row.id,
+  processing_job_id: row.processing_job_id,
+  workspace_id: row.workspace_id,
+  session_id: row.session_id,
+  recording_id: row.recording_id,
+  created_by: row.created_by,
+  run_attempt: row.run_attempt,
+  provider_key: row.provider_key,
+  provider_model: row.provider_model,
+  request_mode: row.request_mode,
+  requested_languages: parseStringArray(row.requested_languages),
+  status: row.status,
+  provider_artifact_present: row.provider_job_id != null,
+  provider_cleanup_status: null,
+  detected_languages: parseStringArray(row.detected_languages),
+  primary_detected_language: row.primary_detected_language,
+  language_detection_status: row.language_detection_status,
+  started_at: row.started_at,
+  completed_at: row.completed_at,
+  last_error_code: row.last_error_code,
+  last_safe_error: row.last_safe_error,
+  created_at: row.created_at,
+  updated_at: row.updated_at,
+});
+
+const parseLocalTranscriptVersion = (
+  row: LocalTranscriptVersionRow,
+): SyncedTranscriptVersion => ({
+  ...row,
+  language_summary: parseJsonObject(row.language_summary) ?? {},
+  is_current: true,
+});
+
+const resultIncompleteSql = `
+  NOT EXISTS (
+    SELECT 1
+      FROM local_processing_jobs result_job
+      JOIN local_transcription_runs result_run
+        ON result_run.processing_job_id = result_job.id
+      JOIN local_transcript_versions result_version
+        ON result_version.transcription_run_id = result_run.id
+       AND result_version.is_current = 1
+     WHERE result_job.id = request_row.server_job_id
+       AND result_job.status = 'succeeded'
+       AND result_run.status = 'succeeded'
+  )
+`;
+
+export const getNextEligibleTranscriptionResultRequest = async (
+  userId: string,
+  now: string,
+): Promise<TranscriptionRequestQueueRow | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+  const row = (await db.getFirstAsync(
+    `SELECT request_row.*
+       FROM local_transcription_request_queue request_row
+      WHERE request_row.user_id = ?
+        AND request_row.queue_status = 'submitted'
+        AND request_row.server_job_id IS NOT NULL
+        AND (request_row.next_retry_at IS NULL OR request_row.next_retry_at <= ?)
+        AND ${resultIncompleteSql}
+      ORDER BY COALESCE(request_row.next_retry_at, request_row.created_at),
+               request_row.created_at,
+               request_row.id
+      LIMIT 1`,
+    [userId, now],
+  )) as LocalTranscriptionRequestQueueRow | null;
+  return row ? parseTranscriptionRequestQueueRow(row) : null;
+};
+
+export const getNextTranscriptionResultWakeAt = async (
+  userId: string,
+  now: string,
+): Promise<string | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+  const row = (await db.getFirstAsync(
+    `SELECT MIN(COALESCE(request_row.next_retry_at, ?)) AS wake_at
+       FROM local_transcription_request_queue request_row
+      WHERE request_row.user_id = ?
+        AND request_row.queue_status = 'submitted'
+        AND request_row.server_job_id IS NOT NULL
+        AND ${resultIncompleteSql}`,
+    [now, userId],
+  )) as { wake_at: string | null } | null;
+  return row?.wake_at ?? null;
+};
+
+const requireResultQueueScopeOnDb = async (
+  db: SQLite.SQLiteDatabase,
+  input: {
+    queueId: string;
+    serverJobId: string;
+    workspaceId: string;
+    sessionId: string;
+    recordingId: string;
+  },
+): Promise<void> => {
+  const row = (await db.getFirstAsync(
+    `SELECT id
+       FROM local_transcription_request_queue
+      WHERE id = ?
+        AND queue_status = 'submitted'
+        AND server_job_id = ?
+        AND workspace_id = ?
+        AND session_id = ?
+        AND recording_id = ?
+      LIMIT 1`,
+    [
+      input.queueId,
+      input.serverJobId,
+      input.workspaceId,
+      input.sessionId,
+      input.recordingId,
+    ],
+  )) as { id: string } | null;
+  if (!row) {
+    throw new Error("The local transcription result scope changed.");
+  }
+};
+
+const upsertSyncedProcessingJobOnDb = async (
+  db: SQLite.SQLiteDatabase,
+  job: SyncedProcessingJob,
+): Promise<void> => {
+  await db.runAsync(
+    `INSERT INTO local_processing_jobs
+      (id, workspace_id, session_id, recording_id, created_by, job_type,
+       status, idempotency_key, priority, attempt_count, max_attempts,
+       next_attempt_at, lease_owner, lease_expires_at, started_at,
+       completed_at, cancelled_at, last_error_code, last_safe_error,
+       request_payload, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       workspace_id=excluded.workspace_id,
+       session_id=excluded.session_id,
+       recording_id=excluded.recording_id,
+       created_by=excluded.created_by,
+       job_type=excluded.job_type,
+       status=excluded.status,
+       idempotency_key=excluded.idempotency_key,
+       priority=excluded.priority,
+       attempt_count=excluded.attempt_count,
+       max_attempts=excluded.max_attempts,
+       next_attempt_at=excluded.next_attempt_at,
+       lease_owner=excluded.lease_owner,
+       lease_expires_at=excluded.lease_expires_at,
+       started_at=excluded.started_at,
+       completed_at=excluded.completed_at,
+       cancelled_at=excluded.cancelled_at,
+       last_error_code=excluded.last_error_code,
+       last_safe_error=excluded.last_safe_error,
+       request_payload=excluded.request_payload,
+       created_at=excluded.created_at,
+       updated_at=excluded.updated_at`,
+    [
+      job.id,
+      job.workspace_id,
+      job.session_id,
+      job.recording_id,
+      job.created_by,
+      job.job_type,
+      job.status,
+      job.idempotency_key,
+      job.priority,
+      job.attempt_count,
+      job.max_attempts,
+      job.next_attempt_at,
+      job.lease_owner,
+      job.lease_expires_at,
+      job.started_at,
+      job.completed_at,
+      job.cancelled_at,
+      job.last_error_code,
+      job.last_safe_error,
+      JSON.stringify(job.request_payload),
+      job.created_at,
+      job.updated_at,
+    ],
+  );
+};
+
+const upsertSyncedTranscriptionRunOnDb = async (
+  db: SQLite.SQLiteDatabase,
+  run: SyncedTranscriptionRun,
+): Promise<void> => {
+  await db.runAsync(
+    `INSERT INTO local_transcription_runs
+      (id, processing_job_id, workspace_id, session_id, recording_id,
+       created_by, run_attempt, provider_key, provider_model, request_mode,
+       requested_languages, status, provider_job_id, detected_languages,
+       primary_detected_language, language_detection_status, provider_metadata,
+       started_at, completed_at, last_error_code, last_safe_error,
+       created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       processing_job_id=excluded.processing_job_id,
+       workspace_id=excluded.workspace_id,
+       session_id=excluded.session_id,
+       recording_id=excluded.recording_id,
+       created_by=excluded.created_by,
+       run_attempt=excluded.run_attempt,
+       provider_key=excluded.provider_key,
+       provider_model=excluded.provider_model,
+       request_mode=excluded.request_mode,
+       requested_languages=excluded.requested_languages,
+       status=excluded.status,
+       provider_job_id=excluded.provider_job_id,
+       detected_languages=excluded.detected_languages,
+       primary_detected_language=excluded.primary_detected_language,
+       language_detection_status=excluded.language_detection_status,
+       provider_metadata=excluded.provider_metadata,
+       started_at=excluded.started_at,
+       completed_at=excluded.completed_at,
+       last_error_code=excluded.last_error_code,
+       last_safe_error=excluded.last_safe_error,
+       created_at=excluded.created_at,
+       updated_at=excluded.updated_at`,
+    [
+      run.id,
+      run.processing_job_id,
+      run.workspace_id,
+      run.session_id,
+      run.recording_id,
+      run.created_by,
+      run.run_attempt,
+      run.provider_key,
+      run.provider_model,
+      run.request_mode,
+      JSON.stringify(run.requested_languages),
+      run.status,
+      null,
+      JSON.stringify(run.detected_languages),
+      run.primary_detected_language,
+      run.language_detection_status,
+      "{}",
+      run.started_at,
+      run.completed_at,
+      run.last_error_code,
+      run.last_safe_error,
+      run.created_at,
+      run.updated_at,
+    ],
+  );
+};
+
+const updateResultRequestOnDb = async (
+  db: SQLite.SQLiteDatabase,
+  input: {
+    queueId: string;
+    queueStatus: "submitted" | "failed" | "cancelled";
+    nextRetryAt: string | null;
+    attemptCountSql: "reset" | "increment";
+    errorCode: string | null;
+    safeError: string | null;
+  },
+): Promise<void> => {
+  const attemptSql =
+    input.attemptCountSql === "reset"
+      ? "attempt_count = 0"
+      : "attempt_count = MIN(attempt_count + 1, max_attempts)";
+  const result = await db.runAsync(
+    `UPDATE local_transcription_request_queue
+        SET queue_status = ?,
+            ${attemptSql},
+            next_retry_at = ?,
+            last_error_code = ?,
+            last_safe_error = ?,
+            updated_at = ?
+      WHERE id = ? AND server_job_id IS NOT NULL`,
+    [
+      input.queueStatus,
+      input.nextRetryAt,
+      input.errorCode,
+      input.safeError,
+      nowIso(),
+      input.queueId,
+    ],
+  );
+  if (result.changes !== 1) {
+    throw new Error("The local transcription result request is unavailable.");
+  }
+};
+
+export const persistTranscriptionResultProgress = async (input: {
+  queueId: string;
+  job: SyncedProcessingJob;
+  run: SyncedTranscriptionRun | null;
+  nextRetryAt: string;
+  errorCode: string;
+  safeError: string;
+}): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  await runSerializedLocalTransaction(db, async () => {
+    await requireResultQueueScopeOnDb(db, {
+      queueId: input.queueId,
+      serverJobId: input.job.id,
+      workspaceId: input.job.workspace_id,
+      sessionId: input.job.session_id,
+      recordingId: input.job.recording_id,
+    });
+    await upsertSyncedProcessingJobOnDb(db, input.job);
+    if (input.run) await upsertSyncedTranscriptionRunOnDb(db, input.run);
+    await updateResultRequestOnDb(db, {
+      queueId: input.queueId,
+      queueStatus: "submitted",
+      nextRetryAt: input.nextRetryAt,
+      attemptCountSql: "reset",
+      errorCode: input.errorCode,
+      safeError: input.safeError,
+    });
+  });
+};
+
+export const rescheduleTranscriptionResultAfterFailure = async (input: {
+  queueId: string;
+  nextRetryAt: string;
+  errorCode: string;
+  safeError: string;
+}): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  await updateResultRequestOnDb(db, {
+    queueId: input.queueId,
+    queueStatus: "submitted",
+    nextRetryAt: input.nextRetryAt,
+    attemptCountSql: "increment",
+    errorCode: input.errorCode,
+    safeError: input.safeError,
+  });
+};
+
+export const persistTerminalTranscriptionResult = async (input: {
+  queueId: string;
+  job: SyncedProcessingJob;
+  run: SyncedTranscriptionRun | null;
+  queueStatus: "failed" | "cancelled";
+  errorCode: string;
+  safeError: string;
+}): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  await runSerializedLocalTransaction(db, async () => {
+    await requireResultQueueScopeOnDb(db, {
+      queueId: input.queueId,
+      serverJobId: input.job.id,
+      workspaceId: input.job.workspace_id,
+      sessionId: input.job.session_id,
+      recordingId: input.job.recording_id,
+    });
+    await upsertSyncedProcessingJobOnDb(db, input.job);
+    if (input.run) await upsertSyncedTranscriptionRunOnDb(db, input.run);
+    await updateResultRequestOnDb(db, {
+      queueId: input.queueId,
+      queueStatus: input.queueStatus,
+      nextRetryAt: null,
+      attemptCountSql: "reset",
+      errorCode: input.errorCode,
+      safeError: input.safeError,
+    });
+  });
+};
+
+export const persistCompletedTranscriptionResult = async (input: {
+  queueId: string;
+  job: SyncedProcessingJob;
+  run: SyncedTranscriptionRun;
+  version: SyncedTranscriptVersion;
+  segments: SyncedTranscriptSegment[];
+}): Promise<void> => {
+  if (
+    input.run.processing_job_id !== input.job.id ||
+    input.version.transcription_run_id !== input.run.id ||
+    input.version.workspace_id !== input.job.workspace_id ||
+    input.version.session_id !== input.job.session_id ||
+    input.segments.some(
+      (segment) =>
+        segment.workspace_id !== input.job.workspace_id ||
+        segment.session_id !== input.job.session_id ||
+        segment.transcript_version_id !== input.version.id,
+    )
+  ) {
+    throw new Error("The transcript result scope is invalid.");
+  }
+
+  const db = await openLocalDb();
+  if (!db) return;
+  await runSerializedLocalTransaction(db, async () => {
+    await requireResultQueueScopeOnDb(db, {
+      queueId: input.queueId,
+      serverJobId: input.job.id,
+      workspaceId: input.job.workspace_id,
+      sessionId: input.job.session_id,
+      recordingId: input.job.recording_id,
+    });
+    await upsertSyncedProcessingJobOnDb(db, input.job);
+    await upsertSyncedTranscriptionRunOnDb(db, input.run);
+
+    await db.runAsync(
+      `UPDATE local_transcript_versions
+          SET is_current = 0
+        WHERE session_id = ? AND id <> ?`,
+      [input.version.session_id, input.version.id],
+    );
+    await db.runAsync(
+      `INSERT INTO local_transcript_versions
+        (id, workspace_id, session_id, transcription_run_id, created_by,
+         version, version_origin, version_status, parent_version_id, plain_text,
+         language_summary, content_checksum_sha256, is_current,
+         created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         workspace_id=excluded.workspace_id,
+         session_id=excluded.session_id,
+         transcription_run_id=excluded.transcription_run_id,
+         created_by=excluded.created_by,
+         version=excluded.version,
+         version_origin=excluded.version_origin,
+         version_status=excluded.version_status,
+         parent_version_id=excluded.parent_version_id,
+         plain_text=excluded.plain_text,
+         language_summary=excluded.language_summary,
+         content_checksum_sha256=excluded.content_checksum_sha256,
+         is_current=1,
+         created_at=excluded.created_at,
+         updated_at=excluded.updated_at`,
+      [
+        input.version.id,
+        input.version.workspace_id,
+        input.version.session_id,
+        input.version.transcription_run_id,
+        input.version.created_by,
+        input.version.version,
+        input.version.version_origin,
+        input.version.version_status,
+        input.version.parent_version_id,
+        input.version.plain_text,
+        JSON.stringify(input.version.language_summary),
+        input.version.content_checksum_sha256,
+        input.version.created_at,
+        input.version.updated_at,
+      ],
+    );
+
+    await db.runAsync(
+      "DELETE FROM local_transcript_segments WHERE transcript_version_id = ?",
+      [input.version.id],
+    );
+    for (const segment of input.segments) {
+      await db.runAsync(
+        `INSERT INTO local_transcript_segments
+          (id, workspace_id, session_id, transcript_version_id, segment_index,
+           start_ms, end_ms, text, language_code, speaker_label, confidence,
+           provider_segment_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           workspace_id=excluded.workspace_id,
+           session_id=excluded.session_id,
+           transcript_version_id=excluded.transcript_version_id,
+           segment_index=excluded.segment_index,
+           start_ms=excluded.start_ms,
+           end_ms=excluded.end_ms,
+           text=excluded.text,
+           language_code=excluded.language_code,
+           speaker_label=excluded.speaker_label,
+           confidence=excluded.confidence,
+           provider_segment_id=excluded.provider_segment_id,
+           created_at=excluded.created_at,
+           updated_at=excluded.updated_at`,
+        [
+          segment.id,
+          segment.workspace_id,
+          segment.session_id,
+          segment.transcript_version_id,
+          segment.segment_index,
+          segment.start_ms,
+          segment.end_ms,
+          segment.text,
+          segment.language_code,
+          segment.speaker_label,
+          segment.confidence,
+          segment.provider_segment_id,
+          segment.created_at,
+          segment.updated_at,
+        ],
+      );
+    }
+
+    await updateResultRequestOnDb(db, {
+      queueId: input.queueId,
+      queueStatus: "submitted",
+      nextRetryAt: null,
+      attemptCountSql: "reset",
+      errorCode: null,
+      safeError: null,
+    });
+  });
+};
+
+export const getLocalProcessingJob = async (
+  id: string,
+): Promise<SyncedProcessingJob | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+  const row = (await db.getFirstAsync(
+    "SELECT * FROM local_processing_jobs WHERE id = ? LIMIT 1",
+    [id],
+  )) as LocalProcessingJobRow | null;
+  return row ? parseLocalProcessingJob(row) : null;
+};
+
+export const getLocalTranscriptionRunForJob = async (
+  processingJobId: string,
+): Promise<SyncedTranscriptionRun | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+  const row = (await db.getFirstAsync(
+    `SELECT *
+       FROM local_transcription_runs
+      WHERE processing_job_id = ?
+      ORDER BY run_attempt DESC
+      LIMIT 1`,
+    [processingJobId],
+  )) as LocalTranscriptionRunRow | null;
+  return row ? parseLocalTranscriptionRun(row) : null;
+};
+
+export const getCurrentTranscriptVersionForSession = async (
+  sessionId: string,
+): Promise<SyncedTranscriptVersion | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+  const row = (await db.getFirstAsync(
+    `SELECT *
+       FROM local_transcript_versions
+      WHERE session_id = ? AND is_current = 1
+      LIMIT 1`,
+    [sessionId],
+  )) as LocalTranscriptVersionRow | null;
+  return row ? parseLocalTranscriptVersion(row) : null;
+};
+
+export const listTranscriptSegmentsForVersion = async (
+  transcriptVersionId: string,
+): Promise<SyncedTranscriptSegment[]> => {
+  const db = await openLocalDb();
+  if (!db) return [];
+  return (await db.getAllAsync(
+    `SELECT *
+       FROM local_transcript_segments
+      WHERE transcript_version_id = ?
+      ORDER BY segment_index ASC`,
+    [transcriptVersionId],
+  )) as SyncedTranscriptSegment[];
 };
 
 export interface AtomicCreateRecordingWithUploadInput {

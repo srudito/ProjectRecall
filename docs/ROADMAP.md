@@ -146,3 +146,10 @@ does not synchronize or display transcript content on mobile.
 ## Milestone 7 — Commerce
 
 - Subscription, credits, advertising, and administration.
+
+
+## Milestone 2B.3A — Transcript result sync and local persistence
+
+- Implementation: `MILESTONE2B3A_TRANSCRIPT_RESULT_SYNC_V1_IMPLEMENTATION.md`
+- Test plan: `MILESTONE2B3A_TRANSCRIPT_RESULT_SYNC_V1_TEST.md`
+- Scope: authenticated RLS result reads, durable polling, paginated segments, and atomic SQLite persistence. Transcript UI remains deferred.

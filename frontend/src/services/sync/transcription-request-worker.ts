@@ -32,7 +32,10 @@ import {
 import { nextBackoffMs } from "@/src/services/upload-queue/backoff";
 import { useAuthStore } from "@/src/stores/auth-store";
 
-import { notifyTranscriptionSyncChanges } from "./transcription-sync-events";
+import {
+  notifyTranscriptionRequestSubmitted,
+  notifyTranscriptionSyncChanges,
+} from "./transcription-sync-events";
 
 export interface TranscriptionRequestSyncRunResult {
   state:
@@ -466,6 +469,7 @@ export const createTranscriptionRequestWorker = (
       const run = execute()
         .then((result) => {
           if (result.processed > 0) dependencies.notifyChanged();
+          if (result.submitted > 0) notifyTranscriptionRequestSubmitted();
           return result;
         })
         .finally(() => {

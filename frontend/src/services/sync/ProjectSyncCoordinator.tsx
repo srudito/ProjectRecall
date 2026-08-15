@@ -11,6 +11,8 @@ import { requestMediaUploadSync } from "./media-upload-worker";
 import { requestRecordingUploadSync } from "./recording-upload-worker";
 import { requestSessionDeletionSync } from "./session-deletion-worker";
 import { requestTranscriptionRequestSync } from "./transcription-request-worker";
+import { requestTranscriptionResultSync } from "./transcription-result-worker";
+import { subscribeTranscriptionRequestSubmissions } from "./transcription-sync-events";
 
 const requestAllSync = (): void => {
   if (isAccountDeletionLocallyPending()) return;
@@ -19,6 +21,7 @@ const requestAllSync = (): void => {
   requestRecordingUploadSync();
   requestMediaUploadSync();
   requestTranscriptionRequestSync();
+  requestTranscriptionResultSync();
 };
 
 /**
@@ -59,6 +62,15 @@ export function ProjectSyncCoordinator() {
     });
 
     return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+    return subscribeTranscriptionRequestSubmissions(() => {
+      if (useAuthStore.getState().user?.id) {
+        requestTranscriptionResultSync();
+      }
+    });
   }, []);
 
   useEffect(() => {

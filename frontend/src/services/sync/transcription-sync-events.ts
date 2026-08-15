@@ -20,3 +20,26 @@ export const notifyTranscriptionSyncChanges = (): void => {
     }
   }
 };
+
+
+type TranscriptionRequestSubmittedListener = () => void;
+const requestSubmittedListeners = new Set<TranscriptionRequestSubmittedListener>();
+
+export const subscribeTranscriptionRequestSubmissions = (
+  listener: TranscriptionRequestSubmittedListener,
+): (() => void) => {
+  requestSubmittedListeners.add(listener);
+  return () => {
+    requestSubmittedListeners.delete(listener);
+  };
+};
+
+export const notifyTranscriptionRequestSubmitted = (): void => {
+  for (const listener of requestSubmittedListeners) {
+    try {
+      listener();
+    } catch {
+      // Background result wake-up must not block request completion/UI updates.
+    }
+  }
+};

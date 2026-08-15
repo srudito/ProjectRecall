@@ -15,8 +15,9 @@ Universal-2 adapter, and Milestone 2B.1B adds the durable authenticated request,
 Cron-driven worker, signed-URL, atomic-ingestion, and provider-cleanup control
 plane. Its development rollout has passed controlled live validation; production
 remains untouched. Milestone 2B.2 connects the native local-first request queue
-to the authenticated request endpoint and recording UI. Transcript result
-synchronization/display remains a later milestone.
+to the authenticated request endpoint and recording UI. Milestone 2B.3A adds authenticated RLS result synchronization and atomic
+local SQLite transcript persistence. Transcript display/editor UI remains a
+later milestone.
 
 ## Source of truth
 
