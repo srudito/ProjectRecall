@@ -135,9 +135,19 @@ Implemented in this phase:
 - refresh when the result worker publishes local changes;
 - no Supabase or provider call from the reader UI.
 
+### Phase 2B.3C — timestamped transcript segment browser
+
+Implemented in this phase:
+
+- accessible continuous/timestamped view selection;
+- local timestamp ranges, selectable segment text, and optional speaker/language
+  metadata;
+- bounded progressive rendering for long local transcripts;
+- stricter local segment time/text/identity validation;
+- no playback seek, editing, remote read, provider call, or migration.
+
 ### Later Milestone 2 phases
 
-- timestamped transcript segment browsing;
 - single-language and multilingual transcription;
 - English/Bahasa Indonesia code-switching;
 - transcript editor and immutable version history;
@@ -181,3 +191,10 @@ Implemented in this phase:
 - Implementation: `MILESTONE2B3B_TRANSCRIPT_READ_UI_V1_IMPLEMENTATION.md`
 - Test plan: `MILESTONE2B3B_TRANSCRIPT_READ_UI_V1_TEST.md`
 - Scope: native, read-only continuous transcript display from the existing local SQLite result cache with offline availability.
+
+
+## Milestone 2B.3C — Timestamped transcript segment browser
+
+- Implementation: `MILESTONE2B3C_TIMESTAMPED_TRANSCRIPT_BROWSER_V1_IMPLEMENTATION.md`
+- Test plan: `MILESTONE2B3C_TIMESTAMPED_TRANSCRIPT_BROWSER_V1_TEST.md`
+- Scope: offline timestamped browsing of the current local SQLite segment cache, with bounded rendering and no playback seeking or editing.

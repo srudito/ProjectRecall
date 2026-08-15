@@ -109,6 +109,13 @@
     "emptyContent": "Transkrip tidak memiliki teks yang dapat dibaca.",
     "availableOffline": "Tersedia offline di perangkat ini",
     "metadata": "Versi %{version} • Segmen %{count}",
+    "viewContinuous": "Teks lengkap",
+    "viewTimestamped": "Berstempel waktu",
+    "noTimestampedSegments": "Tidak ada segmen berstempel waktu untuk transkrip ini.",
+    "segmentSpeaker": "Pembicara %{speaker}",
+    "segmentLanguage": "Bahasa %{language}",
+    "segmentProgress": "Menampilkan %{shown} dari %{total} segmen",
+    "showMoreSegments": "Tampilkan lebih banyak segmen",
     "loadFailed": "Transkrip lokal tidak dapat dibuka.",
     "retry": "Coba buka transkrip lagi"
   }

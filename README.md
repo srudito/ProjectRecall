@@ -17,8 +17,9 @@ plane. Its development rollout has passed controlled live validation; production
 remains untouched. Milestone 2B.2 connects the native local-first request queue
 to the authenticated request endpoint and recording UI. Milestone 2B.3A adds
 authenticated RLS result synchronization and atomic local SQLite transcript
-persistence. Milestone 2B.3B adds a read-only, offline-capable transcript tab;
-editing, search, export, and timestamped browsing remain later milestones.
+persistence. Milestone 2B.3B adds a read-only, offline-capable transcript tab,
+and Milestone 2B.3C adds local timestamped segment browsing. Playback seeking,
+editing, search, and export remain later milestones.
 
 ## Source of truth
 

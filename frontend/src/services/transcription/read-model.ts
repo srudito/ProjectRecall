@@ -2,18 +2,30 @@ import {
   getCurrentTranscriptVersionForSession,
   listTranscriptSegmentsForVersion,
 } from "@/src/services/sqlite/repository";
+import { formatDurationMs } from "@/src/utils/format";
 
 import type {
   SyncedTranscriptSegment,
   SyncedTranscriptVersion,
 } from "./result-types";
 
+export interface LocalTranscriptSegmentReadRow {
+  id: string;
+  segmentIndex: number;
+  startMs: number;
+  endMs: number;
+  timestampLabel: string;
+  text: string;
+  languageCode: string | null;
+  speakerLabel: string | null;
+}
+
 export type LocalTranscriptReadModel =
   | { kind: "empty" }
   | {
       kind: "ready";
       version: SyncedTranscriptVersion;
-      segments: SyncedTranscriptSegment[];
+      segmentRows: LocalTranscriptSegmentReadRow[];
       plainText: string;
       segmentCount: number;
     };
@@ -39,24 +51,69 @@ const defaultDependencies: LocalTranscriptReadDependencies = {
   listSegments: listTranscriptSegmentsForVersion,
 };
 
-const validateSegments = (
+const optionalTrimmed = (value: string | null): string | null => {
+  const trimmed = value?.trim() ?? "";
+  return trimmed.length > 0 ? trimmed : null;
+};
+
+export const formatTranscriptSegmentTimeRange = (
+  startMs: number,
+  endMs: number,
+): string => {
+  if (
+    !Number.isSafeInteger(startMs) ||
+    !Number.isSafeInteger(endMs) ||
+    startMs < 0 ||
+    endMs < startMs
+  ) {
+    throw new LocalTranscriptReadError();
+  }
+
+  const start = formatDurationMs(startMs);
+  const end = formatDurationMs(endMs);
+  return start === end ? start : `${start}–${end}`;
+};
+
+export const buildLocalTranscriptSegmentRows = (
   sessionId: string,
   version: SyncedTranscriptVersion,
   segments: readonly SyncedTranscriptSegment[],
-): void => {
+): LocalTranscriptSegmentReadRow[] => {
   let previousIndex = -1;
+  const seenIds = new Set<string>();
 
-  for (const segment of segments) {
+  return segments.map((segment) => {
+    const segmentText = segment.text.trim();
     if (
       segment.workspace_id !== version.workspace_id ||
       segment.session_id !== sessionId ||
       segment.transcript_version_id !== version.id ||
-      segment.segment_index <= previousIndex
+      !Number.isSafeInteger(segment.segment_index) ||
+      segment.segment_index <= previousIndex ||
+      seenIds.has(segment.id) ||
+      segmentText.length === 0
     ) {
       throw new LocalTranscriptReadError();
     }
+
+    const timestampLabel = formatTranscriptSegmentTimeRange(
+      segment.start_ms,
+      segment.end_ms,
+    );
     previousIndex = segment.segment_index;
-  }
+    seenIds.add(segment.id);
+
+    return {
+      id: segment.id,
+      segmentIndex: segment.segment_index,
+      startMs: segment.start_ms,
+      endMs: segment.end_ms,
+      timestampLabel,
+      text: segmentText,
+      languageCode: optionalTrimmed(segment.language_code),
+      speakerLabel: optionalTrimmed(segment.speaker_label),
+    };
+  });
 };
 
 export const loadLocalTranscriptReadModel = async (
@@ -75,22 +132,23 @@ export const loadLocalTranscriptReadModel = async (
   }
 
   const segments = await dependencies.listSegments(version.id);
-  validateSegments(sessionId, version, segments);
+  const segmentRows = buildLocalTranscriptSegmentRows(
+    sessionId,
+    version,
+    segments,
+  );
 
   const versionText = version.plain_text.trim();
   const plainText =
     versionText.length > 0
       ? versionText
-      : segments
-          .map((segment) => segment.text.trim())
-          .filter((text) => text.length > 0)
-          .join(" ");
+      : segmentRows.map((segment) => segment.text).join(" ");
 
   return {
     kind: "ready",
     version,
-    segments: [...segments],
+    segmentRows,
     plainText,
-    segmentCount: segments.length,
+    segmentCount: segmentRows.length,
   };
 };

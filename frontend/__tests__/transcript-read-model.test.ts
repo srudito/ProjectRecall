@@ -1,4 +1,6 @@
 import {
+  buildLocalTranscriptSegmentRows,
+  formatTranscriptSegmentTimeRange,
   loadLocalTranscriptReadModel,
   LocalTranscriptReadError,
 } from "@/src/services/transcription/read-model";
@@ -34,6 +36,7 @@ const version: SyncedTranscriptVersion = {
 const segment = (
   index: number,
   text: string,
+  overrides: Partial<SyncedTranscriptSegment> = {},
 ): SyncedTranscriptSegment => ({
   id: `${index + 5}${index + 5}${index + 5}${index + 5}${index + 5}${index + 5}${index + 5}${index + 5}-${index + 5}${index + 5}${index + 5}${index + 5}-4${index + 5}${index + 5}${index + 5}-8${index + 5}${index + 5}${index + 5}-${String(index + 5).repeat(12)}`,
   workspace_id: WORKSPACE_ID,
@@ -49,6 +52,7 @@ const segment = (
   provider_segment_id: null,
   created_at: NOW,
   updated_at: NOW,
+  ...overrides,
 });
 
 describe("local transcript read model", () => {
@@ -61,10 +65,13 @@ describe("local transcript read model", () => {
     ).resolves.toEqual({ kind: "empty" });
   });
 
-  it("returns current plain text and the local segment count", async () => {
+  it("returns current text, segment rows, and the local segment count", async () => {
     const segments = [
       segment(0, "First sentence."),
-      segment(1, "Second sentence."),
+      segment(1, "Second sentence.", {
+        speaker_label: "A",
+        language_code: "id",
+      }),
     ];
 
     await expect(
@@ -75,15 +82,36 @@ describe("local transcript read model", () => {
     ).resolves.toEqual({
       kind: "ready",
       version,
-      segments,
+      segmentRows: [
+        {
+          id: segments[0].id,
+          segmentIndex: 0,
+          startMs: 0,
+          endMs: 1000,
+          timestampLabel: "00:00–00:01",
+          text: "First sentence.",
+          languageCode: "en",
+          speakerLabel: null,
+        },
+        {
+          id: segments[1].id,
+          segmentIndex: 1,
+          startMs: 1000,
+          endMs: 2000,
+          timestampLabel: "00:01–00:02",
+          text: "Second sentence.",
+          languageCode: "id",
+          speakerLabel: "A",
+        },
+      ],
       plainText: "First sentence. Second sentence.",
       segmentCount: 2,
     });
   });
 
-  it("falls back to ordered segment text when plain_text is empty", async () => {
+  it("falls back to normalized ordered segment text when plain_text is empty", async () => {
     const segments = [
-      segment(0, "First sentence."),
+      segment(0, " First sentence. "),
       segment(1, "Second sentence."),
     ];
 
@@ -99,6 +127,35 @@ describe("local transcript read model", () => {
         segmentCount: 2,
       }),
     );
+  });
+
+  it("formats transcript ranges across minutes and hours", () => {
+    expect(formatTranscriptSegmentTimeRange(65_000, 68_500)).toBe(
+      "01:05–01:08",
+    );
+    expect(formatTranscriptSegmentTimeRange(3_665_000, 3_668_000)).toBe(
+      "01:01:05–01:01:08",
+    );
+  });
+
+  it("normalizes optional timestamp-row metadata without provider identifiers", () => {
+    const [row] = buildLocalTranscriptSegmentRows(SESSION_ID, version, [
+      segment(0, "  Hello.  ", {
+        language_code: " en ",
+        speaker_label: " Speaker A ",
+        provider_segment_id: "provider-word-1",
+      }),
+    ]);
+
+    expect(row).toEqual(
+      expect.objectContaining({
+        timestampLabel: "00:00–00:01",
+        text: "Hello.",
+        languageCode: "en",
+        speakerLabel: "Speaker A",
+      }),
+    );
+    expect(row).not.toHaveProperty("providerSegmentId");
   });
 
   it("rejects transcript segments that cross session scope", async () => {
@@ -125,5 +182,27 @@ describe("local transcript read model", () => {
         ]),
       }),
     ).rejects.toBeInstanceOf(LocalTranscriptReadError);
+  });
+
+  it("rejects invalid time ranges, blank text, and duplicate IDs", () => {
+    expect(() =>
+      buildLocalTranscriptSegmentRows(SESSION_ID, version, [
+        segment(0, "Invalid time.", { start_ms: 2_000, end_ms: 1_000 }),
+      ]),
+    ).toThrow(LocalTranscriptReadError);
+
+    expect(() =>
+      buildLocalTranscriptSegmentRows(SESSION_ID, version, [
+        segment(0, "   "),
+      ]),
+    ).toThrow(LocalTranscriptReadError);
+
+    const first = segment(0, "First.");
+    expect(() =>
+      buildLocalTranscriptSegmentRows(SESSION_ID, version, [
+        first,
+        segment(1, "Second.", { id: first.id }),
+      ]),
+    ).toThrow(LocalTranscriptReadError);
   });
 });

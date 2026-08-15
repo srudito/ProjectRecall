@@ -39,9 +39,10 @@ flags:
 - Admin control panel (`admin_enabled`)
 
 The read-only Transcript tab lives inside Session Detail rather than a separate
-route. It reads only the private SQLite cache, so an already synchronized
-transcript remains available offline and remains readable if new remote
-transcription requests are later disabled. No non-functional menu is exposed for
+route. It reads only the private SQLite cache and provides continuous text plus a
+timestamped local segment browser, so an already synchronized transcript remains
+available offline even if new remote transcription requests are later disabled.
+Timestamp rows do not seek audio yet. No non-functional menu is exposed for
 future features whose implementation is still absent.
 
 ## Project context navigation

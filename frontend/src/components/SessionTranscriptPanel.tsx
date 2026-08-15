@@ -1,23 +1,32 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Text, View } from "react-native";
+import { Text, TouchableOpacity, View } from "react-native";
 
 import { useI18n } from "@/src/i18n/I18nProvider";
 import { subscribeTranscriptionSyncChanges } from "@/src/services/sync/transcription-sync-events";
 import {
   loadLocalTranscriptReadModel,
   type LocalTranscriptReadModel,
+  type LocalTranscriptSegmentReadRow,
 } from "@/src/services/transcription/read-model";
 import { useTheme } from "@/src/theme/ThemeProvider";
 
 import { Button } from "./Button";
 import { Card } from "./Card";
 
+type TranscriptViewMode = "continuous" | "segments";
+
+const SEGMENT_BATCH_SIZE = 100;
+
 export function SessionTranscriptPanel({ sessionId }: { sessionId: string }) {
   const { t } = useI18n();
-  const { colors, spacing, typography } = useTheme();
+  const { colors, spacing, radii, typography, layout } = useTheme();
   const [model, setModel] = useState<LocalTranscriptReadModel>({ kind: "empty" });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [viewMode, setViewMode] =
+    useState<TranscriptViewMode>("continuous");
+  const [visibleSegmentCount, setVisibleSegmentCount] =
+    useState(SEGMENT_BATCH_SIZE);
   const loadRequestRef = useRef(0);
   const hasLoadedRef = useRef(false);
 
@@ -48,6 +57,8 @@ export function SessionTranscriptPanel({ sessionId }: { sessionId: string }) {
     setModel({ kind: "empty" });
     setError(null);
     setLoading(true);
+    setViewMode("continuous");
+    setVisibleSegmentCount(SEGMENT_BATCH_SIZE);
 
     void load();
     const unsubscribe = subscribeTranscriptionSyncChanges(() => {
@@ -59,6 +70,65 @@ export function SessionTranscriptPanel({ sessionId }: { sessionId: string }) {
       unsubscribe();
     };
   }, [load]);
+
+  const currentVersionId =
+    model.kind === "ready" ? model.version.id : null;
+
+  useEffect(() => {
+    setVisibleSegmentCount(SEGMENT_BATCH_SIZE);
+  }, [currentVersionId]);
+
+  const renderViewModeButton = (
+    mode: TranscriptViewMode,
+    label: string,
+  ) => {
+    const selected = viewMode === mode;
+    return (
+      <TouchableOpacity
+        testID={`session-transcript-view-${mode}`}
+        accessibilityRole="button"
+        accessibilityLabel={label}
+        accessibilityState={{ selected }}
+        onPress={() => setViewMode(mode)}
+        style={{
+          minHeight: layout.minTouchTarget,
+          flex: 1,
+          alignItems: "center",
+          justifyContent: "center",
+          paddingHorizontal: spacing.sm,
+          borderRadius: radii.md,
+          borderWidth: 1,
+          borderColor: selected ? colors.accent : colors.border,
+          backgroundColor: selected ? colors.accent : colors.surface,
+        }}
+      >
+        <Text
+          style={[
+            typography.caption,
+            { color: selected ? colors.textOnAccent : colors.textPrimary },
+          ]}
+        >
+          {label}
+        </Text>
+      </TouchableOpacity>
+    );
+  };
+
+  const segmentDetails = (segment: LocalTranscriptSegmentReadRow): string =>
+    [
+      segment.speakerLabel
+        ? t("session", "transcript.segmentSpeaker", {
+            speaker: segment.speakerLabel,
+          })
+        : null,
+      segment.languageCode
+        ? t("session", "transcript.segmentLanguage", {
+            language: segment.languageCode.toUpperCase(),
+          })
+        : null,
+    ]
+      .filter((value): value is string => value != null)
+      .join(" • ");
 
   return (
     <Card
@@ -139,16 +209,140 @@ export function SessionTranscriptPanel({ sessionId }: { sessionId: string }) {
             </Text>
           ) : null}
 
-          <Text
-            selectable
-            testID="session-transcript-text"
-            style={[
-              typography.body,
-              { color: colors.textPrimary, marginTop: spacing.sm },
-            ]}
+          <View
+            testID="session-transcript-view-mode"
+            style={{
+              flexDirection: "row",
+              gap: spacing.xs,
+              marginTop: spacing.sm,
+            }}
           >
-            {model.plainText || t("session", "transcript.emptyContent")}
-          </Text>
+            {renderViewModeButton(
+              "continuous",
+              t("session", "transcript.viewContinuous"),
+            )}
+            {renderViewModeButton(
+              "segments",
+              t("session", "transcript.viewTimestamped"),
+            )}
+          </View>
+
+          {viewMode === "continuous" ? (
+            <Text
+              selectable
+              testID="session-transcript-text"
+              style={[
+                typography.body,
+                { color: colors.textPrimary, marginTop: spacing.sm },
+              ]}
+            >
+              {model.plainText || t("session", "transcript.emptyContent")}
+            </Text>
+          ) : model.segmentRows.length === 0 ? (
+            <Text
+              testID="session-transcript-segments-empty"
+              style={[
+                typography.body,
+                { color: colors.textSecondary, marginTop: spacing.sm },
+              ]}
+            >
+              {t("session", "transcript.noTimestampedSegments")}
+            </Text>
+          ) : (
+            <View
+              testID="session-transcript-segment-list"
+              style={{ marginTop: spacing.sm }}
+            >
+              {model.segmentRows
+                .slice(0, visibleSegmentCount)
+                .map((segment) => {
+                  const details = segmentDetails(segment);
+                  return (
+                    <View
+                      key={segment.id}
+                      testID={`session-transcript-segment-${segment.segmentIndex}`}
+                      style={{
+                        paddingVertical: spacing.sm,
+                        borderBottomWidth: 1,
+                        borderBottomColor: colors.border,
+                      }}
+                    >
+                      <View
+                        style={{
+                          flexDirection: "row",
+                          alignItems: "baseline",
+                          flexWrap: "wrap",
+                          gap: spacing.xs,
+                        }}
+                      >
+                        <Text
+                          testID={`session-transcript-segment-time-${segment.segmentIndex}`}
+                          style={[
+                            typography.caption,
+                            {
+                              color: colors.accent,
+                              fontVariant: ["tabular-nums"],
+                            },
+                          ]}
+                        >
+                          {segment.timestampLabel}
+                        </Text>
+                        {details ? (
+                          <Text
+                            style={[
+                              typography.caption,
+                              { color: colors.textTertiary },
+                            ]}
+                          >
+                            {details}
+                          </Text>
+                        ) : null}
+                      </View>
+                      <Text
+                        selectable
+                        testID={`session-transcript-segment-text-${segment.segmentIndex}`}
+                        style={[
+                          typography.body,
+                          { color: colors.textPrimary, marginTop: spacing.xxs },
+                        ]}
+                      >
+                        {segment.text}
+                      </Text>
+                    </View>
+                  );
+                })}
+
+              <Text
+                testID="session-transcript-segment-progress"
+                style={[
+                  typography.caption,
+                  { color: colors.textTertiary, marginTop: spacing.sm },
+                ]}
+              >
+                {t("session", "transcript.segmentProgress", {
+                  shown: Math.min(visibleSegmentCount, model.segmentCount),
+                  total: model.segmentCount,
+                })}
+              </Text>
+
+              {visibleSegmentCount < model.segmentCount ? (
+                <Button
+                  testID="session-transcript-show-more"
+                  label={t("session", "transcript.showMoreSegments")}
+                  variant="secondary"
+                  onPress={() =>
+                    setVisibleSegmentCount((current) =>
+                      Math.min(
+                        current + SEGMENT_BATCH_SIZE,
+                        model.segmentCount,
+                      ),
+                    )
+                  }
+                  style={{ marginTop: spacing.sm }}
+                />
+              ) : null}
+            </View>
+          )}
         </View>
       )}
     </Card>

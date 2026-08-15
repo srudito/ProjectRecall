@@ -109,6 +109,13 @@
     "emptyContent": "The transcript has no readable text.",
     "availableOffline": "Available offline on this device",
     "metadata": "Version %{version} • Segments %{count}",
+    "viewContinuous": "Full text",
+    "viewTimestamped": "Timestamps",
+    "noTimestampedSegments": "No timestamped segments are available for this transcript.",
+    "segmentSpeaker": "Speaker %{speaker}",
+    "segmentLanguage": "Language %{language}",
+    "segmentProgress": "Showing %{shown} of %{total} segments",
+    "showMoreSegments": "Show more segments",
     "loadFailed": "The local transcript could not be opened.",
     "retry": "Try opening transcript again"
   }
