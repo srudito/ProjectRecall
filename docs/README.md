@@ -139,10 +139,12 @@ worker execution, authenticated Cron, and development feature activation all
 passed. Production remains untouched.
 
 Milestone 2B.2 connects the native app to that backend through the existing
-SQLite v10 request queue. The app never receives AssemblyAI or worker secrets,
-and the server-side feature flag remains authoritative. This milestone stops at
-accepted durable request state; transcript content synchronization/display is
-not included yet.
+SQLite v10 request queue. Milestone 2B.3A synchronizes completed transcript
+results through authenticated RLS reads and stores them atomically in SQLite.
+Milestone 2B.3B adds a native read-only Transcript tab that reads only that local
+cache and remains available offline. The app never receives AssemblyAI or worker
+secrets, and the server-side feature flag remains authoritative. Editing and
+user-created immutable versions remain later milestones.
 
 See `ROADMAP.md`, `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_IMPLEMENTATION.md`,
 `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_TEST.md`,
@@ -150,8 +152,12 @@ See `ROADMAP.md`, `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_IMPLEMENTATION.m
 `MILESTONE2B1_ASSEMBLYAI_PROVIDER_ADAPTER_V1_TEST.md`,
 `MILESTONE2B1_DURABLE_REQUEST_WORKER_V1_IMPLEMENTATION.md`,
 `MILESTONE2B1_DURABLE_REQUEST_WORKER_V1_TEST.md`,
-`MILESTONE2B2_MOBILE_TRANSCRIPTION_REQUEST_V1_IMPLEMENTATION.md`, and
-`MILESTONE2B2_MOBILE_TRANSCRIPTION_REQUEST_V1_TEST.md`.
+`MILESTONE2B2_MOBILE_TRANSCRIPTION_REQUEST_V1_IMPLEMENTATION.md`,
+`MILESTONE2B2_MOBILE_TRANSCRIPTION_REQUEST_V1_TEST.md`,
+`MILESTONE2B3A_TRANSCRIPT_RESULT_SYNC_V1_IMPLEMENTATION.md`,
+`MILESTONE2B3A_TRANSCRIPT_RESULT_SYNC_V1_TEST.md`,
+`MILESTONE2B3B_TRANSCRIPT_READ_UI_V1_IMPLEMENTATION.md`, and
+`MILESTONE2B3B_TRANSCRIPT_READ_UI_V1_TEST.md`.
 
 ## Public legal pages
 
@@ -185,3 +191,9 @@ login before configuring production EAS or Play Console.
 - Implementation: `MILESTONE2B3A_TRANSCRIPT_RESULT_SYNC_V1_IMPLEMENTATION.md`
 - Test plan: `MILESTONE2B3A_TRANSCRIPT_RESULT_SYNC_V1_TEST.md`
 - Scope: authenticated RLS result reads, durable polling, paginated segments, and atomic SQLite persistence. Transcript UI remains deferred.
+
+## Milestone 2B.3B transcript read UI
+
+- Implementation: `MILESTONE2B3B_TRANSCRIPT_READ_UI_V1_IMPLEMENTATION.md`
+- Test plan: `MILESTONE2B3B_TRANSCRIPT_READ_UI_V1_TEST.md`
+- Scope: native read-only transcript display from the existing local SQLite result cache, including offline availability. Editing, timestamped browsing, search, and export remain deferred.

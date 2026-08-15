@@ -17,7 +17,8 @@
   "tabs": {
     "overview": "Overview",
     "timeline": "Timeline",
-    "evidence": "Evidence"
+    "evidence": "Evidence",
+    "transcript": "Transcript"
   },
   "playback": {
     "play": "Play",
@@ -100,5 +101,15 @@
     "offlineUnavailable": "This file is not available on this device yet. Connect to the internet and try again.",
     "viewerUnavailable": "No compatible application is installed to open this file.",
     "openFailed": "This file could not be opened. Please try again."
+  },
+  "transcript": {
+    "title": "Transcript",
+    "empty": "No transcript is available on this device yet.",
+    "emptyHint": "When transcription finishes, the result will appear here and remain available offline.",
+    "emptyContent": "The transcript has no readable text.",
+    "availableOffline": "Available offline on this device",
+    "metadata": "Version %{version} • Segments %{count}",
+    "loadFailed": "The local transcript could not be opened.",
+    "retry": "Try opening transcript again"
   }
 }

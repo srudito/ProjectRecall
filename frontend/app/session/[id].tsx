@@ -6,6 +6,7 @@ import { Card } from "@/src/components/Card";
 import { Screen } from "@/src/components/Screen";
 import { SessionEvidenceAsset } from "@/src/components/SessionEvidenceAsset";
 import { SessionRecordingPanel } from "@/src/components/SessionRecordingPanel";
+import { SessionTranscriptPanel } from "@/src/components/SessionTranscriptPanel";
 import { useI18n } from "@/src/i18n/I18nProvider";
 import { TimelineEventType } from "@/src/domain/enums";
 import { sortTimeline } from "@/src/services/timeline/ordering";
@@ -95,7 +96,9 @@ export default function SessionDetail() {
   const userId = useAuthStore((state) => state.user?.id ?? null);
   const [session, setSession] = useState<SessionRecord | null>(null);
   const [project, setProject] = useState<ProjectRecord | null>(null);
-  const [tab, setTab] = useState<"overview" | "timeline" | "evidence">("overview");
+  const [tab, setTab] = useState<
+    "overview" | "transcript" | "timeline" | "evidence"
+  >("overview");
   const [timeline, setTimeline] = useState<CombinedTimeline[]>([]);
   const [notes, setNotes] = useState<NoteRecord[]>([]);
   const [bookmarks, setBookmarks] = useState<BookmarkRecord[]>([]);
@@ -289,6 +292,14 @@ const onOpenProject = () => {
   const renderTabs = () => {
     const tabs: { key: typeof tab; label: string }[] = [
       { key: "overview", label: t("session", "tabs.overview") },
+      ...(Platform.OS === "web"
+        ? []
+        : [
+            {
+              key: "transcript" as const,
+              label: t("session", "tabs.transcript"),
+            },
+          ]),
       { key: "timeline", label: t("session", "tabs.timeline") },
       { key: "evidence", label: t("session", "tabs.evidence") },
     ];
@@ -407,6 +418,10 @@ const onOpenProject = () => {
           </Card>
           <SessionRecordingPanel session={session} />
         </>
+      ) : null}
+
+      {tab === "transcript" ? (
+        <SessionTranscriptPanel sessionId={session.id} />
       ) : null}
 
       {tab === "timeline" ? (

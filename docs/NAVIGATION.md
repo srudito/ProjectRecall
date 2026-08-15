@@ -28,18 +28,21 @@ require an authenticated session.
 | Project Detail          | `/project/[id]`                | root      | yes  | —            |
 | Delete Account          | `/account/delete`              | root      | yes  | —            |
 
-Screens gated by feature flags (currently ALL false, therefore hidden):
+Remote creation/execution controls remain gated by their authoritative feature
+flags:
 
 - Ask AI (`ask_ai_enabled`)
-- Transcription views (`transcription_enabled`)
+- New transcription requests (`transcription_enabled`)
 - Live transcription (`live_transcription_enabled`)
 - Billing (`billing_enabled`)
 - Ads (`ads_enabled`)
 - Admin control panel (`admin_enabled`)
 
-No non-functional menu is exposed for any of the above. When a flag becomes
-true, the corresponding route file will be added and the tab bar / menus
-adjusted accordingly.
+The read-only Transcript tab lives inside Session Detail rather than a separate
+route. It reads only the private SQLite cache, so an already synchronized
+transcript remains available offline and remains readable if new remote
+transcription requests are later disabled. No non-functional menu is exposed for
+future features whose implementation is still absent.
 
 ## Project context navigation
 

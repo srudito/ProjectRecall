@@ -113,9 +113,31 @@ durable worker, Cron, and feature-activation validation. Production remains
 untouched. This phase stops after the backend accepts/reuses a durable job; it
 does not synchronize or display transcript content on mobile.
 
+### Phase 2B.3A — transcript result sync and local persistence
+
+Implemented in this phase:
+
+- authenticated RLS reads for durable job, run, current version, and segments;
+- bounded result polling tied to lifecycle, connectivity, and request submission;
+- paginated segment reads;
+- scope validation and atomic SQLite job/run/version/segment persistence;
+- idempotent local replacement and offline result availability;
+- provider cleanup must succeed before final local ingestion.
+
+### Phase 2B.3B — local transcript read UI
+
+Implemented in this phase:
+
+- a native Transcript tab on Session Detail;
+- read-only continuous transcript text from the local current version;
+- local version/segment metadata and an offline-availability indicator;
+- safe empty, loading, and local-read error states;
+- refresh when the result worker publishes local changes;
+- no Supabase or provider call from the reader UI.
+
 ### Later Milestone 2 phases
 
-- transcript synchronization and display;
+- timestamped transcript segment browsing;
 - single-language and multilingual transcription;
 - English/Bahasa Indonesia code-switching;
 - transcript editor and immutable version history;
@@ -153,3 +175,9 @@ does not synchronize or display transcript content on mobile.
 - Implementation: `MILESTONE2B3A_TRANSCRIPT_RESULT_SYNC_V1_IMPLEMENTATION.md`
 - Test plan: `MILESTONE2B3A_TRANSCRIPT_RESULT_SYNC_V1_TEST.md`
 - Scope: authenticated RLS result reads, durable polling, paginated segments, and atomic SQLite persistence. Transcript UI remains deferred.
+
+## Milestone 2B.3B — Local transcript read UI
+
+- Implementation: `MILESTONE2B3B_TRANSCRIPT_READ_UI_V1_IMPLEMENTATION.md`
+- Test plan: `MILESTONE2B3B_TRANSCRIPT_READ_UI_V1_TEST.md`
+- Scope: native, read-only continuous transcript display from the existing local SQLite result cache with offline availability.

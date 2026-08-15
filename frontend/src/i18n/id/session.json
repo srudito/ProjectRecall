@@ -17,7 +17,8 @@
   "tabs": {
     "overview": "Ringkasan",
     "timeline": "Linimasa",
-    "evidence": "Bukti"
+    "evidence": "Bukti",
+    "transcript": "Transkrip"
   },
   "playback": {
     "play": "Putar",
@@ -100,5 +101,15 @@
     "offlineUnavailable": "File ini belum tersedia di perangkat ini. Sambungkan internet lalu coba lagi.",
     "viewerUnavailable": "Tidak ada aplikasi yang kompatibel untuk membuka file ini.",
     "openFailed": "File ini tidak dapat dibuka. Silakan coba lagi."
+  },
+  "transcript": {
+    "title": "Transkrip",
+    "empty": "Belum ada transkrip yang tersedia di perangkat ini.",
+    "emptyHint": "Setelah transkripsi selesai, hasilnya akan muncul di sini dan tetap tersedia secara offline.",
+    "emptyContent": "Transkrip tidak memiliki teks yang dapat dibaca.",
+    "availableOffline": "Tersedia offline di perangkat ini",
+    "metadata": "Versi %{version} • Segmen %{count}",
+    "loadFailed": "Transkrip lokal tidak dapat dibuka.",
+    "retry": "Coba buka transkrip lagi"
   }
 }
