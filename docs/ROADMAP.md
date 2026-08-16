@@ -173,9 +173,25 @@ Implemented in this phase:
 - result-worker polling/backoff, backend, provider, and native configuration are
   unchanged.
 
+### Phase 2B.4A.2 — EN–ID provider result compatibility
+
+Implemented in source; controlled development redeployment and rerun remain
+pending:
+
+- reviewed English response locales canonicalize safely for the EN–ID pair;
+- the documented nullable `language_codes` response shape remains explicitly
+  covered without retaining raw provider responses;
+- manual EN–ID claim reconciliation uses the reviewed request pair while
+  preserving provider primary-language evidence;
+- code-switching words remain unlabeled when the provider does not supply
+  trustworthy word-level language attribution;
+- bounded diagnostic codes distinguish envelope, language, words, text, model,
+  and claim-validation failures without secrets or provider payloads;
+- no migration, retry/backoff, cleanup, mobile, Cron, or native change.
+
 ### Later Milestone 2 phases
 
-- controlled live English, Bahasa Indonesia, and EN–ID code-switching acceptance;
+- controlled EN–ID code-switching rerun after development worker redeployment;
 - transcript editor and immutable version history;
 - release hardening before production feature activation.
 
@@ -238,3 +254,10 @@ Implemented in this phase:
 - Implementation: `MILESTONE2B4A1_TRANSCRIPTION_PROGRESS_MESSAGING_V1_IMPLEMENTATION.md`
 - Test plan: `MILESTONE2B4A1_TRANSCRIPTION_PROGRESS_MESSAGING_V1_TEST.md`
 - Scope: local presentation hardening for durable transcription progress/retry states and local transcript readiness, with no worker, provider, migration, or retry-semantics change.
+
+
+## Milestone 2B.4A.2 — EN–ID provider result compatibility
+
+- Implementation: `MILESTONE2B4A2_EN_ID_PROVIDER_RESULT_COMPATIBILITY_V1_IMPLEMENTATION.md`
+- Test plan: `MILESTONE2B4A2_EN_ID_PROVIDER_RESULT_COMPATIBILITY_V1_TEST.md`
+- Scope: server-only compatibility and safe diagnostics for reviewed EN–ID completed results, with no migration or mobile change. Controlled redeployment and rerun remain pending.

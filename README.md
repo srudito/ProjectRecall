@@ -20,10 +20,12 @@ authenticated RLS result synchronization and atomic local SQLite transcript
 persistence. Milestone 2B.3B adds a read-only, offline-capable transcript tab,
 Milestone 2B.3C adds local timestamped segment browsing, Milestone 2B.4A
 aligns session setup and local request contracts with the reviewed manual English,
-Bahasa Indonesia, and EN–ID code-switching rollout, and Milestone 2B.4A.1 makes
+Bahasa Indonesia, and EN–ID code-switching rollout. Milestone 2B.4A.1 makes
 durable transcription progress/retry states explicit without presenting normal
-background retries as terminal failures. Playback seeking, editing, search, and
-export remain later milestones.
+background retries as terminal failures, and Milestone 2B.4A.2 hardens the
+server-only EN–ID completed-result boundary with explicit nullable-shape
+coverage, English-locale compatibility, and sanitized diagnostics. The controlled EN–ID rerun remains pending. Playback
+seeking, editing, search, and export remain later milestones.
 
 ## Source of truth
 

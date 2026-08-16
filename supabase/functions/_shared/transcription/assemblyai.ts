@@ -4,6 +4,7 @@ import {
   type NormalizedTranscript,
   type NormalizedTranscriptSegment,
   type ProviderArtifactDeletion,
+  type ProviderDiagnosticCode,
   type ProviderFailure,
   type ProviderFailureCode,
   type ProviderJobStatus,
@@ -213,6 +214,7 @@ const createFailure = (
   code: ProviderFailureCode,
   options: {
     retryable: boolean;
+    diagnosticCode?: ProviderDiagnosticCode;
     httpStatus?: number;
     retryAfterMs?: number;
     providerJobId?: string;
@@ -221,6 +223,9 @@ const createFailure = (
   code,
   retryable: options.retryable,
   safeMessage: SAFE_MESSAGES[code],
+  ...(options.diagnosticCode === undefined
+    ? {}
+    : { diagnosticCode: options.diagnosticCode }),
   ...(options.httpStatus === undefined
     ? {}
     : { httpStatus: options.httpStatus }),
@@ -236,6 +241,7 @@ const throwFailure = (
   code: ProviderFailureCode,
   options: {
     retryable: boolean;
+    diagnosticCode?: ProviderDiagnosticCode;
     httpStatus?: number;
     retryAfterMs?: number;
     providerJobId?: string;
@@ -243,6 +249,25 @@ const throwFailure = (
 ): never => {
   throw new TranscriptionProviderError(createFailure(code, options));
 };
+
+type AssemblyAIResultDiagnosticCode = Extract<
+  ProviderDiagnosticCode,
+  | "TRANSCRIPTION_PROVIDER_RESULT_ENVELOPE_INVALID"
+  | "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_METADATA_INVALID"
+  | "TRANSCRIPTION_PROVIDER_RESULT_WORDS_INVALID"
+  | "TRANSCRIPTION_PROVIDER_RESULT_TEXT_INVALID"
+  | "TRANSCRIPTION_PROVIDER_RESULT_MODEL_METADATA_INVALID"
+>;
+
+const throwResultInvalid = (
+  diagnosticCode: AssemblyAIResultDiagnosticCode,
+  options: { httpStatus?: number; providerJobId?: string } = {},
+): never =>
+  throwFailure("TRANSCRIPTION_PROVIDER_RESULT_INVALID", {
+    retryable: false,
+    diagnosticCode,
+    ...options,
+  });
 
 const normalizeLanguageCode = (value: string): string =>
   value.trim().replace(/_/g, "-").toLowerCase();
@@ -316,18 +341,18 @@ const normalizeDetectedLanguageCode = (value: unknown): string | null => {
     value.trim() !== value ||
     containsDatabaseUnsafeText(value)
   ) {
-    return throwFailure("TRANSCRIPTION_PROVIDER_RESULT_INVALID", {
-      retryable: false,
-    });
+    return throwResultInvalid(
+      "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_METADATA_INVALID",
+    );
   }
   const normalized = normalizeLanguageCode(value);
   if (
     !detectedLanguagePattern.test(normalized) ||
     !ASSEMBLYAI_SUPPORTED_LANGUAGE_CODES.has(normalized)
   ) {
-    return throwFailure("TRANSCRIPTION_PROVIDER_RESULT_INVALID", {
-      retryable: false,
-    });
+    return throwResultInvalid(
+      "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_METADATA_INVALID",
+    );
   }
   return normalized;
 };
@@ -518,89 +543,97 @@ const requireProviderJobId = (value: unknown): string => {
     typeof value !== "string" ||
     !assemblyAITranscriptIdPattern.test(value)
   ) {
-    return throwFailure("TRANSCRIPTION_PROVIDER_RESULT_INVALID", {
-      retryable: false,
-    });
+    return throwResultInvalid(
+      "TRANSCRIPTION_PROVIDER_RESULT_ENVELOPE_INVALID",
+    );
   }
   return value.toLowerCase();
 };
 
 const normalizeOptionalBoolean = (
   value: unknown,
+  diagnosticCode: AssemblyAIResultDiagnosticCode,
 ): boolean | null => {
   if (value === null || value === undefined) return null;
   if (typeof value !== "boolean") {
-    return throwFailure("TRANSCRIPTION_PROVIDER_RESULT_INVALID", {
-      retryable: false,
-    });
+    return throwResultInvalid(diagnosticCode);
   }
   return value;
 };
 
 const normalizeOptionalArray = (
   value: unknown,
+  diagnosticCode: AssemblyAIResultDiagnosticCode,
 ): readonly unknown[] | null => {
   if (value === null || value === undefined) return null;
   if (!Array.isArray(value)) {
-    return throwFailure("TRANSCRIPTION_PROVIDER_RESULT_INVALID", {
-      retryable: false,
-    });
+    return throwResultInvalid(diagnosticCode);
   }
 
   for (let index = 0; index < value.length; index += 1) {
     if (!Object.prototype.hasOwnProperty.call(value, index)) {
-      return throwFailure("TRANSCRIPTION_PROVIDER_RESULT_INVALID", {
-        retryable: false,
-      });
+      return throwResultInvalid(diagnosticCode);
     }
   }
 
   return value;
 };
 
+const REVIEWED_ENGLISH_RESULT_CODES: ReadonlySet<string> = new Set([
+  "en",
+  "en-au",
+  "en-uk",
+  "en-us",
+]);
+
+const canonicalizeReviewedResultLanguage = (languageCode: string): string =>
+  REVIEWED_ENGLISH_RESULT_CODES.has(languageCode) ? "en" : languageCode;
+
 const normalizeProviderLanguageCodes = (value: unknown): string[] => {
-  const rawLanguageCodes = normalizeOptionalArray(value);
+  const rawLanguageCodes = normalizeOptionalArray(
+    value,
+    "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_METADATA_INVALID",
+  );
   if (rawLanguageCodes === null) return [];
-  if (rawLanguageCodes.length === 0) {
-    return throwFailure("TRANSCRIPTION_PROVIDER_RESULT_INVALID", {
-      retryable: false,
-    });
+  if (rawLanguageCodes.length === 0 || rawLanguageCodes.length > 2) {
+    return throwResultInvalid(
+      "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_METADATA_INVALID",
+    );
   }
 
   const normalized = rawLanguageCodes.map((languageCode) => {
     const code = normalizeDetectedLanguageCode(languageCode);
     if (code === null) {
-      return throwFailure("TRANSCRIPTION_PROVIDER_RESULT_INVALID", {
-        retryable: false,
-      });
+      return throwResultInvalid(
+        "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_METADATA_INVALID",
+      );
     }
     return code;
   });
-  const uniqueCodes = [...new Set(normalized)].sort();
+  const canonical = normalized.map(canonicalizeReviewedResultLanguage);
+  const uniqueCodes = [...new Set(canonical)].sort();
 
   if (
-    uniqueCodes.length !== normalized.length ||
-    uniqueCodes.length > 2 ||
-    (uniqueCodes.length === 1 &&
-      uniqueCodes[0] !== "en" &&
-      uniqueCodes[0] !== "id") ||
-    (uniqueCodes.length === 2 &&
-      (uniqueCodes[0] !== "en" || uniqueCodes[1] !== "id"))
+    uniqueCodes.length !== canonical.length ||
+    uniqueCodes.some(
+      (languageCode) => languageCode !== "en" && languageCode !== "id",
+    )
   ) {
-    return throwFailure("TRANSCRIPTION_PROVIDER_RESULT_INVALID", {
-      retryable: false,
-    });
+    return throwResultInvalid(
+      "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_METADATA_INVALID",
+    );
   }
 
   return uniqueCodes;
 };
 
-const normalizeOptionalText = (value: unknown): string => {
+const normalizeOptionalText = (
+  value: unknown,
+  diagnosticCode: AssemblyAIResultDiagnosticCode,
+): string => {
   if (value === null || value === undefined) return "";
   if (typeof value !== "string" || containsDatabaseUnsafeText(value)) {
-    return throwFailure("TRANSCRIPTION_PROVIDER_RESULT_INVALID", {
-      retryable: false,
-    });
+    return throwResultInvalid(diagnosticCode);
   }
   return value.trim();
 };
@@ -608,28 +641,21 @@ const normalizeOptionalText = (value: unknown): string => {
 const normalizeOptionalNumber = (
   value: unknown,
   options: { min?: number; max?: number; integer?: boolean } = {},
+  diagnosticCode: AssemblyAIResultDiagnosticCode,
 ): number | null => {
   if (value === null || value === undefined) return null;
   if (typeof value !== "number" || !Number.isFinite(value)) {
-    return throwFailure("TRANSCRIPTION_PROVIDER_RESULT_INVALID", {
-      retryable: false,
-    });
+    return throwResultInvalid(diagnosticCode);
   }
   const numberValue = value;
   if (options.min !== undefined && numberValue < options.min) {
-    return throwFailure("TRANSCRIPTION_PROVIDER_RESULT_INVALID", {
-      retryable: false,
-    });
+    return throwResultInvalid(diagnosticCode);
   }
   if (options.max !== undefined && numberValue > options.max) {
-    return throwFailure("TRANSCRIPTION_PROVIDER_RESULT_INVALID", {
-      retryable: false,
-    });
+    return throwResultInvalid(diagnosticCode);
   }
   if (options.integer && !Number.isSafeInteger(numberValue)) {
-    return throwFailure("TRANSCRIPTION_PROVIDER_RESULT_INVALID", {
-      retryable: false,
-    });
+    return throwResultInvalid(diagnosticCode);
   }
   return numberValue;
 };
@@ -643,9 +669,7 @@ const normalizeWord = (
   },
 ): NormalizedTranscriptSegment => {
   if (!rawWord || typeof rawWord !== "object" || Array.isArray(rawWord)) {
-    return throwFailure("TRANSCRIPTION_PROVIDER_RESULT_INVALID", {
-      retryable: false,
-    });
+    return throwResultInvalid("TRANSCRIPTION_PROVIDER_RESULT_WORDS_INVALID");
   }
   const word = rawWord as AssemblyAIWord;
   if (
@@ -653,39 +677,36 @@ const normalizeWord = (
     !word.text.trim() ||
     containsDatabaseUnsafeText(word.text)
   ) {
-    return throwFailure("TRANSCRIPTION_PROVIDER_RESULT_INVALID", {
-      retryable: false,
-    });
+    return throwResultInvalid("TRANSCRIPTION_PROVIDER_RESULT_WORDS_INVALID");
   }
   const wordText = word.text.trim();
 
-  const startMs = normalizeOptionalNumber(word.start, {
-    min: 0,
-    integer: true,
-  });
-  const endMs = normalizeOptionalNumber(word.end, {
-    min: 0,
-    integer: true,
-  });
+  const startMs = normalizeOptionalNumber(
+    word.start,
+    { min: 0, integer: true },
+    "TRANSCRIPTION_PROVIDER_RESULT_WORDS_INVALID",
+  );
+  const endMs = normalizeOptionalNumber(
+    word.end,
+    { min: 0, integer: true },
+    "TRANSCRIPTION_PROVIDER_RESULT_WORDS_INVALID",
+  );
   if (startMs === null || endMs === null || endMs < startMs) {
-    return throwFailure("TRANSCRIPTION_PROVIDER_RESULT_INVALID", {
-      retryable: false,
-    });
+    return throwResultInvalid("TRANSCRIPTION_PROVIDER_RESULT_WORDS_INVALID");
   }
 
-  const confidence = normalizeOptionalNumber(word.confidence, {
-    min: 0,
-    max: 1,
-  });
+  const confidence = normalizeOptionalNumber(
+    word.confidence,
+    { min: 0, max: 1 },
+    "TRANSCRIPTION_PROVIDER_RESULT_WORDS_INVALID",
+  );
   let speakerLabel: string | null = null;
   if (word.speaker !== null && word.speaker !== undefined) {
     if (
       typeof word.speaker !== "string" ||
       !/^[A-Za-z0-9_-]{1,64}$/.test(word.speaker.trim())
     ) {
-      return throwFailure("TRANSCRIPTION_PROVIDER_RESULT_INVALID", {
-        retryable: false,
-      });
+      return throwResultInvalid("TRANSCRIPTION_PROVIDER_RESULT_WORDS_INVALID");
     }
     speakerLabel = word.speaker.trim();
   }
@@ -706,52 +727,57 @@ export const normalizeAssemblyAICompletedTranscript = (
   value: unknown,
 ): NormalizedTranscript => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return throwFailure("TRANSCRIPTION_PROVIDER_RESULT_INVALID", {
-      retryable: false,
-    });
+    return throwResultInvalid("TRANSCRIPTION_PROVIDER_RESULT_ENVELOPE_INVALID");
   }
 
   const response = value as AssemblyAITranscriptResponse;
   const providerJobId = requireProviderJobId(response.id);
-  const rawWords = normalizeOptionalArray(response.words);
-  if (response.status !== "completed" || rawWords === null) {
-    return throwFailure("TRANSCRIPTION_PROVIDER_RESULT_INVALID", {
-      retryable: false,
-    });
+  const rawWords = normalizeOptionalArray(
+    response.words,
+    "TRANSCRIPTION_PROVIDER_RESULT_WORDS_INVALID",
+  );
+  if (response.status !== "completed") {
+    return throwResultInvalid(
+      "TRANSCRIPTION_PROVIDER_RESULT_ENVELOPE_INVALID",
+      { providerJobId },
+    );
+  }
+  if (rawWords === null) {
+    return throwResultInvalid(
+      "TRANSCRIPTION_PROVIDER_RESULT_WORDS_INVALID",
+      { providerJobId },
+    );
   }
 
   const primaryLanguage = normalizeDetectedLanguageCode(
     response.language_code,
   );
   if (primaryLanguage === null) {
-    return throwFailure("TRANSCRIPTION_PROVIDER_RESULT_INVALID", {
-      retryable: false,
-    });
+    return throwResultInvalid(
+      "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_METADATA_INVALID",
+      { providerJobId },
+    );
   }
   const providerLanguageCodes = normalizeProviderLanguageCodes(
     response.language_codes,
   );
-  const reviewedEnglishPrimaryLanguages = new Set([
-    "en",
-    "en-au",
-    "en-uk",
-    "en-us",
-  ]);
+  const canonicalPrimaryLanguage = canonicalizeReviewedResultLanguage(
+    primaryLanguage,
+  );
   if (
-    primaryLanguage !== null &&
     providerLanguageCodes.length > 0 &&
-    !providerLanguageCodes.some(
-      (languageCode) =>
-        languageCode === primaryLanguage ||
-        (languageCode === "en" &&
-          reviewedEnglishPrimaryLanguages.has(primaryLanguage)),
-    )
+    !providerLanguageCodes.includes(canonicalPrimaryLanguage)
   ) {
-    return throwFailure("TRANSCRIPTION_PROVIDER_RESULT_INVALID", {
-      retryable: false,
-    });
+    return throwResultInvalid(
+      "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_METADATA_INVALID",
+      { providerJobId },
+    );
   }
   const codeSwitchingEnabled = providerLanguageCodes.length > 1;
+  const summaryLanguageCodes =
+    providerLanguageCodes.length === 1
+      ? [primaryLanguage]
+      : providerLanguageCodes;
   const segmentLanguage = codeSwitchingEnabled ? null : primaryLanguage;
   const segments = rawWords.map((word: unknown, segmentIndex: number) =>
     normalizeWord(word, {
@@ -763,41 +789,61 @@ export const normalizeAssemblyAICompletedTranscript = (
 
   for (let index = 1; index < segments.length; index += 1) {
     if (segments[index].startMs < segments[index - 1].startMs) {
-      return throwFailure("TRANSCRIPTION_PROVIDER_RESULT_INVALID", {
-        retryable: false,
-      });
+      return throwResultInvalid(
+        "TRANSCRIPTION_PROVIDER_RESULT_WORDS_INVALID",
+        { providerJobId },
+      );
     }
   }
 
-  const providerText = normalizeOptionalText(response.text);
+  if (segments.length === 0) {
+    return throwResultInvalid(
+      "TRANSCRIPTION_PROVIDER_RESULT_WORDS_INVALID",
+      { providerJobId },
+    );
+  }
+
+  const providerText = normalizeOptionalText(
+    response.text,
+    "TRANSCRIPTION_PROVIDER_RESULT_TEXT_INVALID",
+  );
   const plainText =
     providerText || segments.map((segment) => segment.text).join(" ");
 
-  if (!plainText || segments.length === 0) {
-    return throwFailure("TRANSCRIPTION_PROVIDER_RESULT_INVALID", {
-      retryable: false,
-    });
+  if (!plainText) {
+    return throwResultInvalid(
+      "TRANSCRIPTION_PROVIDER_RESULT_TEXT_INVALID",
+      { providerJobId },
+    );
   }
 
   const languageConfidence = normalizeOptionalNumber(
     response.language_confidence,
     { min: 0, max: 1 },
+    "TRANSCRIPTION_PROVIDER_RESULT_MODEL_METADATA_INVALID",
   );
   const audioDurationSeconds = normalizeOptionalNumber(
     response.audio_duration,
     { min: 0, max: Number.MAX_SAFE_INTEGER },
+    "TRANSCRIPTION_PROVIDER_RESULT_MODEL_METADATA_INVALID",
   );
   const languageDetection = normalizeOptionalBoolean(
     response.language_detection,
+    "TRANSCRIPTION_PROVIDER_RESULT_MODEL_METADATA_INVALID",
   );
   const speakerLabels = normalizeOptionalBoolean(
     response.speaker_labels,
+    "TRANSCRIPTION_PROVIDER_RESULT_MODEL_METADATA_INVALID",
   );
-  const utterances = normalizeOptionalArray(response.utterances);
+  const utterances = normalizeOptionalArray(
+    response.utterances,
+    "TRANSCRIPTION_PROVIDER_RESULT_MODEL_METADATA_INVALID",
+  );
   if (response.speech_model_used !== ASSEMBLYAI_PROVIDER_MODEL) {
-    return throwFailure("TRANSCRIPTION_PROVIDER_RESULT_INVALID", {
-      retryable: false,
-    });
+    return throwResultInvalid(
+      "TRANSCRIPTION_PROVIDER_RESULT_MODEL_METADATA_INVALID",
+      { providerJobId },
+    );
   }
   const speechModelUsed = ASSEMBLYAI_PROVIDER_MODEL;
 
@@ -809,11 +855,9 @@ export const normalizeAssemblyAICompletedTranscript = (
     languageSummary: {
       primaryLanguage,
       detectedLanguages:
-        providerLanguageCodes.length > 0
-          ? providerLanguageCodes
-          : primaryLanguage
-            ? [primaryLanguage]
-            : [],
+        summaryLanguageCodes.length > 0
+          ? summaryLanguageCodes
+          : [primaryLanguage],
       confidence: languageConfidence,
       detectionEnabled: languageDetection === true,
     },

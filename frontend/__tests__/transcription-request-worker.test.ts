@@ -86,6 +86,16 @@ const claim = (action: "submit" | "poll" = "submit"): TranscriptionClaim => ({
   leaseExpiresAt: "2026-08-10T10:01:00.000Z",
 });
 
+const multilingualPollClaim = (): TranscriptionClaim => ({
+  ...claim("poll"),
+  requestPayload: {
+    contractVersion: 1,
+    languageMode: "MULTILINGUAL",
+    requestedLanguages: ["en", "id"],
+    speakerDiarization: false,
+  },
+});
+
 const transcript: NormalizedTranscript = {
   providerKey: "assemblyai",
   providerModel: "universal-2",
@@ -399,6 +409,175 @@ describe("durable transcription worker", () => {
         checksumSha256: "a".repeat(64),
       }),
     );
+  });
+
+  it("reconciles a manual EN-ID response that reports only the primary language", async () => {
+    const db = database({
+      claimJobs: jest.fn(async () => [multilingualPollClaim()]),
+    });
+    const p = provider({
+      getStatus: jest.fn(async () => ({
+        status: "completed" as const,
+        providerJobId: PROVIDER_JOB_ID,
+        transcript,
+      })),
+    });
+    const worker = createTranscriptionWorker({
+      database: db,
+      createSignedAudioUrl: jest.fn(),
+      getProvider: jest.fn(() => p),
+      checksumSha256: jest.fn(async () => "a".repeat(64)),
+      workerId: WORKER_ID,
+    });
+
+    const result = await worker.run();
+
+    expect(result.completed).toBe(1);
+    expect(db.completeJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        transcript: expect.objectContaining({
+          languageSummary: {
+            primaryLanguage: "id",
+            detectedLanguages: ["en", "id"],
+            confidence: 0.99,
+            detectionEnabled: false,
+          },
+          segments: [
+            expect.objectContaining({
+              languageCode: null,
+            }),
+          ],
+        }),
+      }),
+    );
+  });
+
+  it("preserves an English locale primary while reconciling the EN-ID pair", async () => {
+    const db = database({
+      claimJobs: jest.fn(async () => [multilingualPollClaim()]),
+    });
+    const p = provider({
+      getStatus: jest.fn(async () => ({
+        status: "completed" as const,
+        providerJobId: PROVIDER_JOB_ID,
+        transcript: {
+          ...transcript,
+          languageSummary: {
+            ...transcript.languageSummary,
+            primaryLanguage: "en-us",
+            detectedLanguages: ["en", "id"],
+          },
+          segments: transcript.segments.map((segment) => ({
+            ...segment,
+            languageCode: null,
+          })),
+        },
+      })),
+    });
+    const worker = createTranscriptionWorker({
+      database: db,
+      createSignedAudioUrl: jest.fn(),
+      getProvider: jest.fn(() => p),
+      checksumSha256: jest.fn(async () => "a".repeat(64)),
+      workerId: WORKER_ID,
+    });
+
+    const result = await worker.run();
+
+    expect(result.completed).toBe(1);
+    expect(db.completeJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        transcript: expect.objectContaining({
+          languageSummary: expect.objectContaining({
+            primaryLanguage: "en-us",
+            detectedLanguages: ["en-us", "id"],
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("persists a sanitized provider-result diagnostic without raw payload data", async () => {
+    const recordPollFailure = jest.fn(async () => "failed" as const);
+    const db = database({
+      claimJobs: jest.fn(async () => [claim("poll")]),
+      recordPollFailure,
+    });
+    const p = provider({
+      getStatus: jest.fn(async () => {
+        throw new TranscriptionProviderError({
+          code: "TRANSCRIPTION_PROVIDER_RESULT_INVALID",
+          diagnosticCode: "TRANSCRIPTION_PROVIDER_RESULT_WORDS_INVALID",
+          retryable: false,
+          safeMessage: "The transcription provider returned an invalid result.",
+          providerJobId: PROVIDER_JOB_ID,
+        });
+      }),
+    });
+    const worker = createTranscriptionWorker({
+      database: db,
+      createSignedAudioUrl: jest.fn(),
+      getProvider: jest.fn(() => p),
+      checksumSha256: jest.fn(),
+      workerId: WORKER_ID,
+    });
+
+    const result = await worker.run();
+
+    expect(result.failed).toBe(1);
+    expect(db.recordPollFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errorCode: "TRANSCRIPTION_PROVIDER_RESULT_WORDS_INVALID",
+        safeError: "The transcription provider returned an invalid result.",
+        providerTerminal: false,
+      }),
+    );
+    expect(JSON.stringify(recordPollFailure.mock.calls)).not.toContain(
+      "audio_url",
+    );
+  });
+
+  it("persists a claim-language diagnostic for an incompatible EN-ID result", async () => {
+    const db = database({
+      claimJobs: jest.fn(async () => [multilingualPollClaim()]),
+    });
+    const p = provider({
+      getStatus: jest.fn(async () => ({
+        status: "completed" as const,
+        providerJobId: PROVIDER_JOB_ID,
+        transcript: {
+          ...transcript,
+          languageSummary: {
+            ...transcript.languageSummary,
+            primaryLanguage: "fr",
+            detectedLanguages: ["fr"],
+          },
+          segments: transcript.segments.map((segment) => ({
+            ...segment,
+            languageCode: "fr",
+          })),
+        },
+      })),
+    });
+    const worker = createTranscriptionWorker({
+      database: db,
+      createSignedAudioUrl: jest.fn(),
+      getProvider: jest.fn(() => p),
+      checksumSha256: jest.fn(),
+      workerId: WORKER_ID,
+    });
+
+    const result = await worker.run();
+
+    expect(result.failed).toBe(1);
+    expect(db.recordPollFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errorCode: "TRANSCRIPTION_PROVIDER_RESULT_CLAIM_LANGUAGE_INVALID",
+        safeError: "The transcription provider returned an invalid result.",
+        providerTerminal: true,
+      }),
+    );
+    expect(db.completeJob).not.toHaveBeenCalled();
   });
 
   it("retries provider cleanup without losing the durable provider ID", async () => {

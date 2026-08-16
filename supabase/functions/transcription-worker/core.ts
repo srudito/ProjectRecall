@@ -2,6 +2,7 @@ import {
   TranscriptionProviderError,
   type NormalizedTranscript,
   type NormalizedTranscriptSegment,
+  type ProviderDiagnosticCode,
   type ProviderFailure,
   type ProviderSubmission,
   type ProviderSubmissionInput,
@@ -89,6 +90,7 @@ interface SafeWorkerFailure {
   code: string;
   retryable: boolean;
   safeMessage: string;
+  diagnosticCode?: ProviderDiagnosticCode;
   retryAfterMs?: number;
   providerJobId?: string;
 }
@@ -493,12 +495,19 @@ const normalizeCleanupFailure = (
   };
 };
 
-const resultInvalidFailure = (providerJobId?: string): ProviderFailure => ({
+const resultInvalidFailure = (
+  providerJobId?: string,
+  diagnosticCode?: ProviderDiagnosticCode,
+): ProviderFailure => ({
   code: "TRANSCRIPTION_PROVIDER_RESULT_INVALID",
   retryable: false,
   safeMessage: "The transcription provider returned an invalid result.",
+  ...(diagnosticCode ? { diagnosticCode } : {}),
   ...(providerJobId ? { providerJobId } : {}),
 });
+
+const persistedProviderFailureCode = (failure: SafeWorkerFailure): string =>
+  failure.diagnosticCode ?? failure.code;
 
 const retryAfterSeconds = (failure: SafeWorkerFailure, fallback: number): number => {
   const milliseconds = failure.retryAfterMs;
@@ -631,13 +640,77 @@ const validateSegment = (
   return true;
 };
 
+const reconcileTranscriptForClaim = (
+  claim: TranscriptionClaim,
+  transcript: NormalizedTranscript,
+): NormalizedTranscript => {
+  if (
+    claim.requestPayload.languageMode !== "MULTILINGUAL" ||
+    transcript.languageSummary.detectionEnabled
+  ) {
+    return transcript;
+  }
+
+  const requested = claim.requestPayload.requestedLanguages.map(
+    normalizeReviewedLanguage,
+  );
+  if (requested.join(",") !== "en,id") return transcript;
+
+  const primaryLanguage = transcript.languageSummary.primaryLanguage;
+  if (typeof primaryLanguage !== "string") return transcript;
+  const reviewedPrimary = normalizeReviewedLanguage(primaryLanguage);
+  if (reviewedPrimary === null) return transcript;
+
+  const reviewedDetected = transcript.languageSummary.detectedLanguages.map(
+    normalizeReviewedLanguage,
+  );
+  if (reviewedDetected.some((language) => language === null)) {
+    return transcript;
+  }
+  const uniqueDetected = [...new Set(reviewedDetected)].sort();
+  const providerReportedPair = uniqueDetected.join(",") === "en,id";
+  const providerReportedOnlyPrimary =
+    uniqueDetected.length === 1 && uniqueDetected[0] === reviewedPrimary;
+  if (!providerReportedPair && !providerReportedOnlyPrimary) {
+    return transcript;
+  }
+
+  const detectedLanguages =
+    reviewedPrimary === "en"
+      ? [primaryLanguage, "id"]
+      : ["en", primaryLanguage];
+
+  return {
+    ...transcript,
+    languageSummary: {
+      ...transcript.languageSummary,
+      // Manual code switching is user-confirmed. AssemblyAI may return only
+      // the primary language or an English locale in response metadata even
+      // when the submitted language_codes pair was ["en", "id"]. Preserve
+      // the provider primary while carrying the reviewed request pair into the
+      // durable USER_CONFIRMED language summary.
+      detectedLanguages,
+    },
+    // The pre-recorded response does not provide trustworthy per-word language
+    // attribution for this manual code-switching path. Do not assign the
+    // provider's dominant language to every word.
+    segments: transcript.segments.map((segment) => ({
+      ...segment,
+      languageCode: null,
+    })),
+  };
+};
+
 const validateTranscriptForClaim = (
   claim: TranscriptionClaim,
   transcript: NormalizedTranscript,
 ): void => {
-  const fail = (): never => {
+  const fail = (diagnosticCode: ProviderDiagnosticCode): never => {
     throw new TranscriptionProviderError(
-      resultInvalidFailure(claim.providerJobId ?? undefined),
+      resultInvalidFailure(
+        claim.providerJobId ?? undefined,
+        diagnosticCode,
+      ),
     );
   };
 
@@ -653,7 +726,12 @@ const validateTranscriptForClaim = (
     containsDatabaseUnsafeText(transcript.plainText) ||
     !isDenseArray(transcript.segments) ||
     transcript.segments.length === 0 ||
-    transcript.segments.length > 200000 ||
+    transcript.segments.length > 200000
+  ) {
+    fail("TRANSCRIPTION_PROVIDER_RESULT_CLAIM_SHAPE_INVALID");
+  }
+
+  if (
     !transcript.languageSummary ||
     typeof transcript.languageSummary !== "object" ||
     Array.isArray(transcript.languageSummary) ||
@@ -672,7 +750,7 @@ const validateTranscriptForClaim = (
         transcript.languageSummary.confidence < 0 ||
         transcript.languageSummary.confidence > 1))
   ) {
-    fail();
+    fail("TRANSCRIPTION_PROVIDER_RESULT_CLAIM_LANGUAGE_INVALID");
   }
 
   const detected = transcript.languageSummary.detectedLanguages;
@@ -680,7 +758,7 @@ const validateTranscriptForClaim = (
     detected.some((language) => !validateLanguageCode(language)) ||
     new Set(detected).size !== detected.length
   ) {
-    fail();
+    fail("TRANSCRIPTION_PROVIDER_RESULT_CLAIM_LANGUAGE_INVALID");
   }
 
   const normalizedDetected = detected.map(normalizeProviderLanguage).map(
@@ -704,7 +782,7 @@ const validateTranscriptForClaim = (
     (mode === "MULTILINGUAL" &&
       [...new Set(normalizedDetected)].sort().join(",") !== "en,id")
   ) {
-    fail();
+    fail("TRANSCRIPTION_PROVIDER_RESULT_CLAIM_LANGUAGE_INVALID");
   }
 
   const metadata = transcript.providerMetadata;
@@ -746,7 +824,7 @@ const validateTranscriptForClaim = (
         metadata.languageConfidence > 1)) ||
     metadata.languageConfidence !== transcript.languageSummary.confidence
   ) {
-    fail();
+    fail("TRANSCRIPTION_PROVIDER_RESULT_CLAIM_METADATA_INVALID");
   }
 
   const providerSegmentIds = new Set<string>();
@@ -763,7 +841,7 @@ const validateTranscriptForClaim = (
       ) ||
       providerSegmentIds.has(segment.providerSegmentId)
     ) {
-      fail();
+      fail("TRANSCRIPTION_PROVIDER_RESULT_CLAIM_SEGMENTS_INVALID");
     }
     providerSegmentIds.add(segment.providerSegmentId);
     previousStartMs = segment.startMs;
@@ -1035,7 +1113,7 @@ const processPoll = async (
       jobId: claim.jobId,
       runId: claim.runId,
       workerId: dependencies.workerId,
-      errorCode: failure.code,
+      errorCode: persistedProviderFailureCode(failure),
       safeError: failure.safeMessage,
       retryable: failure.retryable,
       providerTerminal: false,
@@ -1063,7 +1141,7 @@ const processPoll = async (
       jobId: claim.jobId,
       runId: claim.runId,
       workerId: dependencies.workerId,
-      errorCode: poll.failure.code,
+      errorCode: persistedProviderFailureCode(poll.failure),
       safeError: poll.failure.safeMessage,
       retryable: poll.failure.retryable,
       providerTerminal: true,
@@ -1077,14 +1155,18 @@ const processPoll = async (
   }
 
   try {
-    validateTranscriptForClaim(claim, poll.transcript);
-    const checksum = await safeChecksum(dependencies, poll.transcript);
+    const reconciledTranscript = reconcileTranscriptForClaim(
+      claim,
+      poll.transcript,
+    );
+    validateTranscriptForClaim(claim, reconciledTranscript);
+    const checksum = await safeChecksum(dependencies, reconciledTranscript);
     await dependencies.database.completeJob({
       jobId: claim.jobId,
       runId: claim.runId,
       workerId: dependencies.workerId,
       providerJobId,
-      transcript: poll.transcript,
+      transcript: reconciledTranscript,
       checksumSha256: checksum,
     });
     return "completed";
@@ -1099,7 +1181,7 @@ const processPoll = async (
       jobId: claim.jobId,
       runId: claim.runId,
       workerId: dependencies.workerId,
-      errorCode: failure.code,
+      errorCode: persistedProviderFailureCode(failure),
       safeError: failure.safeMessage,
       retryable: failure.retryable,
       providerTerminal: true,

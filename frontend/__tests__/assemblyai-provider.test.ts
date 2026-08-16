@@ -13,6 +13,7 @@ import {
 import {
   TranscriptionProviderError,
   type FetchLike,
+  type ProviderDiagnosticCode,
   type ProviderFailureCode,
 } from "../../supabase/functions/_shared/transcription/provider";
 
@@ -76,6 +77,27 @@ const expectSyncProviderError = (
 
   expect(captured).toBeInstanceOf(TranscriptionProviderError);
   expect(captured).toMatchObject({ failure: { code } });
+};
+
+const expectSyncProviderDiagnostic = (
+  callback: () => unknown,
+  diagnosticCode: ProviderDiagnosticCode,
+): void => {
+  let captured: unknown;
+  try {
+    callback();
+  } catch (error) {
+    captured = error;
+  }
+
+  expect(captured).toBeInstanceOf(TranscriptionProviderError);
+  expect(captured).toMatchObject({
+    failure: {
+      code: "TRANSCRIPTION_PROVIDER_RESULT_INVALID",
+      diagnosticCode,
+      retryable: false,
+    },
+  });
 };
 
 const completedResponse = () => ({
@@ -829,6 +851,7 @@ describe("AssemblyAI provider transport and polling", () => {
       await expect(provider.getStatus(PROVIDER_JOB_ID)).rejects.toMatchObject({
         failure: {
           code: "TRANSCRIPTION_PROVIDER_RESULT_INVALID",
+          diagnosticCode: "TRANSCRIPTION_PROVIDER_RESULT_WORDS_INVALID",
           retryable: false,
           providerJobId: PROVIDER_JOB_ID,
         },
@@ -978,6 +1001,69 @@ describe("AssemblyAI normalization and safety", () => {
     }
   });
 
+  it("canonicalizes reviewed English response locales for code switching", () => {
+    for (const input of [
+      { language_code: "en_us", language_codes: ["en_us", "id"] },
+      { language_code: "en_uk", language_codes: ["id", "en_uk"] },
+      { language_code: "id", language_codes: ["id", "en_au"] },
+    ]) {
+      const normalized = normalizeAssemblyAICompletedTranscript({
+        ...completedResponse(),
+        ...input,
+        language_detection: false,
+      });
+
+      expect(normalized.languageSummary).toMatchObject({
+        primaryLanguage: input.language_code.replace(/_/g, "-"),
+        detectedLanguages: ["en", "id"],
+        detectionEnabled: false,
+      });
+      expect(
+        normalized.segments.every((segment) => segment.languageCode === null),
+      ).toBe(true);
+    }
+  });
+
+  it("accepts nullable provider language_codes for later claim reconciliation", () => {
+    const normalized = normalizeAssemblyAICompletedTranscript({
+      ...completedResponse(),
+      language_code: "id",
+      language_codes: null,
+      language_detection: false,
+    });
+
+    expect(normalized.languageSummary).toEqual({
+      primaryLanguage: "id",
+      detectedLanguages: ["id"],
+      confidence: 0.91,
+      detectionEnabled: false,
+    });
+    expect(
+      normalized.segments.every((segment) => segment.languageCode === "id"),
+    ).toBe(true);
+  });
+
+  it("preserves an exact English primary locale for a single response code", () => {
+    const normalized = normalizeAssemblyAICompletedTranscript({
+      ...completedResponse(),
+      language_code: "en_us",
+      language_codes: ["en_us"],
+      language_detection: false,
+    });
+
+    expect(normalized.languageSummary).toEqual({
+      primaryLanguage: "en-us",
+      detectedLanguages: ["en-us"],
+      confidence: 0.91,
+      detectionEnabled: false,
+    });
+    expect(
+      normalized.segments.every(
+        (segment) => segment.languageCode === "en-us",
+      ),
+    ).toBe(true);
+  });
+
   it("rejects malformed provider language-code collections", () => {
     const sparseLanguageCodes = new Array(1);
 
@@ -986,12 +1072,10 @@ describe("AssemblyAI normalization and safety", () => {
       [],
       ["en", "en"],
       ["id", "ms"],
-      ["en-us", "id"],
       ["en", "en-us"],
       ["en", "id", "ms"],
       ["en", null],
       ["fr"],
-      ["en-us"],
       ["zzz"],
     ]) {
       expectSyncProviderError(
@@ -1003,6 +1087,41 @@ describe("AssemblyAI normalization and safety", () => {
         "TRANSCRIPTION_PROVIDER_RESULT_INVALID",
       );
     }
+  });
+
+  it("classifies sanitized completed-result validation failures", () => {
+    expectSyncProviderDiagnostic(
+      () =>
+        normalizeAssemblyAICompletedTranscript({
+          ...completedResponse(),
+          language_code: null,
+        }),
+      "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_METADATA_INVALID",
+    );
+    expectSyncProviderDiagnostic(
+      () =>
+        normalizeAssemblyAICompletedTranscript({
+          ...completedResponse(),
+          words: [],
+        }),
+      "TRANSCRIPTION_PROVIDER_RESULT_WORDS_INVALID",
+    );
+    expectSyncProviderDiagnostic(
+      () =>
+        normalizeAssemblyAICompletedTranscript({
+          ...completedResponse(),
+          text: 42,
+        }),
+      "TRANSCRIPTION_PROVIDER_RESULT_TEXT_INVALID",
+    );
+    expectSyncProviderDiagnostic(
+      () =>
+        normalizeAssemblyAICompletedTranscript({
+          ...completedResponse(),
+          speech_model_used: "unknown",
+        }),
+      "TRANSCRIPTION_PROVIDER_RESULT_MODEL_METADATA_INVALID",
+    );
   });
 
   it("rejects unsupported language metadata and unrequested model provenance", () => {

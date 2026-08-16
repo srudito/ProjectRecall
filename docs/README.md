@@ -148,9 +148,13 @@ transcription setup to English, Bahasa Indonesia, or the fixed EN–ID
 code-switching pair and canonicalizes the same capability in local request
 contracts. Milestone 2B.4A.1 separates ordinary transcription progress/retry
 messages from terminal errors and reports local transcript readiness without
-changing worker semantics. The app never receives AssemblyAI or worker secrets,
-and the server-side feature flag remains authoritative. Playback seeking,
-editing, and user-created immutable versions remain later milestones.
+changing worker semantics. Milestone 2B.4A.2 hardens the server-only EN–ID
+completed-result boundary with explicit nullable-shape coverage and English-locale
+compatibility, and adds bounded diagnostic codes without retaining raw provider
+responses. The app
+never receives AssemblyAI or worker secrets, and the server-side feature flag
+remains authoritative. The controlled EN–ID rerun remains pending. Playback
+seeking, editing, and user-created immutable versions remain later milestones.
 
 See `ROADMAP.md`, `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_IMPLEMENTATION.md`,
 `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_TEST.md`,
@@ -168,8 +172,10 @@ See `ROADMAP.md`, `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_IMPLEMENTATION.m
 `MILESTONE2B3C_TIMESTAMPED_TRANSCRIPT_BROWSER_V1_TEST.md`,
 `MILESTONE2B4A_SUPPORTED_LANGUAGE_MODES_V1_IMPLEMENTATION.md`,
 `MILESTONE2B4A_SUPPORTED_LANGUAGE_MODES_V1_TEST.md`,
-`MILESTONE2B4A1_TRANSCRIPTION_PROGRESS_MESSAGING_V1_IMPLEMENTATION.md`, and
-`MILESTONE2B4A1_TRANSCRIPTION_PROGRESS_MESSAGING_V1_TEST.md`.
+`MILESTONE2B4A1_TRANSCRIPTION_PROGRESS_MESSAGING_V1_IMPLEMENTATION.md`,
+`MILESTONE2B4A1_TRANSCRIPTION_PROGRESS_MESSAGING_V1_TEST.md`,
+`MILESTONE2B4A2_EN_ID_PROVIDER_RESULT_COMPATIBILITY_V1_IMPLEMENTATION.md`, and
+`MILESTONE2B4A2_EN_ID_PROVIDER_RESULT_COMPATIBILITY_V1_TEST.md`.
 
 ## Public legal pages
 
@@ -229,3 +235,10 @@ login before configuring production EAS or Play Console.
 - Implementation: `MILESTONE2B4A1_TRANSCRIPTION_PROGRESS_MESSAGING_V1_IMPLEMENTATION.md`
 - Test plan: `MILESTONE2B4A1_TRANSCRIPTION_PROGRESS_MESSAGING_V1_TEST.md`
 - Scope: distinguish recoverable waiting/processing/finalizing/cleanup/retry states from terminal failures and show local transcript readiness without changing backend or retry behavior.
+
+
+## Milestone 2B.4A.2 EN–ID provider result compatibility
+
+- Implementation: `MILESTONE2B4A2_EN_ID_PROVIDER_RESULT_COMPATIBILITY_V1_IMPLEMENTATION.md`
+- Test plan: `MILESTONE2B4A2_EN_ID_PROVIDER_RESULT_COMPATIBILITY_V1_TEST.md`
+- Scope: server-only English-locale compatibility, explicit nullable-response regression coverage, narrow manual EN–ID claim reconciliation, and sanitized failure diagnostics. No migration or mobile change.
