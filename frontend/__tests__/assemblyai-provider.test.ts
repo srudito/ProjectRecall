@@ -96,6 +96,7 @@ const expectSyncProviderDiagnostic = (
       code: "TRANSCRIPTION_PROVIDER_RESULT_INVALID",
       diagnosticCode,
       retryable: false,
+      safeMessage: "The transcription provider returned an invalid result.",
     },
   });
 };
@@ -860,6 +861,30 @@ describe("AssemblyAI provider transport and polling", () => {
   );
 
   it(
+    "preserves a fine-grained language diagnostic on completed polling results",
+    async () => {
+      const provider = providerWith(
+        jest.fn(async () =>
+          response(200, {
+            ...completedResponse(),
+            language_code: null,
+          }),
+        ) as FetchLike,
+      );
+
+      await expect(provider.getStatus(PROVIDER_JOB_ID)).rejects.toMatchObject({
+        failure: {
+          code: "TRANSCRIPTION_PROVIDER_RESULT_INVALID",
+          diagnosticCode:
+            "TRANSCRIPTION_PROVIDER_RESULT_PRIMARY_LANGUAGE_MISSING",
+          retryable: false,
+          providerJobId: PROVIDER_JOB_ID,
+        },
+      });
+    },
+  );
+
+  it(
     "preserves the provider job ID on retryable deletion transport failures",
     async () => {
       const provider = providerWith(
@@ -1089,6 +1114,81 @@ describe("AssemblyAI normalization and safety", () => {
     }
   });
 
+  it("classifies language metadata failures by structural cause", () => {
+    const sparseLanguageCodes = new Array(1);
+    const cases: {
+      override: Record<string, unknown>;
+      diagnosticCode: ProviderDiagnosticCode;
+    }[] = [
+      {
+        override: { language_code: null },
+        diagnosticCode:
+          "TRANSCRIPTION_PROVIDER_RESULT_PRIMARY_LANGUAGE_MISSING",
+      },
+      {
+        override: { language_code: undefined },
+        diagnosticCode:
+          "TRANSCRIPTION_PROVIDER_RESULT_PRIMARY_LANGUAGE_MISSING",
+      },
+      {
+        override: { language_code: 42 },
+        diagnosticCode:
+          "TRANSCRIPTION_PROVIDER_RESULT_PRIMARY_LANGUAGE_INVALID",
+      },
+      {
+        override: { language_codes: "en,id" },
+        diagnosticCode:
+          "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_CODES_SHAPE_INVALID",
+      },
+      {
+        override: { language_codes: sparseLanguageCodes },
+        diagnosticCode:
+          "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_CODES_SHAPE_INVALID",
+      },
+      {
+        override: { language_codes: ["en", "id", "ms"] },
+        diagnosticCode:
+          "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_CODES_SHAPE_INVALID",
+      },
+      {
+        override: { language_codes: [] },
+        diagnosticCode:
+          "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_CODES_EMPTY",
+      },
+      {
+        override: { language_codes: ["en", null] },
+        diagnosticCode:
+          "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_CODES_MEMBER_INVALID",
+      },
+      {
+        override: { language_codes: ["fr"] },
+        diagnosticCode:
+          "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_CODES_MEMBER_INVALID",
+      },
+      {
+        override: { language_code: "en", language_codes: ["en", "en_us"] },
+        diagnosticCode:
+          "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_CODES_DUPLICATE",
+      },
+      {
+        override: { language_code: "fr", language_codes: ["en", "id"] },
+        diagnosticCode:
+          "TRANSCRIPTION_PROVIDER_RESULT_PRIMARY_NOT_IN_LANGUAGE_CODES",
+      },
+    ];
+
+    for (const { override, diagnosticCode } of cases) {
+      expectSyncProviderDiagnostic(
+        () =>
+          normalizeAssemblyAICompletedTranscript({
+            ...completedResponse(),
+            ...override,
+          }),
+        diagnosticCode,
+      );
+    }
+  });
+
   it("classifies sanitized completed-result validation failures", () => {
     expectSyncProviderDiagnostic(
       () =>
@@ -1096,7 +1196,7 @@ describe("AssemblyAI normalization and safety", () => {
           ...completedResponse(),
           language_code: null,
         }),
-      "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_METADATA_INVALID",
+      "TRANSCRIPTION_PROVIDER_RESULT_PRIMARY_LANGUAGE_MISSING",
     );
     expectSyncProviderDiagnostic(
       () =>

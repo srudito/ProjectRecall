@@ -253,7 +253,13 @@ const throwFailure = (
 type AssemblyAIResultDiagnosticCode = Extract<
   ProviderDiagnosticCode,
   | "TRANSCRIPTION_PROVIDER_RESULT_ENVELOPE_INVALID"
-  | "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_METADATA_INVALID"
+  | "TRANSCRIPTION_PROVIDER_RESULT_PRIMARY_LANGUAGE_MISSING"
+  | "TRANSCRIPTION_PROVIDER_RESULT_PRIMARY_LANGUAGE_INVALID"
+  | "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_CODES_SHAPE_INVALID"
+  | "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_CODES_EMPTY"
+  | "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_CODES_MEMBER_INVALID"
+  | "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_CODES_DUPLICATE"
+  | "TRANSCRIPTION_PROVIDER_RESULT_PRIMARY_NOT_IN_LANGUAGE_CODES"
   | "TRANSCRIPTION_PROVIDER_RESULT_WORDS_INVALID"
   | "TRANSCRIPTION_PROVIDER_RESULT_TEXT_INVALID"
   | "TRANSCRIPTION_PROVIDER_RESULT_MODEL_METADATA_INVALID"
@@ -333,7 +339,10 @@ const validateSubmissionInput = (
 
 const detectedLanguagePattern = /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/;
 
-const normalizeDetectedLanguageCode = (value: unknown): string | null => {
+const normalizeDetectedLanguageCode = (
+  value: unknown,
+  diagnosticCode: AssemblyAIResultDiagnosticCode,
+): string | null => {
   if (value === null || value === undefined) return null;
   if (
     typeof value !== "string" ||
@@ -341,18 +350,14 @@ const normalizeDetectedLanguageCode = (value: unknown): string | null => {
     value.trim() !== value ||
     containsDatabaseUnsafeText(value)
   ) {
-    return throwResultInvalid(
-      "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_METADATA_INVALID",
-    );
+    return throwResultInvalid(diagnosticCode);
   }
   const normalized = normalizeLanguageCode(value);
   if (
     !detectedLanguagePattern.test(normalized) ||
     !ASSEMBLYAI_SUPPORTED_LANGUAGE_CODES.has(normalized)
   ) {
-    return throwResultInvalid(
-      "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_METADATA_INVALID",
-    );
+    return throwResultInvalid(diagnosticCode);
   }
   return normalized;
 };
@@ -592,20 +597,28 @@ const canonicalizeReviewedResultLanguage = (languageCode: string): string =>
 const normalizeProviderLanguageCodes = (value: unknown): string[] => {
   const rawLanguageCodes = normalizeOptionalArray(
     value,
-    "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_METADATA_INVALID",
+    "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_CODES_SHAPE_INVALID",
   );
   if (rawLanguageCodes === null) return [];
-  if (rawLanguageCodes.length === 0 || rawLanguageCodes.length > 2) {
+  if (rawLanguageCodes.length === 0) {
     return throwResultInvalid(
-      "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_METADATA_INVALID",
+      "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_CODES_EMPTY",
+    );
+  }
+  if (rawLanguageCodes.length > 2) {
+    return throwResultInvalid(
+      "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_CODES_SHAPE_INVALID",
     );
   }
 
   const normalized = rawLanguageCodes.map((languageCode) => {
-    const code = normalizeDetectedLanguageCode(languageCode);
+    const code = normalizeDetectedLanguageCode(
+      languageCode,
+      "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_CODES_MEMBER_INVALID",
+    );
     if (code === null) {
       return throwResultInvalid(
-        "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_METADATA_INVALID",
+        "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_CODES_MEMBER_INVALID",
       );
     }
     return code;
@@ -613,14 +626,18 @@ const normalizeProviderLanguageCodes = (value: unknown): string[] => {
   const canonical = normalized.map(canonicalizeReviewedResultLanguage);
   const uniqueCodes = [...new Set(canonical)].sort();
 
+  if (uniqueCodes.length !== canonical.length) {
+    return throwResultInvalid(
+      "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_CODES_DUPLICATE",
+    );
+  }
   if (
-    uniqueCodes.length !== canonical.length ||
     uniqueCodes.some(
       (languageCode) => languageCode !== "en" && languageCode !== "id",
     )
   ) {
     return throwResultInvalid(
-      "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_METADATA_INVALID",
+      "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_CODES_MEMBER_INVALID",
     );
   }
 
@@ -749,12 +766,19 @@ export const normalizeAssemblyAICompletedTranscript = (
     );
   }
 
+  if (response.language_code === null || response.language_code === undefined) {
+    return throwResultInvalid(
+      "TRANSCRIPTION_PROVIDER_RESULT_PRIMARY_LANGUAGE_MISSING",
+      { providerJobId },
+    );
+  }
   const primaryLanguage = normalizeDetectedLanguageCode(
     response.language_code,
+    "TRANSCRIPTION_PROVIDER_RESULT_PRIMARY_LANGUAGE_INVALID",
   );
   if (primaryLanguage === null) {
     return throwResultInvalid(
-      "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_METADATA_INVALID",
+      "TRANSCRIPTION_PROVIDER_RESULT_PRIMARY_LANGUAGE_MISSING",
       { providerJobId },
     );
   }
@@ -769,7 +793,7 @@ export const normalizeAssemblyAICompletedTranscript = (
     !providerLanguageCodes.includes(canonicalPrimaryLanguage)
   ) {
     return throwResultInvalid(
-      "TRANSCRIPTION_PROVIDER_RESULT_LANGUAGE_METADATA_INVALID",
+      "TRANSCRIPTION_PROVIDER_RESULT_PRIMARY_NOT_IN_LANGUAGE_CODES",
       { providerJobId },
     );
   }

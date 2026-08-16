@@ -150,11 +150,13 @@ contracts. Milestone 2B.4A.1 separates ordinary transcription progress/retry
 messages from terminal errors and reports local transcript readiness without
 changing worker semantics. Milestone 2B.4A.2 hardens the server-only EN–ID
 completed-result boundary with explicit nullable-shape coverage and English-locale
-compatibility, and adds bounded diagnostic codes without retaining raw provider
-responses. The app
-never receives AssemblyAI or worker secrets, and the server-side feature flag
-remains authoritative. The controlled EN–ID rerun remains pending. Playback
-seeking, editing, and user-created immutable versions remain later milestones.
+compatibility. Its controlled rerun isolated the remaining failure to provider
+language metadata. Milestone 2B.4A.3 splits that aggregate failure into bounded
+structural diagnostics without retaining raw provider values or changing
+compatibility behavior. The app never receives AssemblyAI or worker secrets, and
+the server-side feature flag remains authoritative. A fresh controlled EN–ID
+diagnostic rerun remains pending. Playback seeking, editing, and user-created
+immutable versions remain later milestones.
 
 See `ROADMAP.md`, `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_IMPLEMENTATION.md`,
 `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_TEST.md`,
@@ -174,8 +176,10 @@ See `ROADMAP.md`, `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_IMPLEMENTATION.m
 `MILESTONE2B4A_SUPPORTED_LANGUAGE_MODES_V1_TEST.md`,
 `MILESTONE2B4A1_TRANSCRIPTION_PROGRESS_MESSAGING_V1_IMPLEMENTATION.md`,
 `MILESTONE2B4A1_TRANSCRIPTION_PROGRESS_MESSAGING_V1_TEST.md`,
-`MILESTONE2B4A2_EN_ID_PROVIDER_RESULT_COMPATIBILITY_V1_IMPLEMENTATION.md`, and
-`MILESTONE2B4A2_EN_ID_PROVIDER_RESULT_COMPATIBILITY_V1_TEST.md`.
+`MILESTONE2B4A2_EN_ID_PROVIDER_RESULT_COMPATIBILITY_V1_IMPLEMENTATION.md`,
+`MILESTONE2B4A2_EN_ID_PROVIDER_RESULT_COMPATIBILITY_V1_TEST.md`,
+`MILESTONE2B4A3_EN_ID_LANGUAGE_METADATA_DIAGNOSTICS_V1_IMPLEMENTATION.md`, and
+`MILESTONE2B4A3_EN_ID_LANGUAGE_METADATA_DIAGNOSTICS_V1_TEST.md`.
 
 ## Public legal pages
 
@@ -242,3 +246,10 @@ login before configuring production EAS or Play Console.
 - Implementation: `MILESTONE2B4A2_EN_ID_PROVIDER_RESULT_COMPATIBILITY_V1_IMPLEMENTATION.md`
 - Test plan: `MILESTONE2B4A2_EN_ID_PROVIDER_RESULT_COMPATIBILITY_V1_TEST.md`
 - Scope: server-only English-locale compatibility, explicit nullable-response regression coverage, narrow manual EN–ID claim reconciliation, and sanitized failure diagnostics. No migration or mobile change.
+
+
+## Milestone 2B.4A.3 EN–ID language metadata diagnostics
+
+- Implementation: `MILESTONE2B4A3_EN_ID_LANGUAGE_METADATA_DIAGNOSTICS_V1_IMPLEMENTATION.md`
+- Test plan: `MILESTONE2B4A3_EN_ID_LANGUAGE_METADATA_DIAGNOSTICS_V1_TEST.md`
+- Scope: diagnostic-only structural classification for completed provider language metadata. No compatibility, migration, mobile, retry, cleanup, Cron, or secret change.

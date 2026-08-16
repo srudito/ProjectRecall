@@ -175,8 +175,9 @@ Implemented in this phase:
 
 ### Phase 2B.4A.2 — EN–ID provider result compatibility
 
-Implemented in source; controlled development redeployment and rerun remain
-pending:
+Implemented and deployed to development; the controlled rerun reached the
+provider but isolated a remaining completed-result failure to the aggregate
+language-metadata diagnostic:
 
 - reviewed English response locales canonicalize safely for the EN–ID pair;
 - the documented nullable `language_codes` response shape remains explicitly
@@ -189,9 +190,23 @@ pending:
   and claim-validation failures without secrets or provider payloads;
 - no migration, retry/backoff, cleanup, mobile, Cron, or native change.
 
+### Phase 2B.4A.3 - EN–ID language metadata shape diagnostics
+
+Implemented in source; development deployment and one fresh diagnostic rerun
+remain pending:
+
+- the aggregate provider language-metadata failure is split into bounded
+  primary, collection-shape, empty, member, duplicate, and primary-membership
+  categories;
+- omitted or null `language_codes` remains accepted;
+- no new provider response shape is accepted by this diagnostic-only change;
+- diagnostics contain no raw provider values, transcript content, signed URL,
+  provider identifier, credential, or secret;
+- no migration, request, worker retry, cleanup, mobile, Cron, or native change.
+
 ### Later Milestone 2 phases
 
-- controlled EN–ID code-switching rerun after development worker redeployment;
+- one controlled EN–ID diagnostic rerun after development worker redeployment;
 - transcript editor and immutable version history;
 - release hardening before production feature activation.
 
@@ -261,3 +276,10 @@ pending:
 - Implementation: `MILESTONE2B4A2_EN_ID_PROVIDER_RESULT_COMPATIBILITY_V1_IMPLEMENTATION.md`
 - Test plan: `MILESTONE2B4A2_EN_ID_PROVIDER_RESULT_COMPATIBILITY_V1_TEST.md`
 - Scope: server-only compatibility and safe diagnostics for reviewed EN–ID completed results, with no migration or mobile change. Controlled redeployment and rerun remain pending.
+
+
+## Milestone 2B.4A.3 - EN–ID language metadata diagnostics
+
+- Implementation: `MILESTONE2B4A3_EN_ID_LANGUAGE_METADATA_DIAGNOSTICS_V1_IMPLEMENTATION.md`
+- Test plan: `MILESTONE2B4A3_EN_ID_LANGUAGE_METADATA_DIAGNOSTICS_V1_TEST.md`
+- Scope: diagnostic-only structural classification of completed provider language metadata, with no compatibility or schema change.
