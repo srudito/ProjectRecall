@@ -28,6 +28,12 @@ require an authenticated session.
 | Project Detail          | `/project/[id]`                | root      | yes  | —            |
 | Delete Account          | `/account/delete`              | root      | yes  | —            |
 
+Record Setup keeps the general application language catalog out of the active
+transcription request path. Manual transcription selection exposes only English
+or Bahasa Indonesia; multilingual mode is the fixed English + Bahasa Indonesia
+code-switching pair. Automatic detection requires no manual language choice.
+The server feature flag and request RPC remain authoritative.
+
 Remote creation/execution controls remain gated by their authoritative feature
 flags:
 

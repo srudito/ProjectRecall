@@ -143,9 +143,12 @@ SQLite v10 request queue. Milestone 2B.3A synchronizes completed transcript
 results through authenticated RLS reads and stores them atomically in SQLite.
 Milestone 2B.3B adds a native read-only Transcript tab that reads only that local
 cache and remains available offline. Milestone 2B.3C adds a local timestamped
-segment browser with bounded rendering. The app never receives AssemblyAI or
-worker secrets, and the server-side feature flag remains authoritative. Playback
-seeking, editing, and user-created immutable versions remain later milestones.
+segment browser with bounded rendering. Milestone 2B.4A constrains manual
+transcription setup to English, Bahasa Indonesia, or the fixed EN–ID
+code-switching pair and canonicalizes the same capability in local request
+contracts. The app never receives AssemblyAI or worker secrets, and the
+server-side feature flag remains authoritative. Playback seeking, editing, and
+user-created immutable versions remain later milestones.
 
 See `ROADMAP.md`, `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_IMPLEMENTATION.md`,
 `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_TEST.md`,
@@ -159,8 +162,10 @@ See `ROADMAP.md`, `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_IMPLEMENTATION.m
 `MILESTONE2B3A_TRANSCRIPT_RESULT_SYNC_V1_TEST.md`,
 `MILESTONE2B3B_TRANSCRIPT_READ_UI_V1_IMPLEMENTATION.md`,
 `MILESTONE2B3B_TRANSCRIPT_READ_UI_V1_TEST.md`,
-`MILESTONE2B3C_TIMESTAMPED_TRANSCRIPT_BROWSER_V1_IMPLEMENTATION.md`, and
-`MILESTONE2B3C_TIMESTAMPED_TRANSCRIPT_BROWSER_V1_TEST.md`.
+`MILESTONE2B3C_TIMESTAMPED_TRANSCRIPT_BROWSER_V1_IMPLEMENTATION.md`,
+`MILESTONE2B3C_TIMESTAMPED_TRANSCRIPT_BROWSER_V1_TEST.md`,
+`MILESTONE2B4A_SUPPORTED_LANGUAGE_MODES_V1_IMPLEMENTATION.md`, and
+`MILESTONE2B4A_SUPPORTED_LANGUAGE_MODES_V1_TEST.md`.
 
 ## Public legal pages
 
@@ -206,3 +211,10 @@ login before configuring production EAS or Play Console.
 - Implementation: `MILESTONE2B3C_TIMESTAMPED_TRANSCRIPT_BROWSER_V1_IMPLEMENTATION.md`
 - Test plan: `MILESTONE2B3C_TIMESTAMPED_TRANSCRIPT_BROWSER_V1_TEST.md`
 - Scope: local-only timestamp ranges and ordered selectable segment browsing with bounded rendering. Playback seeking and editing remain deferred.
+
+
+## Milestone 2B.4A supported transcription language modes
+
+- Implementation: `MILESTONE2B4A_SUPPORTED_LANGUAGE_MODES_V1_IMPLEMENTATION.md`
+- Test plan: `MILESTONE2B4A_SUPPORTED_LANGUAGE_MODES_V1_TEST.md`
+- Scope: native setup and local request canonicalization for automatic detection, English, Bahasa Indonesia, and the reviewed EN–ID code-switching pair. No server or provider deployment change.

@@ -59,5 +59,8 @@
   "DATABASE_WRITE_FAILED": "Could not save your changes locally.",
   "SESSION_DELETE_PARTIAL": "The session was removed locally but cloud cleanup is pending.",
   "LANGUAGE_SELECTION_INVALID": "Please pick at least one language.",
+  "TRANSCRIPTION_LANGUAGE_CODE_INVALID": "One or more transcription language codes are invalid.",
+  "TRANSCRIPTION_LANGUAGE_SELECTION_INVALID": "Choose a supported language configuration for this transcription mode.",
+  "TRANSCRIPTION_LANGUAGE_UNSUPPORTED": "Manual cloud transcription currently supports English and Bahasa Indonesia.",
   "UNKNOWN_ERROR": "Something went wrong. Please try again."
 }

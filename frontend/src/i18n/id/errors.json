@@ -59,5 +59,8 @@
   "DATABASE_WRITE_FAILED": "Tidak dapat menyimpan perubahan secara lokal.",
   "SESSION_DELETE_PARTIAL": "Sesi dihapus secara lokal tetapi pembersihan cloud tertunda.",
   "LANGUAGE_SELECTION_INVALID": "Silakan pilih setidaknya satu bahasa.",
+  "TRANSCRIPTION_LANGUAGE_CODE_INVALID": "Satu atau beberapa kode bahasa transkripsi tidak valid.",
+  "TRANSCRIPTION_LANGUAGE_SELECTION_INVALID": "Pilih konfigurasi bahasa yang didukung untuk mode transkripsi ini.",
+  "TRANSCRIPTION_LANGUAGE_UNSUPPORTED": "Transkripsi cloud manual saat ini mendukung bahasa Inggris dan Bahasa Indonesia.",
   "UNKNOWN_ERROR": "Terjadi kesalahan. Silakan coba lagi."
 }

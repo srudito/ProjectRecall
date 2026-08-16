@@ -97,6 +97,9 @@ import { notifyMetadataSyncChanges } from "@/src/services/sync/project-sync-even
 import { requestMetadataSync } from "@/src/services/sync/project-sync-worker";
 import { requestRecordingUploadSync } from "@/src/services/sync/recording-upload-worker";
 import { requestSessionDeletionSync } from "@/src/services/sync/session-deletion-worker";
+import {
+  resolveSupportedTranscriptionLanguageSelection,
+} from "@/src/services/transcription/language-capabilities";
 import { buildIdempotencyKey } from "@/src/services/upload-queue/backoff";
 
 const generateId = () => Crypto.randomUUID();
@@ -490,6 +493,14 @@ export const createSession = async (
   requireUuid(input.createdBy, "createdBy");
   if (input.projectId) requireUuid(input.projectId, "projectId");
 
+  const languageSelection = resolveSupportedTranscriptionLanguageSelection(
+    input.spokenLanguageMode,
+    input.expectedSpokenLanguages,
+  );
+  if (!languageSelection.ok) {
+    throw new Error(languageSelection.code);
+  }
+
   const now = nowIso();
   const session: SessionRecord = {
     id: generateId(),
@@ -503,7 +514,7 @@ export const createSession = async (
     stopped_at: null,
     total_recorded_duration_ms: 0,
     spoken_language_mode: input.spokenLanguageMode,
-    expected_spoken_languages: input.expectedSpokenLanguages,
+    expected_spoken_languages: languageSelection.languages,
     detected_spoken_languages: [],
     primary_detected_language: null,
     language_detection_status: "NOT_STARTED",

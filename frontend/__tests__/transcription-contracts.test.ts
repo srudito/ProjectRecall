@@ -37,7 +37,7 @@ const session: Session = {
   stopped_at: NOW,
   total_recorded_duration_ms: 120_000,
   spoken_language_mode: SpokenLanguageMode.MULTILINGUAL,
-  expected_spoken_languages: [" id-ID ", "EN_us", "en-US"],
+  expected_spoken_languages: ["ID", "EN_us"],
   detected_spoken_languages: [],
   primary_detected_language: null,
   language_detection_status: "NOT_STARTED",
@@ -98,10 +98,10 @@ describe("batch transcription request contract", () => {
         recordingId: RECORDING_ID,
         privateStoragePath: recording.private_storage_path,
         spokenLanguageMode: SpokenLanguageMode.MULTILINGUAL,
-        expectedSpokenLanguages: ["en-us", "id-id"],
+        expectedSpokenLanguages: ["en", "id"],
         idempotencyKey:
           `batch-transcription:v1:${WORKSPACE_ID}:${SESSION_ID}:` +
-          `${RECORDING_ID}:MULTILINGUAL:en-us,id-id`,
+          `${RECORDING_ID}:MULTILINGUAL:en,id`,
       },
     });
 
@@ -182,7 +182,25 @@ describe("batch transcription request contract", () => {
     },
   );
 
-  it("enforces language-mode cardinality after normalization", () => {
+  it("enforces reviewed language-mode cardinality after canonicalization", () => {
+    expect(
+      prepareTranscriptionRequest({
+        session: {
+          ...session,
+          spoken_language_mode: SpokenLanguageMode.SINGLE_LANGUAGE,
+          expected_spoken_languages: ["EN_us"],
+        },
+        recording,
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        ok: true,
+        value: expect.objectContaining({
+          expectedSpokenLanguages: ["en"],
+        }),
+      }),
+    );
+
     expect(
       prepareTranscriptionRequest({
         session: {
@@ -191,22 +209,29 @@ describe("batch transcription request contract", () => {
           expected_spoken_languages: ["en", "EN"],
         },
         recording,
-      }).ok,
-    ).toBe(true);
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        ok: false,
+        code: TranscriptionRequestErrorCode.LANGUAGE_SELECTION_INVALID,
+      }),
+    );
 
     expect(
       prepareTranscriptionRequest({
         session: {
           ...session,
           spoken_language_mode: SpokenLanguageMode.MULTILINGUAL,
-          expected_spoken_languages: ["en", "EN"],
+          expected_spoken_languages: ["ID", "en-GB"],
         },
         recording,
       }),
     ).toEqual(
       expect.objectContaining({
-        ok: false,
-        code: TranscriptionRequestErrorCode.LANGUAGE_SELECTION_INVALID,
+        ok: true,
+        value: expect.objectContaining({
+          expectedSpokenLanguages: ["en", "id"],
+        }),
       }),
     );
   });
@@ -228,20 +253,41 @@ describe("batch transcription request contract", () => {
     );
   });
 
+  it.each(["ja", "id-ID"])(
+    "rejects well-formed but unsupported manual language %s",
+    (language) => {
+      const result = prepareTranscriptionRequest({
+        session: {
+          ...session,
+          spoken_language_mode: SpokenLanguageMode.SINGLE_LANGUAGE,
+          expected_spoken_languages: [language],
+        },
+        recording,
+      });
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          ok: false,
+          code: TranscriptionRequestErrorCode.LANGUAGE_UNSUPPORTED,
+        }),
+      );
+    },
+  );
+
   it("changes the idempotency key only when stable request inputs change", () => {
     const first = buildTranscriptionIdempotencyKey({
       workspaceId: WORKSPACE_ID,
       sessionId: SESSION_ID,
       recordingId: RECORDING_ID,
       spokenLanguageMode: SpokenLanguageMode.MULTILINGUAL,
-      expectedSpokenLanguages: ["id", "en"],
+      expectedSpokenLanguages: ["id", "en-US"],
     });
     const reordered = buildTranscriptionIdempotencyKey({
       workspaceId: WORKSPACE_ID,
       sessionId: SESSION_ID,
       recordingId: RECORDING_ID,
       spokenLanguageMode: SpokenLanguageMode.MULTILINGUAL,
-      expectedSpokenLanguages: ["EN", "ID"],
+      expectedSpokenLanguages: ["EN_us", "ID"],
     });
     const changed = buildTranscriptionIdempotencyKey({
       workspaceId: WORKSPACE_ID,
@@ -253,6 +299,15 @@ describe("batch transcription request contract", () => {
 
     expect(reordered).toBe(first);
     expect(changed).not.toBe(first);
+    expect(() =>
+      buildTranscriptionIdempotencyKey({
+        workspaceId: WORKSPACE_ID,
+        sessionId: SESSION_ID,
+        recordingId: RECORDING_ID,
+        spokenLanguageMode: SpokenLanguageMode.SINGLE_LANGUAGE,
+        expectedSpokenLanguages: ["ja"],
+      }),
+    ).toThrow("currently supports English");
   });
 });
 

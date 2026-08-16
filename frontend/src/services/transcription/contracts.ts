@@ -5,7 +5,12 @@ import {
   UploadStatus,
 } from "@/src/domain/enums";
 import type { Recording, Session } from "@/src/domain/models";
-import { validateSpokenLanguageSelection } from "@/src/services/language/precedence";
+import {
+  normalizeTranscriptionLanguageCodes,
+  resolveSupportedTranscriptionLanguageSelection,
+} from "@/src/services/transcription/language-capabilities";
+
+export { normalizeTranscriptionLanguageCodes };
 
 export const TRANSCRIPTION_REQUEST_CONTRACT_VERSION = 1 as const;
 export const TRANSCRIPTION_JOB_TYPE = "batch_transcription" as const;
@@ -17,6 +22,7 @@ export const TranscriptionRequestErrorCode = {
   STORAGE_PATH_MISSING: "TRANSCRIPTION_STORAGE_PATH_MISSING",
   STORAGE_SCOPE_MISMATCH: "TRANSCRIPTION_STORAGE_SCOPE_MISMATCH",
   LANGUAGE_CODE_INVALID: "TRANSCRIPTION_LANGUAGE_CODE_INVALID",
+  LANGUAGE_UNSUPPORTED: "TRANSCRIPTION_LANGUAGE_UNSUPPORTED",
   LANGUAGE_SELECTION_INVALID: "TRANSCRIPTION_LANGUAGE_SELECTION_INVALID",
 } as const;
 
@@ -43,18 +49,6 @@ export type PrepareTranscriptionRequestResult =
       reason: string;
     };
 
-const languageCodePattern = /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/;
-
-export const normalizeTranscriptionLanguageCodes = (
-  values: readonly string[],
-): string[] => {
-  const normalized = values
-    .map((value) => value.trim().replace(/_/g, "-").toLowerCase())
-    .filter(Boolean);
-
-  return [...new Set(normalized)].sort();
-};
-
 export const buildTranscriptionIdempotencyKey = (input: {
   workspaceId: string;
   sessionId: string;
@@ -62,11 +56,16 @@ export const buildTranscriptionIdempotencyKey = (input: {
   spokenLanguageMode: SpokenLanguageMode;
   expectedSpokenLanguages: readonly string[];
 }): string => {
-  const normalizedLanguages = normalizeTranscriptionLanguageCodes(
+  const selection = resolveSupportedTranscriptionLanguageSelection(
+    input.spokenLanguageMode,
     input.expectedSpokenLanguages,
   );
+  if (!selection.ok) {
+    throw new Error(selection.reason);
+  }
+
   const languageFingerprint =
-    normalizedLanguages.length > 0 ? normalizedLanguages.join(",") : "auto";
+    selection.languages.length > 0 ? selection.languages.join(",") : "auto";
 
   return [
     "batch-transcription",
@@ -164,32 +163,15 @@ export const prepareTranscriptionRequest = (input: {
     );
   }
 
-  const expectedSpokenLanguages = normalizeTranscriptionLanguageCodes(
+  const languageSelection = resolveSupportedTranscriptionLanguageSelection(
+    session.spoken_language_mode,
     session.expected_spoken_languages,
   );
 
-  if (
-    expectedSpokenLanguages.some(
-      (languageCode) => !languageCodePattern.test(languageCode),
-    )
-  ) {
-    return errorResult(
-      TranscriptionRequestErrorCode.LANGUAGE_CODE_INVALID,
-      "One or more spoken-language codes are invalid.",
-    );
+  if (!languageSelection.ok) {
+    return errorResult(languageSelection.code, languageSelection.reason);
   }
-
-  const languageSelection = validateSpokenLanguageSelection(
-    session.spoken_language_mode,
-    expectedSpokenLanguages,
-  );
-
-  if (!languageSelection.valid) {
-    return errorResult(
-      TranscriptionRequestErrorCode.LANGUAGE_SELECTION_INVALID,
-      languageSelection.reason,
-    );
-  }
+  const expectedSpokenLanguages = languageSelection.languages;
 
   return {
     ok: true,

@@ -146,10 +146,23 @@ Implemented in this phase:
 - stricter local segment time/text/identity validation;
 - no playback seek, editing, remote read, provider call, or migration.
 
+### Phase 2B.4A — supported language modes and EN–ID code-switching UX
+
+Implemented in this phase:
+
+- Record Setup no longer exposes the unrestricted spoken-language catalog for
+  transcription configuration;
+- Auto detect requires no manual language hint;
+- One language exposes only English or Bahasa Indonesia;
+- Multilingual is the fixed English + Bahasa Indonesia code-switching pair;
+- reviewed English aliases canonicalize to `en` and Bahasa Indonesia to `id`;
+- request preparation and idempotency use the same fail-closed capability
+  contract before any remote request;
+- no server migration, provider deployment, secret, Cron, or native change.
+
 ### Later Milestone 2 phases
 
-- single-language and multilingual transcription;
-- English/Bahasa Indonesia code-switching;
+- controlled live English, Bahasa Indonesia, and EN–ID code-switching acceptance;
 - transcript editor and immutable version history;
 - release hardening before production feature activation.
 
@@ -198,3 +211,10 @@ Implemented in this phase:
 - Implementation: `MILESTONE2B3C_TIMESTAMPED_TRANSCRIPT_BROWSER_V1_IMPLEMENTATION.md`
 - Test plan: `MILESTONE2B3C_TIMESTAMPED_TRANSCRIPT_BROWSER_V1_TEST.md`
 - Scope: offline timestamped browsing of the current local SQLite segment cache, with bounded rendering and no playback seeking or editing.
+
+
+## Milestone 2B.4A — Supported language modes and EN–ID code-switching UX
+
+- Implementation: `MILESTONE2B4A_SUPPORTED_LANGUAGE_MODES_V1_IMPLEMENTATION.md`
+- Test plan: `MILESTONE2B4A_SUPPORTED_LANGUAGE_MODES_V1_TEST.md`
+- Scope: fail-closed native setup and canonical local request contracts for automatic detection, English, Bahasa Indonesia, and the reviewed English–Bahasa Indonesia code-switching pair.

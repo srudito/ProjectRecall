@@ -7,6 +7,18 @@
     "titleLabel": "Judul sesi",
     "titlePlaceholder": "contoh: Rapat tim mingguan",
     "languageSection": "Bahasa lisan yang diharapkan",
+    "modeAuto": "Deteksi otomatis",
+    "modeAutoHelp": "Deteksi bahasa lisan secara otomatis.",
+    "modeSingle": "Satu bahasa",
+    "modeSingleHelp": "Gunakan bahasa Inggris atau Bahasa Indonesia untuk sesi ini.",
+    "modeCodeSwitching": "Bahasa Inggris + Bahasa Indonesia",
+    "modeCodeSwitchingHelp": "Gunakan saat kedua bahasa dapat bergantian dalam satu rekaman.",
+    "languageRolloutNote": "Pemilihan bahasa transkripsi manual saat ini mendukung bahasa Inggris, Bahasa Indonesia, dan peralihan bahasa Inggris–Indonesia. Deteksi otomatis tidak memerlukan pilihan bahasa.",
+    "autoLanguageHint": "Tidak perlu memilih bahasa. Layanan transkripsi akan mendeteksi bahasa yang diucapkan.",
+    "singleLanguagePrompt": "Pilih satu bahasa transkripsi yang didukung.",
+    "multilingualPairHint": "Bahasa Inggris dan Bahasa Indonesia dipilih bersama untuk peralihan bahasa.",
+    "languageEnglish": "Bahasa Inggris",
+    "languageIndonesian": "Bahasa Indonesia",
     "startRecording": "Mulai merekam"
   },
   "active": {

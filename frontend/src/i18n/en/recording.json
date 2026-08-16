@@ -7,6 +7,18 @@
     "titleLabel": "Session title",
     "titlePlaceholder": "e.g. Weekly team sync",
     "languageSection": "Expected spoken language",
+    "modeAuto": "Auto detect",
+    "modeAutoHelp": "Detect the spoken language automatically.",
+    "modeSingle": "One language",
+    "modeSingleHelp": "Use English or Bahasa Indonesia for this session.",
+    "modeCodeSwitching": "English + Bahasa Indonesia",
+    "modeCodeSwitchingHelp": "Use when both languages may alternate in one recording.",
+    "languageRolloutNote": "Manual transcription language selection currently supports English, Bahasa Indonesia, and English–Bahasa Indonesia code-switching. Auto detect requires no language choice.",
+    "autoLanguageHint": "No language selection is required. The transcription service will detect the spoken language.",
+    "singleLanguagePrompt": "Choose one supported transcription language.",
+    "multilingualPairHint": "English and Bahasa Indonesia are selected together for code-switching.",
+    "languageEnglish": "English",
+    "languageIndonesian": "Bahasa Indonesia",
     "startRecording": "Start recording"
   },
   "active": {
