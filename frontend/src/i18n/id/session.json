@@ -80,7 +80,18 @@
         "submitting": "Meminta transkripsi…",
         "submitted": "Transkripsi telah diminta",
         "failed": "Permintaan transkripsi gagal",
-        "cancelled": "Permintaan transkripsi dibatalkan"
+        "cancelled": "Permintaan transkripsi dibatalkan",
+        "ready": "Transkrip siap"
+      },
+      "progress": {
+        "waiting": "Menunggu proses transkripsi dimulai.",
+        "processing": "Transkripsi sedang diproses…",
+        "processingHint": "Proses ini dapat memerlukan sedikit waktu.",
+        "finalizing": "Menyelesaikan transkrip…",
+        "cleanup": "Menyelesaikan pembersihan aman…",
+        "retryingResult": "Hasil transkrip belum dapat diperbarui. Aplikasi akan mencoba lagi secara otomatis.",
+        "retryingRequest": "Permintaan transkripsi sedang menunggu percobaan ulang otomatis.",
+        "ready": "Transkrip tersedia di perangkat ini."
       },
       "retryUploadFirst": "Coba lagi unggahan rekaman sebelum meminta transkripsi."
     }

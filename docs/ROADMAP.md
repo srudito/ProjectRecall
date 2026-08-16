@@ -160,6 +160,19 @@ Implemented in this phase:
   contract before any remote request;
 - no server migration, provider deployment, secret, Cron, or native change.
 
+### Phase 2B.4A.1 — transcription progress messaging UX
+
+Implemented in this phase:
+
+- retryable result-sync diagnostics are no longer presented as red terminal
+  transcription failures;
+- waiting, processing, finalizing, secure-cleanup, retrying, and local-ready
+  states have explicit native messaging;
+- the ready signal comes from the existing local SQLite current transcript;
+- terminal failed/cancelled rows retain red safe-error treatment;
+- result-worker polling/backoff, backend, provider, and native configuration are
+  unchanged.
+
 ### Later Milestone 2 phases
 
 - controlled live English, Bahasa Indonesia, and EN–ID code-switching acceptance;
@@ -218,3 +231,10 @@ Implemented in this phase:
 - Implementation: `MILESTONE2B4A_SUPPORTED_LANGUAGE_MODES_V1_IMPLEMENTATION.md`
 - Test plan: `MILESTONE2B4A_SUPPORTED_LANGUAGE_MODES_V1_TEST.md`
 - Scope: fail-closed native setup and canonical local request contracts for automatic detection, English, Bahasa Indonesia, and the reviewed English–Bahasa Indonesia code-switching pair.
+
+
+## Milestone 2B.4A.1 — Transcription progress messaging UX
+
+- Implementation: `MILESTONE2B4A1_TRANSCRIPTION_PROGRESS_MESSAGING_V1_IMPLEMENTATION.md`
+- Test plan: `MILESTONE2B4A1_TRANSCRIPTION_PROGRESS_MESSAGING_V1_TEST.md`
+- Scope: local presentation hardening for durable transcription progress/retry states and local transcript readiness, with no worker, provider, migration, or retry-semantics change.

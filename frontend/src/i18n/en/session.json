@@ -80,7 +80,18 @@
         "submitting": "Requesting transcription…",
         "submitted": "Transcription requested",
         "failed": "Transcription request failed",
-        "cancelled": "Transcription request cancelled"
+        "cancelled": "Transcription request cancelled",
+        "ready": "Transcript ready"
+      },
+      "progress": {
+        "waiting": "Waiting for transcription processing to begin.",
+        "processing": "Transcription processing…",
+        "processingHint": "This can take a little while.",
+        "finalizing": "Finalizing transcript…",
+        "cleanup": "Finishing secure cleanup…",
+        "retryingResult": "The transcript result could not be refreshed yet. Retrying automatically.",
+        "retryingRequest": "The transcription request is waiting to retry automatically.",
+        "ready": "The transcript is available on this device."
       },
       "retryUploadFirst": "Retry the recording upload before requesting transcription."
     }

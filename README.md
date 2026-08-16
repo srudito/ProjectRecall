@@ -18,10 +18,12 @@ remains untouched. Milestone 2B.2 connects the native local-first request queue
 to the authenticated request endpoint and recording UI. Milestone 2B.3A adds
 authenticated RLS result synchronization and atomic local SQLite transcript
 persistence. Milestone 2B.3B adds a read-only, offline-capable transcript tab,
-Milestone 2B.3C adds local timestamped segment browsing, and Milestone 2B.4A
+Milestone 2B.3C adds local timestamped segment browsing, Milestone 2B.4A
 aligns session setup and local request contracts with the reviewed manual English,
-Bahasa Indonesia, and EN–ID code-switching rollout. Playback seeking, editing,
-search, and export remain later milestones.
+Bahasa Indonesia, and EN–ID code-switching rollout, and Milestone 2B.4A.1 makes
+durable transcription progress/retry states explicit without presenting normal
+background retries as terminal failures. Playback seeking, editing, search, and
+export remain later milestones.
 
 ## Source of truth
 

@@ -146,9 +146,11 @@ cache and remains available offline. Milestone 2B.3C adds a local timestamped
 segment browser with bounded rendering. Milestone 2B.4A constrains manual
 transcription setup to English, Bahasa Indonesia, or the fixed EN–ID
 code-switching pair and canonicalizes the same capability in local request
-contracts. The app never receives AssemblyAI or worker secrets, and the
-server-side feature flag remains authoritative. Playback seeking, editing, and
-user-created immutable versions remain later milestones.
+contracts. Milestone 2B.4A.1 separates ordinary transcription progress/retry
+messages from terminal errors and reports local transcript readiness without
+changing worker semantics. The app never receives AssemblyAI or worker secrets,
+and the server-side feature flag remains authoritative. Playback seeking,
+editing, and user-created immutable versions remain later milestones.
 
 See `ROADMAP.md`, `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_IMPLEMENTATION.md`,
 `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_TEST.md`,
@@ -164,8 +166,10 @@ See `ROADMAP.md`, `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_IMPLEMENTATION.m
 `MILESTONE2B3B_TRANSCRIPT_READ_UI_V1_TEST.md`,
 `MILESTONE2B3C_TIMESTAMPED_TRANSCRIPT_BROWSER_V1_IMPLEMENTATION.md`,
 `MILESTONE2B3C_TIMESTAMPED_TRANSCRIPT_BROWSER_V1_TEST.md`,
-`MILESTONE2B4A_SUPPORTED_LANGUAGE_MODES_V1_IMPLEMENTATION.md`, and
-`MILESTONE2B4A_SUPPORTED_LANGUAGE_MODES_V1_TEST.md`.
+`MILESTONE2B4A_SUPPORTED_LANGUAGE_MODES_V1_IMPLEMENTATION.md`,
+`MILESTONE2B4A_SUPPORTED_LANGUAGE_MODES_V1_TEST.md`,
+`MILESTONE2B4A1_TRANSCRIPTION_PROGRESS_MESSAGING_V1_IMPLEMENTATION.md`, and
+`MILESTONE2B4A1_TRANSCRIPTION_PROGRESS_MESSAGING_V1_TEST.md`.
 
 ## Public legal pages
 
@@ -218,3 +222,10 @@ login before configuring production EAS or Play Console.
 - Implementation: `MILESTONE2B4A_SUPPORTED_LANGUAGE_MODES_V1_IMPLEMENTATION.md`
 - Test plan: `MILESTONE2B4A_SUPPORTED_LANGUAGE_MODES_V1_TEST.md`
 - Scope: native setup and local request canonicalization for automatic detection, English, Bahasa Indonesia, and the reviewed EN–ID code-switching pair. No server or provider deployment change.
+
+
+## Milestone 2B.4A.1 transcription progress messaging
+
+- Implementation: `MILESTONE2B4A1_TRANSCRIPTION_PROGRESS_MESSAGING_V1_IMPLEMENTATION.md`
+- Test plan: `MILESTONE2B4A1_TRANSCRIPTION_PROGRESS_MESSAGING_V1_TEST.md`
+- Scope: distinguish recoverable waiting/processing/finalizing/cleanup/retry states from terminal failures and show local transcript readiness without changing backend or retry behavior.

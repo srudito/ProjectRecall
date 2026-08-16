@@ -2,13 +2,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Platform, Text, View } from "react-native";
 
 import { useI18n } from "@/src/i18n/I18nProvider";
-import type {
-  RecordingRecord,
-  SessionRecord,
-  TranscriptionRequestQueueRow,
+import {
+  getCurrentTranscriptVersionForSession,
+  type RecordingRecord,
+  type SessionRecord,
+  type TranscriptionRequestQueueRow,
 } from "@/src/services/sqlite/repository";
 import { subscribeTranscriptionSyncChanges } from "@/src/services/sync/transcription-sync-events";
 import { resolveTranscriptionFeatureEnabled } from "@/src/services/transcription/feature-availability";
+import { resolveTranscriptionRequestPresentation } from "@/src/services/transcription/request-presentation";
 import {
   getRecordingTranscriptionRequest,
   queueRecordingTranscription,
@@ -17,17 +19,6 @@ import { useAuthStore } from "@/src/stores/auth-store";
 import { useTheme } from "@/src/theme/ThemeProvider";
 
 import { Button } from "./Button";
-
-const transcriptionStatusKey = (status: string): string => {
-  const supported = new Set([
-    "pending",
-    "submitting",
-    "submitted",
-    "failed",
-    "cancelled",
-  ]);
-  return supported.has(status) ? status : "pending";
-};
 
 export function RecordingTranscriptionRequestControl({
   session,
@@ -44,6 +35,7 @@ export function RecordingTranscriptionRequestControl({
     null,
   );
   const [requesting, setRequesting] = useState(false);
+  const [transcriptReady, setTranscriptReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const loadRequestRef = useRef(0);
 
@@ -51,14 +43,18 @@ export function RecordingTranscriptionRequestControl({
     const requestId = loadRequestRef.current + 1;
     loadRequestRef.current = requestId;
 
-    const enabled = await resolveTranscriptionFeatureEnabled();
-    const localRequest = userId
-      ? await getRecordingTranscriptionRequest({ session, recording, userId })
-      : null;
+    const [enabled, localRequest, currentVersion] = await Promise.all([
+      resolveTranscriptionFeatureEnabled(),
+      userId
+        ? getRecordingTranscriptionRequest({ session, recording, userId })
+        : Promise.resolve(null),
+      getCurrentTranscriptVersionForSession(session.id),
+    ]);
 
     if (requestId !== loadRequestRef.current) return;
     setFeatureEnabled(enabled);
     setRequest(localRequest);
+    setTranscriptReady(currentVersion != null);
     setError(null);
   }, [recording, session, userId]);
 
@@ -86,16 +82,26 @@ export function RecordingTranscriptionRequestControl({
     userId != null &&
     recording.upload_status !== "failed" &&
     recording.upload_status !== "cancelled";
+  const presentation = request
+    ? resolveTranscriptionRequestPresentation({
+        queueStatus: request.queue_status,
+        lastErrorCode: request.last_error_code,
+        transcriptReady,
+      })
+    : null;
+  const presentationColor =
+    presentation?.tone === "error"
+      ? colors.recording
+      : presentation?.tone === "warning"
+        ? colors.warning
+        : presentation?.tone === "success"
+          ? colors.success
+          : colors.textSecondary;
   const buttonLabel =
     request?.queue_status === "failed"
       ? t("session", "recording.transcription.retry")
-      : requestBusy
-        ? t(
-            "session",
-            `recording.transcription.status.${transcriptionStatusKey(
-              request?.queue_status ?? "pending",
-            )}`,
-          )
+      : requestBusy && presentation
+        ? t("session", presentation.statusKey)
         : t("session", "recording.transcription.request");
 
   const requestTranscription = async () => {
@@ -119,27 +125,32 @@ export function RecordingTranscriptionRequestControl({
 
   return (
     <View style={{ marginTop: spacing.sm }}>
-      {request ? (
-        <Text
-          testID="session-recording-transcription-status"
-          style={[
-            typography.caption,
-            {
-              color:
-                request.queue_status === "failed"
-                  ? colors.recording
-                  : colors.textSecondary,
-              marginBottom: spacing.xs,
-            },
-          ]}
-        >
-          {t(
-            "session",
-            `recording.transcription.status.${transcriptionStatusKey(
-              request.queue_status,
-            )}`,
-          )}
-        </Text>
+      {request && presentation ? (
+        <>
+          <Text
+            testID="session-recording-transcription-status"
+            style={[
+              typography.caption,
+              {
+                color: presentationColor,
+                marginBottom: presentation.detailKey ? 0 : spacing.xs,
+              },
+            ]}
+          >
+            {t("session", presentation.statusKey)}
+          </Text>
+          {presentation.detailKey ? (
+            <Text
+              testID="session-recording-transcription-progress-detail"
+              style={[
+                typography.caption,
+                { color: presentationColor, marginBottom: spacing.xs },
+              ]}
+            >
+              {t("session", presentation.detailKey)}
+            </Text>
+          ) : null}
+        </>
       ) : null}
 
       {canRequest ? (
@@ -180,9 +191,10 @@ export function RecordingTranscriptionRequestControl({
         </Text>
       ) : null}
 
-      {request?.last_safe_error ? (
+      {request?.last_safe_error && presentation?.showSafeError ? (
         <Text
           accessibilityRole="alert"
+          testID="session-recording-transcription-terminal-error"
           style={[
             typography.caption,
             { color: colors.recording, marginTop: spacing.xs },
