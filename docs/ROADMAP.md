@@ -192,21 +192,37 @@ language-metadata diagnostic:
 
 ### Phase 2B.4A.3 - EN–ID language metadata shape diagnostics
 
-Implemented in source; development deployment and one fresh diagnostic rerun
-remain pending:
+Implemented and deployed to development. The controlled diagnostic rerun proved
+that the manual EN–ID completed response carries no provider primary language:
 
 - the aggregate provider language-metadata failure is split into bounded
   primary, collection-shape, empty, member, duplicate, and primary-membership
   categories;
-- omitted or null `language_codes` remains accepted;
-- no new provider response shape is accepted by this diagnostic-only change;
+- the live failure resolved to
+  `TRANSCRIPTION_PROVIDER_RESULT_PRIMARY_LANGUAGE_MISSING`;
+- provider cleanup completed with no unresolved artifact or manual-review row;
 - diagnostics contain no raw provider values, transcript content, signed URL,
-  provider identifier, credential, or secret;
-- no migration, request, worker retry, cleanup, mobile, Cron, or native change.
+  provider identifier, credential, or secret.
+
+### Phase 2B.4A.4 - EN–ID nullable-primary compatibility
+
+Implemented in source; migration/development deployment and one fresh rerun
+remain pending:
+
+- a completed result may omit provider `language_code` only when
+  `language_codes` canonicalizes to exactly `en,id`;
+- single-language and automatic-detection results still require a provider
+  primary language;
+- the worker retains `primaryLanguage = null`, carries the reviewed EN–ID pair,
+  and leaves per-word language labels null;
+- append-only migration 0015 updates only the atomic language-summary validator
+  so the database accepts this exact user-confirmed shape;
+- no existing migration is edited or rerun;
+- no mobile, secret, Cron, retry, cleanup, package, lockfile, or native change.
 
 ### Later Milestone 2 phases
 
-- one controlled EN–ID diagnostic rerun after development worker redeployment;
+- one controlled EN–ID rerun after migration 0015 and worker redeployment;
 - transcript editor and immutable version history;
 - release hardening before production feature activation.
 
@@ -283,3 +299,10 @@ remain pending:
 - Implementation: `MILESTONE2B4A3_EN_ID_LANGUAGE_METADATA_DIAGNOSTICS_V1_IMPLEMENTATION.md`
 - Test plan: `MILESTONE2B4A3_EN_ID_LANGUAGE_METADATA_DIAGNOSTICS_V1_TEST.md`
 - Scope: diagnostic-only structural classification of completed provider language metadata, with no compatibility or schema change.
+
+
+## Milestone 2B.4A.4 - EN–ID nullable-primary compatibility
+
+- Implementation: `MILESTONE2B4A4_EN_ID_NULLABLE_PRIMARY_COMPATIBILITY_V1_IMPLEMENTATION.md`
+- Test plan: `MILESTONE2B4A4_EN_ID_NULLABLE_PRIMARY_COMPATIBILITY_V1_TEST.md`
+- Scope: narrow server/database compatibility for manual EN–ID completed results that omit provider primary language, using append-only migration 0015 and no mobile change.

@@ -26,10 +26,12 @@ background retries as terminal failures. Milestone 2B.4A.2 hardens the
 server-only EN–ID completed-result boundary with explicit nullable-shape
 coverage, English-locale compatibility, and sanitized diagnostics. Its
 controlled rerun isolated the remaining failure to provider language metadata.
-Milestone 2B.4A.3 now splits that aggregate failure into bounded structural
-diagnostics without changing compatibility behavior. A fresh controlled EN–ID
-diagnostic rerun remains pending. Playback seeking, editing, search, and export
-remain later milestones.
+Milestone 2B.4A.3 then proved that manual EN–ID completed responses may omit a
+provider primary language. Milestone 2B.4A.4 adds narrow nullable-primary
+compatibility across the provider adapter, worker claim validation, and a new
+append-only database migration while preserving the user-confirmed EN–ID pair.
+A fresh controlled EN–ID rerun remains pending. Playback seeking, editing,
+search, and export remain later milestones.
 
 ## Source of truth
 

@@ -766,29 +766,31 @@ export const normalizeAssemblyAICompletedTranscript = (
     );
   }
 
-  if (response.language_code === null || response.language_code === undefined) {
-    return throwResultInvalid(
-      "TRANSCRIPTION_PROVIDER_RESULT_PRIMARY_LANGUAGE_MISSING",
-      { providerJobId },
-    );
-  }
-  const primaryLanguage = normalizeDetectedLanguageCode(
-    response.language_code,
-    "TRANSCRIPTION_PROVIDER_RESULT_PRIMARY_LANGUAGE_INVALID",
-  );
-  if (primaryLanguage === null) {
-    return throwResultInvalid(
-      "TRANSCRIPTION_PROVIDER_RESULT_PRIMARY_LANGUAGE_MISSING",
-      { providerJobId },
-    );
-  }
+  const primaryLanguage =
+    response.language_code === null || response.language_code === undefined
+      ? null
+      : normalizeDetectedLanguageCode(
+          response.language_code,
+          "TRANSCRIPTION_PROVIDER_RESULT_PRIMARY_LANGUAGE_INVALID",
+        );
   const providerLanguageCodes = normalizeProviderLanguageCodes(
     response.language_codes,
   );
-  const canonicalPrimaryLanguage = canonicalizeReviewedResultLanguage(
-    primaryLanguage,
-  );
+  const providerReportedReviewedPair =
+    providerLanguageCodes.length === 2 &&
+    providerLanguageCodes.join(",") === "en,id";
+  if (primaryLanguage === null && !providerReportedReviewedPair) {
+    return throwResultInvalid(
+      "TRANSCRIPTION_PROVIDER_RESULT_PRIMARY_LANGUAGE_MISSING",
+      { providerJobId },
+    );
+  }
+  const canonicalPrimaryLanguage =
+    primaryLanguage === null
+      ? null
+      : canonicalizeReviewedResultLanguage(primaryLanguage);
   if (
+    canonicalPrimaryLanguage !== null &&
     providerLanguageCodes.length > 0 &&
     !providerLanguageCodes.includes(canonicalPrimaryLanguage)
   ) {
@@ -797,11 +799,15 @@ export const normalizeAssemblyAICompletedTranscript = (
       { providerJobId },
     );
   }
-  const codeSwitchingEnabled = providerLanguageCodes.length > 1;
+  const codeSwitchingEnabled = providerReportedReviewedPair;
   const summaryLanguageCodes =
-    providerLanguageCodes.length === 1
-      ? [primaryLanguage]
-      : providerLanguageCodes;
+    providerLanguageCodes.length === 0
+      ? primaryLanguage === null
+        ? []
+        : [primaryLanguage]
+      : providerLanguageCodes.length === 1 && primaryLanguage !== null
+        ? [primaryLanguage]
+        : providerLanguageCodes;
   const segmentLanguage = codeSwitchingEnabled ? null : primaryLanguage;
   const segments = rawWords.map((word: unknown, segmentIndex: number) =>
     normalizeWord(word, {
@@ -878,10 +884,7 @@ export const normalizeAssemblyAICompletedTranscript = (
     plainText,
     languageSummary: {
       primaryLanguage,
-      detectedLanguages:
-        summaryLanguageCodes.length > 0
-          ? summaryLanguageCodes
-          : [primaryLanguage],
+      detectedLanguages: summaryLanguageCodes,
       confidence: languageConfidence,
       detectionEnabled: languageDetection === true,
     },

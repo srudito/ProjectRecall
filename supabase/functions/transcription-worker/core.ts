@@ -738,11 +738,12 @@ const validateTranscriptForClaim = (
     !isDenseStringArray(transcript.languageSummary.detectedLanguages) ||
     transcript.languageSummary.detectedLanguages.length === 0 ||
     transcript.languageSummary.detectedLanguages.length > 2 ||
-    typeof transcript.languageSummary.primaryLanguage !== "string" ||
-    !validateLanguageCode(transcript.languageSummary.primaryLanguage) ||
-    !transcript.languageSummary.detectedLanguages.includes(
-      transcript.languageSummary.primaryLanguage,
-    ) ||
+    (transcript.languageSummary.primaryLanguage !== null &&
+      (typeof transcript.languageSummary.primaryLanguage !== "string" ||
+        !validateLanguageCode(transcript.languageSummary.primaryLanguage) ||
+        !transcript.languageSummary.detectedLanguages.includes(
+          transcript.languageSummary.primaryLanguage,
+        ))) ||
     typeof transcript.languageSummary.detectionEnabled !== "boolean" ||
     (transcript.languageSummary.confidence !== null &&
       (typeof transcript.languageSummary.confidence !== "number" ||
@@ -767,20 +768,36 @@ const validateTranscriptForClaim = (
         ? "en"
         : language,
   );
+  const primaryLanguage = transcript.languageSummary.primaryLanguage;
+  const normalizedPrimary =
+    primaryLanguage === null
+      ? null
+      : ["en", "en-au", "en-gb", "en-uk", "en-us"].includes(
+            normalizeProviderLanguage(primaryLanguage),
+          )
+        ? "en"
+        : normalizeProviderLanguage(primaryLanguage);
   const requested = claim.requestPayload.requestedLanguages.map(
     normalizeReviewedLanguage,
   );
   const mode = claim.requestPayload.languageMode;
   if (
     (mode === "AUTO_DETECT" &&
-      !transcript.languageSummary.detectionEnabled) ||
+      (!transcript.languageSummary.detectionEnabled ||
+        normalizedPrimary === null)) ||
     (mode !== "AUTO_DETECT" &&
       transcript.languageSummary.detectionEnabled) ||
     (mode === "SINGLE_LANGUAGE" &&
-      (normalizedDetected.length !== 1 ||
-        normalizedDetected[0] !== requested[0])) ||
+      (normalizedPrimary === null ||
+        normalizedDetected.length !== 1 ||
+        normalizedDetected[0] !== requested[0] ||
+        normalizedPrimary !== requested[0])) ||
     (mode === "MULTILINGUAL" &&
-      [...new Set(normalizedDetected)].sort().join(",") !== "en,id")
+      (requested.join(",") !== "en,id" ||
+        [...new Set(normalizedDetected)].sort().join(",") !== "en,id" ||
+        (normalizedPrimary !== null &&
+          normalizedPrimary !== "en" &&
+          normalizedPrimary !== "id")))
   ) {
     fail("TRANSCRIPTION_PROVIDER_RESULT_CLAIM_LANGUAGE_INVALID");
   }

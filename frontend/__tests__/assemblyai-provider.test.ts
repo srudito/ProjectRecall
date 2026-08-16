@@ -1068,6 +1068,40 @@ describe("AssemblyAI normalization and safety", () => {
     ).toBe(true);
   });
 
+  it("accepts a missing primary only with the reviewed EN-ID provider pair", () => {
+    const normalized = normalizeAssemblyAICompletedTranscript({
+      ...completedResponse(),
+      language_code: null,
+      language_codes: ["en", "id"],
+      language_detection: false,
+    });
+
+    expect(normalized.languageSummary).toEqual({
+      primaryLanguage: null,
+      detectedLanguages: ["en", "id"],
+      confidence: 0.91,
+      detectionEnabled: false,
+    });
+    expect(
+      normalized.segments.every((segment) => segment.languageCode === null),
+    ).toBe(true);
+  });
+
+  it("keeps a missing primary invalid without the full reviewed pair", () => {
+    for (const language_codes of [undefined, null, ["id"]]) {
+      expectSyncProviderDiagnostic(
+        () =>
+          normalizeAssemblyAICompletedTranscript({
+            ...completedResponse(),
+            language_code: null,
+            language_codes,
+            language_detection: false,
+          }),
+        "TRANSCRIPTION_PROVIDER_RESULT_PRIMARY_LANGUAGE_MISSING",
+      );
+    }
+  });
+
   it("preserves an exact English primary locale for a single response code", () => {
     const normalized = normalizeAssemblyAICompletedTranscript({
       ...completedResponse(),

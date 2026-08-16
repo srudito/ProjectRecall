@@ -452,6 +452,93 @@ describe("durable transcription worker", () => {
     );
   });
 
+  it("accepts the reviewed EN-ID pair without fabricating a provider primary", async () => {
+    const db = database({
+      claimJobs: jest.fn(async () => [multilingualPollClaim()]),
+    });
+    const p = provider({
+      getStatus: jest.fn(async () => ({
+        status: "completed" as const,
+        providerJobId: PROVIDER_JOB_ID,
+        transcript: {
+          ...transcript,
+          languageSummary: {
+            ...transcript.languageSummary,
+            primaryLanguage: null,
+            detectedLanguages: ["en", "id"],
+          },
+          segments: transcript.segments.map((segment) => ({
+            ...segment,
+            languageCode: null,
+          })),
+        },
+      })),
+    });
+    const worker = createTranscriptionWorker({
+      database: db,
+      createSignedAudioUrl: jest.fn(),
+      getProvider: jest.fn(() => p),
+      checksumSha256: jest.fn(async () => "a".repeat(64)),
+      workerId: WORKER_ID,
+    });
+
+    const result = await worker.run();
+
+    expect(result.completed).toBe(1);
+    expect(db.completeJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        transcript: expect.objectContaining({
+          languageSummary: expect.objectContaining({
+            primaryLanguage: null,
+            detectedLanguages: ["en", "id"],
+          }),
+          segments: [expect.objectContaining({ languageCode: null })],
+        }),
+      }),
+    );
+  });
+
+  it("rejects a null primary outside the reviewed manual EN-ID path", async () => {
+    const db = database({
+      claimJobs: jest.fn(async () => [claim("poll")]),
+    });
+    const p = provider({
+      getStatus: jest.fn(async () => ({
+        status: "completed" as const,
+        providerJobId: PROVIDER_JOB_ID,
+        transcript: {
+          ...transcript,
+          languageSummary: {
+            ...transcript.languageSummary,
+            primaryLanguage: null,
+          },
+          segments: transcript.segments.map((segment) => ({
+            ...segment,
+            languageCode: null,
+          })),
+        },
+      })),
+    });
+    const worker = createTranscriptionWorker({
+      database: db,
+      createSignedAudioUrl: jest.fn(),
+      getProvider: jest.fn(() => p),
+      checksumSha256: jest.fn(),
+      workerId: WORKER_ID,
+    });
+
+    const result = await worker.run();
+
+    expect(result.failed).toBe(1);
+    expect(db.recordPollFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errorCode: "TRANSCRIPTION_PROVIDER_RESULT_CLAIM_LANGUAGE_INVALID",
+        safeError: "The transcription provider returned an invalid result.",
+      }),
+    );
+    expect(db.completeJob).not.toHaveBeenCalled();
+  });
+
   it("preserves an English locale primary while reconciling the EN-ID pair", async () => {
     const db = database({
       claimJobs: jest.fn(async () => [multilingualPollClaim()]),

@@ -14,9 +14,21 @@ describe("Milestone 2B.1B transcription request/worker migration", () => {
   const behavior = readRepositoryFile(
     "supabase/tests/0014_transcription_request_worker_behavior.sql",
   );
+  const nullablePrimaryMigration = readRepositoryFile(
+    "supabase/migrations/0015_transcription_nullable_primary_en_id.sql",
+  );
+  const nullablePrimaryBehavior = readRepositoryFile(
+    "supabase/tests/0015_transcription_nullable_primary_en_id_behavior.sql",
+  );
   const config = readRepositoryFile("supabase/config.toml");
   const normalized = normalizeSql(migration);
   const normalizedBehavior = normalizeSql(behavior);
+  const normalizedNullablePrimaryMigration = normalizeSql(
+    nullablePrimaryMigration,
+  );
+  const normalizedNullablePrimaryBehavior = normalizeSql(
+    nullablePrimaryBehavior,
+  );
 
   it("is append-only after migration 0013", () => {
     const files = readdirSync(
@@ -25,10 +37,42 @@ describe("Milestone 2B.1B transcription request/worker migration", () => {
       .filter((file) => file.endsWith(".sql"))
       .sort();
 
-    expect(files.slice(-2)).toEqual([
+    expect(files.slice(-3)).toEqual([
       "0013_transcription_foundation_v1.sql",
       "0014_transcription_request_worker_v1.sql",
+      "0015_transcription_nullable_primary_en_id.sql",
     ]);
+  });
+
+  it("adds nullable primary support through an append-only narrow migration", () => {
+    expect(normalizedNullablePrimaryMigration).toContain(
+      "create or replace function public.transcription_language_summary_matches_request",
+    );
+    expect(normalizedNullablePrimaryMigration).toContain(
+      "jsonb_typeof(p_language_summary->'primarylanguage') not in ('string','null')",
+    );
+    expect(normalizedNullablePrimaryMigration).toContain(
+      "normalized_primary is null",
+    );
+    expect(normalizedNullablePrimaryMigration).toContain(
+      "array['en','id']::text[]",
+    );
+    expect(nullablePrimaryMigration).not.toMatch(/^\s*alter\s+table\b/im);
+    expect(nullablePrimaryMigration).not.toMatch(/^\s*drop\s+table\b/im);
+
+    for (const marker of [
+      "transcription_nullable_primary_multilingual_check=pass",
+      "transcription_nullable_primary_single_language_rejection_check=pass",
+      "transcription_nullable_primary_auto_detect_rejection_check=pass",
+      "transcription_nullable_primary_pair_requirement_check=pass",
+      "transcription_nullable_primary_detection_rejection_check=pass",
+      "transcription_string_primary_regression_check=pass",
+      "project_recall_transcription_nullable_primary_behavior=pass",
+    ]) {
+      expect(normalizedNullablePrimaryBehavior).toContain(marker);
+    }
+    expect(normalizedNullablePrimaryBehavior).toContain("begin;");
+    expect(normalizedNullablePrimaryBehavior).toContain("rollback;");
   });
 
   it("adds the submitting state and makes only leased jobs retain a lease", () => {
@@ -325,7 +369,7 @@ describe("Milestone 2B.1B transcription request/worker migration", () => {
     const requestSource = readRepositoryFile(
       "supabase/functions/transcription-request/index.ts",
     );
-    const combined = `${migration}\n${behavior}\n${workerSource}\n${requestSource}`;
+    const combined = `${migration}\n${behavior}\n${nullablePrimaryMigration}\n${nullablePrimaryBehavior}\n${workerSource}\n${requestSource}`;
     expect(combined).not.toMatch(/sb_secret_[A-Za-z0-9_-]{16,}/);
     expect(combined).not.toMatch(/assemblyai[_-]?api[_-]?key\s*[:=]\s*["'][^"']+/i);
     expect(combined).not.toContain("SUPABASE_SERVICE_ROLE_KEY=");

@@ -151,12 +151,14 @@ messages from terminal errors and reports local transcript readiness without
 changing worker semantics. Milestone 2B.4A.2 hardens the server-only EN–ID
 completed-result boundary with explicit nullable-shape coverage and English-locale
 compatibility. Its controlled rerun isolated the remaining failure to provider
-language metadata. Milestone 2B.4A.3 splits that aggregate failure into bounded
-structural diagnostics without retaining raw provider values or changing
-compatibility behavior. The app never receives AssemblyAI or worker secrets, and
-the server-side feature flag remains authoritative. A fresh controlled EN–ID
-diagnostic rerun remains pending. Playback seeking, editing, and user-created
-immutable versions remain later milestones.
+language metadata. Milestone 2B.4A.3 then identified the exact live shape:
+manual EN–ID completed responses can carry the reviewed `language_codes` pair
+while omitting `language_code`. Milestone 2B.4A.4 accepts that shape only for the
+reviewed manual EN–ID path, keeps the provider primary null, and updates the
+atomic database validation through append-only migration 0015. The app never
+receives AssemblyAI or worker secrets, and the server-side feature flag remains
+authoritative. A fresh controlled EN–ID rerun remains pending. Playback seeking,
+editing, and user-created immutable versions remain later milestones.
 
 See `ROADMAP.md`, `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_IMPLEMENTATION.md`,
 `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_TEST.md`,
@@ -178,8 +180,10 @@ See `ROADMAP.md`, `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_IMPLEMENTATION.m
 `MILESTONE2B4A1_TRANSCRIPTION_PROGRESS_MESSAGING_V1_TEST.md`,
 `MILESTONE2B4A2_EN_ID_PROVIDER_RESULT_COMPATIBILITY_V1_IMPLEMENTATION.md`,
 `MILESTONE2B4A2_EN_ID_PROVIDER_RESULT_COMPATIBILITY_V1_TEST.md`,
-`MILESTONE2B4A3_EN_ID_LANGUAGE_METADATA_DIAGNOSTICS_V1_IMPLEMENTATION.md`, and
-`MILESTONE2B4A3_EN_ID_LANGUAGE_METADATA_DIAGNOSTICS_V1_TEST.md`.
+`MILESTONE2B4A3_EN_ID_LANGUAGE_METADATA_DIAGNOSTICS_V1_IMPLEMENTATION.md`,
+`MILESTONE2B4A3_EN_ID_LANGUAGE_METADATA_DIAGNOSTICS_V1_TEST.md`,
+`MILESTONE2B4A4_EN_ID_NULLABLE_PRIMARY_COMPATIBILITY_V1_IMPLEMENTATION.md`, and
+`MILESTONE2B4A4_EN_ID_NULLABLE_PRIMARY_COMPATIBILITY_V1_TEST.md`.
 
 ## Public legal pages
 
@@ -253,3 +257,10 @@ login before configuring production EAS or Play Console.
 - Implementation: `MILESTONE2B4A3_EN_ID_LANGUAGE_METADATA_DIAGNOSTICS_V1_IMPLEMENTATION.md`
 - Test plan: `MILESTONE2B4A3_EN_ID_LANGUAGE_METADATA_DIAGNOSTICS_V1_TEST.md`
 - Scope: diagnostic-only structural classification for completed provider language metadata. No compatibility, migration, mobile, retry, cleanup, Cron, or secret change.
+
+
+## Milestone 2B.4A.4 EN–ID nullable-primary compatibility
+
+- Implementation: `MILESTONE2B4A4_EN_ID_NULLABLE_PRIMARY_COMPATIBILITY_V1_IMPLEMENTATION.md`
+- Test plan: `MILESTONE2B4A4_EN_ID_NULLABLE_PRIMARY_COMPATIBILITY_V1_TEST.md`
+- Scope: narrowly accept a missing provider primary only when a completed manual result carries the reviewed EN–ID pair; preserve a null provider primary through worker validation and append-only migration 0015. No mobile, secret, Cron, or retry change.
