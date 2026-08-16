@@ -98,3 +98,38 @@ After source validation and commit:
 
 Production remains untouched. No mobile build, package, lockfile, native, Cron,
 feature-flag, or secret change is required.
+
+## Development acceptance result
+
+Development acceptance completed against source commit
+`fc911bc5a21b6af894d4e96f8d64ae89e9cd60bf`:
+
+- migration 0015 was applied once after a zero-state precondition and its
+  rollback-wrapped behavior test passed;
+- `transcription-worker` v8 was deployed from the same commit with
+  `verify_jwt = false` unchanged;
+- post-deployment Cron execution and the corresponding HTTP path returned 200
+  while the transcription backend remained empty;
+- the controlled session `M2B4A EN-ID Gate 3 Nullable Primary` submitted one
+  canonical `MULTILINGUAL` request with requested languages `["en", "id"]`;
+- the job and run both succeeded on attempt 1;
+- the durable run stored `detected_languages = ["en", "id"]`,
+  `primary_detected_language = null`, and
+  `language_detection_status = USER_CONFIRMED`;
+- the current transcript stored `primaryLanguage = null`, the reviewed EN–ID
+  pair, a content checksum, non-empty plain text, and 20 timestamped segments;
+- all 20 segment language labels remained null rather than inventing a dominant
+  language;
+- Full Text and Timestamps were both readable from the local application cache;
+- provider cleanup succeeded with no unresolved artifact or manual-review row;
+- the test session was deleted through the application and the development
+  backend returned to zero jobs, runs, versions, and segments.
+
+Production was not changed.
+
+## Operational closure
+
+- Migration 0015 must not be rerun on the linked development environment.
+- Worker v8 does not need redeployment unless a later source change requires it.
+- A null provider primary remains valid only for the reviewed manual EN–ID pair;
+  no broader nullable-primary behavior was enabled.

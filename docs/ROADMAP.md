@@ -206,8 +206,7 @@ that the manual EN–ID completed response carries no provider primary language:
 
 ### Phase 2B.4A.4 - EN–ID nullable-primary compatibility
 
-Implemented in source; migration/development deployment and one fresh rerun
-remain pending:
+Completed in development:
 
 - a completed result may omit provider `language_code` only when
   `language_codes` canonicalizes to exactly `en,id`;
@@ -217,12 +216,21 @@ remain pending:
   and leaves per-word language labels null;
 - append-only migration 0015 updates only the atomic language-summary validator
   so the database accepts this exact user-confirmed shape;
-- no existing migration is edited or rerun;
-- no mobile, secret, Cron, retry, cleanup, package, lockfile, or native change.
+- migration 0015 was applied once to development and its rollback-wrapped
+  behavior test passed;
+- transcription-worker v8 is active and authenticated Cron calls returned HTTP
+  200 on an otherwise empty backend;
+- one controlled `MULTILINGUAL ["en","id"]` run succeeded with
+  `primary_detected_language = null`, `detected_languages = ["en","id"]`, and
+  `language_detection_status = USER_CONFIRMED`;
+- the current transcript stored a null primary, a checksum, and 20 segments;
+  local Full Text and Timestamps were readable;
+- provider cleanup succeeded, no unresolved artifact or manual-review row
+  remained, the test session was deleted, and the backend returned to zero;
+- no existing migration was edited or rerun, and production remains untouched.
 
 ### Later Milestone 2 phases
 
-- one controlled EN–ID rerun after migration 0015 and worker redeployment;
 - transcript editor and immutable version history;
 - release hardening before production feature activation.
 
@@ -291,7 +299,7 @@ remain pending:
 
 - Implementation: `MILESTONE2B4A2_EN_ID_PROVIDER_RESULT_COMPATIBILITY_V1_IMPLEMENTATION.md`
 - Test plan: `MILESTONE2B4A2_EN_ID_PROVIDER_RESULT_COMPATIBILITY_V1_TEST.md`
-- Scope: server-only compatibility and safe diagnostics for reviewed EN–ID completed results, with no migration or mobile change. Controlled redeployment and rerun remain pending.
+- Scope: server-only compatibility and safe diagnostics for reviewed EN–ID completed results, with no migration or mobile change. Its controlled rerun isolated the nullable-primary shape later completed by Phases 2B.4A.3 and 2B.4A.4.
 
 
 ## Milestone 2B.4A.3 - EN–ID language metadata diagnostics
@@ -306,3 +314,4 @@ remain pending:
 - Implementation: `MILESTONE2B4A4_EN_ID_NULLABLE_PRIMARY_COMPATIBILITY_V1_IMPLEMENTATION.md`
 - Test plan: `MILESTONE2B4A4_EN_ID_NULLABLE_PRIMARY_COMPATIBILITY_V1_TEST.md`
 - Scope: narrow server/database compatibility for manual EN–ID completed results that omit provider primary language, using append-only migration 0015 and no mobile change.
+- Status: development live acceptance complete; production untouched.

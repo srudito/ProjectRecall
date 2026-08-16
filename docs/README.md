@@ -86,9 +86,11 @@ are missing or still use example/reserved domains.
 ## Supabase migrations
 
 Fresh environments apply migrations in filename order from `0001` through
-`0013`. Existing environments must not rerun or edit applied migrations. An
-existing Milestone 1 environment applies only new migration `0013` once after
-review; it must not rerun `0001–0012`.
+`0015`. Existing environments must not rerun or edit applied migrations; they
+apply only migrations not already present in that environment. Migration `0015`
+replaces only the nullable-primary language-summary validator and was applied
+once to the linked development project after review and zero-state validation.
+It must not be rerun.
 
 The development project's remote CLI migration ledger is not authoritative
 because migrations were applied manually through SQL Editor. Do not run
@@ -155,9 +157,12 @@ language metadata. Milestone 2B.4A.3 then identified the exact live shape:
 manual EN–ID completed responses can carry the reviewed `language_codes` pair
 while omitting `language_code`. Milestone 2B.4A.4 accepts that shape only for the
 reviewed manual EN–ID path, keeps the provider primary null, and updates the
-atomic database validation through append-only migration 0015. The app never
-receives AssemblyAI or worker secrets, and the server-side feature flag remains
-authoritative. A fresh controlled EN–ID rerun remains pending. Playback seeking,
+atomic database validation through append-only migration 0015. Development
+migration behavior, transcription-worker v8 deployment, authenticated Cron HTTP
+200 checks, one controlled mixed-language transcription, local Full Text and
+Timestamps, provider cleanup, and final backend-zero cleanup all passed. The app
+never receives AssemblyAI or worker secrets, the server-side feature flag
+remains authoritative, and production remains untouched. Playback seeking,
 editing, and user-created immutable versions remain later milestones.
 
 See `ROADMAP.md`, `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_IMPLEMENTATION.md`,
@@ -264,3 +269,4 @@ login before configuring production EAS or Play Console.
 - Implementation: `MILESTONE2B4A4_EN_ID_NULLABLE_PRIMARY_COMPATIBILITY_V1_IMPLEMENTATION.md`
 - Test plan: `MILESTONE2B4A4_EN_ID_NULLABLE_PRIMARY_COMPATIBILITY_V1_TEST.md`
 - Scope: narrowly accept a missing provider primary only when a completed manual result carries the reviewed EN–ID pair; preserve a null provider primary through worker validation and append-only migration 0015. No mobile, secret, Cron, or retry change.
+- Status: development live acceptance complete; production untouched.

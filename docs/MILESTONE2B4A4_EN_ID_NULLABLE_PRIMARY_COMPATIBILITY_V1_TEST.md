@@ -11,6 +11,7 @@ npx jest \
   __tests__/assemblyai-provider.test.ts \
   __tests__/transcription-request-worker.test.ts \
   __tests__/transcription-worker-migration.test.ts \
+  __tests__/transcription-foundation-migration.test.ts \
   --runInBand
 
 npx jest --runInBand
@@ -19,6 +20,7 @@ npx eslint \
   ./__tests__/assemblyai-provider.test.ts \
   ./__tests__/transcription-request-worker.test.ts \
   ./__tests__/transcription-worker-migration.test.ts \
+  ./__tests__/transcription-foundation-migration.test.ts \
   --max-warnings=0
 
 node ./scripts/validate-release-readiness.js
@@ -111,3 +113,39 @@ Required result:
 
 If the run fails, do not retry. Read only the bounded diagnostic code and confirm
 provider cleanup before defining another change.
+
+## Recorded development acceptance
+
+The automated and live gates completed successfully:
+
+- TypeScript, focused Jest, full Jest, targeted ESLint, release-readiness, and
+  Expo Doctor all passed; Expo Doctor reported 18/18 checks;
+- migration 0015 was the only new migration, was applied once to development,
+  and its rollback-wrapped behavior markers passed;
+- `transcription-worker` advanced from v7 to v8 while `delete-account` and
+  `transcription-request` remained unchanged;
+- authenticated Cron and post-deployment HTTP checks returned 200 on an empty
+  backend;
+- the controlled session submitted exactly one canonical
+  `MULTILINGUAL ["en", "id"]` request;
+- `processing_jobs.status` and `transcription_runs.status` were `succeeded` on
+  attempt 1 with no last error;
+- the run stored `detected_languages = ["en", "id"]`, a null primary, and
+  `USER_CONFIRMED` language status;
+- the current transcript stored a null primary, the reviewed EN–ID pair, a
+  checksum, 119 plain-text characters, and 20 segments;
+- all 20 segment language labels were null, as required for this provider shape;
+- Full Text and Timestamps were both readable in the application;
+- provider cleanup succeeded with zero unresolved artifacts and zero
+  manual-review rows;
+- deleting the test session through the application restored the development
+  backend to zero jobs, runs, versions, segments, and test sessions.
+
+Final development status:
+
+```text
+M2B4A4_LIVE_ACCEPTANCE=PASS
+M2B4A4_PROVIDER_CLEANUP=PASS
+M2B4A4_FINAL_BACKEND_ZERO=PASS
+PRODUCTION_UNTOUCHED=PASS
+```

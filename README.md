@@ -28,10 +28,13 @@ coverage, English-locale compatibility, and sanitized diagnostics. Its
 controlled rerun isolated the remaining failure to provider language metadata.
 Milestone 2B.4A.3 then proved that manual EN–ID completed responses may omit a
 provider primary language. Milestone 2B.4A.4 adds narrow nullable-primary
-compatibility across the provider adapter, worker claim validation, and a new
-append-only database migration while preserving the user-confirmed EN–ID pair.
-A fresh controlled EN–ID rerun remains pending. Playback seeking, editing,
-search, and export remain later milestones.
+compatibility across the provider adapter, worker claim validation, and
+append-only migration 0015 while preserving the user-confirmed EN–ID pair.
+Development migration validation, worker v8 deployment, authenticated Cron HTTP
+200 checks, one controlled mixed-language transcription, local Full Text and
+Timestamps, provider cleanup, and final backend-zero cleanup all passed.
+Production remains untouched. Playback seeking, editing, search, and export
+remain later milestones.
 
 ## Source of truth
 
