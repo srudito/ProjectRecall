@@ -5,7 +5,8 @@
 
 begin;
 
-do $$
+do $
+#variable_conflict use_variable
 declare
   actor_id uuid;
   workspace_id uuid;
