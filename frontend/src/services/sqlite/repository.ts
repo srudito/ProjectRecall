@@ -1905,6 +1905,220 @@ export const listTranscriptEditQueueForSession = async (
   )) as TranscriptEditQueueRow[];
 };
 
+export const claimTranscriptEditQueue = async (
+  id: string,
+): Promise<TranscriptEditQueueRow | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+  const timestamp = nowIso();
+  const result = await db.runAsync(
+    `UPDATE local_transcript_edit_queue
+        SET queue_status = 'submitting',
+            attempt_count = attempt_count + 1,
+            next_retry_at = NULL,
+            last_error_code = NULL,
+            last_safe_error = NULL,
+            updated_at = ?
+      WHERE id = ?
+        AND queue_status IN ('pending','failed')
+        AND attempt_count < max_attempts
+        AND (next_retry_at IS NULL OR next_retry_at <= ?)`,
+    [timestamp, id, timestamp],
+  );
+  if (result.changes !== 1) return null;
+  return (await db.getFirstAsync(
+    `SELECT * FROM local_transcript_edit_queue WHERE id = ? LIMIT 1`,
+    [id],
+  )) as TranscriptEditQueueRow | null;
+};
+
+export const deferTranscriptEditQueue = async (
+  id: string,
+  nextRetryAt: string,
+  errorCode: string,
+  safeError: string,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  await db.runAsync(
+    `UPDATE local_transcript_edit_queue
+        SET queue_status = 'pending',
+            attempt_count = CASE
+              WHEN attempt_count > 0 THEN attempt_count - 1
+              ELSE 0
+            END,
+            next_retry_at = ?,
+            last_error_code = ?,
+            last_safe_error = ?,
+            updated_at = ?
+      WHERE id = ? AND queue_status = 'submitting'`,
+    [nextRetryAt, errorCode, safeError, nowIso(), id],
+  );
+};
+
+export const rescheduleTranscriptEditQueue = async (
+  id: string,
+  nextRetryAt: string,
+  errorCode: string,
+  safeError: string,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  await db.runAsync(
+    `UPDATE local_transcript_edit_queue
+        SET queue_status = 'failed',
+            next_retry_at = ?,
+            last_error_code = ?,
+            last_safe_error = ?,
+            updated_at = ?
+      WHERE id = ? AND queue_status = 'submitting'`,
+    [nextRetryAt, errorCode, safeError, nowIso(), id],
+  );
+};
+
+export const completeTranscriptEditQueueSuccess = async (input: {
+  queueId: string;
+  userId: string;
+  workspaceId: string;
+  sessionId: string;
+  expectedCurrentVersionId: string;
+  plainText: string;
+}): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+
+  await runSerializedLocalTransaction(db, async () => {
+    const completion = await db.runAsync(
+      `UPDATE local_transcript_edit_queue
+          SET queue_status = 'succeeded',
+              next_retry_at = NULL,
+              last_error_code = NULL,
+              last_safe_error = NULL,
+              updated_at = ?
+        WHERE id = ?
+          AND queue_status = 'submitting'
+          AND user_id = ?
+          AND workspace_id = ?
+          AND session_id = ?
+          AND expected_current_version_id = ?
+          AND plain_text = ?`,
+      [
+        nowIso(),
+        input.queueId,
+        input.userId,
+        input.workspaceId,
+        input.sessionId,
+        input.expectedCurrentVersionId,
+        input.plainText,
+      ],
+    );
+    if (completion.changes !== 1) {
+      throw new Error(
+        "Transcript edit queue completion no longer matches the claimed snapshot.",
+      );
+    }
+
+    // Remove only the exact draft snapshot that produced this queue row. A user
+    // may continue editing while a prior save is in flight; that newer draft
+    // must survive completion of the older immutable server version.
+    await db.runAsync(
+      `DELETE FROM local_transcript_edit_drafts
+        WHERE user_id = ?
+          AND workspace_id = ?
+          AND session_id = ?
+          AND base_version_id = ?
+          AND plain_text = ?`,
+      [
+        input.userId,
+        input.workspaceId,
+        input.sessionId,
+        input.expectedCurrentVersionId,
+        input.plainText,
+      ],
+    );
+  });
+};
+
+const updateTranscriptEditQueueTerminal = async (
+  id: string,
+  queueStatus: "failed" | "conflict" | "cancelled",
+  errorCode: string,
+  safeError: string,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  await db.runAsync(
+    `UPDATE local_transcript_edit_queue
+        SET queue_status = ?,
+            attempt_count = CASE
+              WHEN ? = 'failed' THEN max_attempts
+              ELSE attempt_count
+            END,
+            next_retry_at = NULL,
+            last_error_code = ?,
+            last_safe_error = ?,
+            updated_at = ?
+      WHERE id = ? AND queue_status = 'submitting'`,
+    [queueStatus, queueStatus, errorCode, safeError, nowIso(), id],
+  );
+};
+
+export const markTranscriptEditQueueConflict = async (
+  id: string,
+  errorCode: string,
+  safeError: string,
+): Promise<void> =>
+  updateTranscriptEditQueueTerminal(
+    id,
+    "conflict",
+    errorCode,
+    safeError,
+  );
+
+export const markTranscriptEditQueueFailed = async (
+  id: string,
+  errorCode: string,
+  safeError: string,
+): Promise<void> =>
+  updateTranscriptEditQueueTerminal(
+    id,
+    "failed",
+    errorCode,
+    safeError,
+  );
+
+export const markTranscriptEditQueueCancelled = async (
+  id: string,
+  errorCode: string,
+  safeError: string,
+): Promise<void> =>
+  updateTranscriptEditQueueTerminal(
+    id,
+    "cancelled",
+    errorCode,
+    safeError,
+  );
+
+export const resetSubmittingTranscriptEditQueue = async (
+  userId: string,
+): Promise<number> => {
+  const db = await openLocalDb();
+  if (!db) return 0;
+  const result = await db.runAsync(
+    `UPDATE local_transcript_edit_queue
+        SET queue_status = 'pending',
+            attempt_count = CASE
+              WHEN attempt_count > 0 THEN attempt_count - 1
+              ELSE 0
+            END,
+            next_retry_at = NULL,
+            updated_at = ?
+      WHERE user_id = ? AND queue_status = 'submitting'`,
+    [nowIso(), userId],
+  );
+  return result.changes;
+};
+
 export const upsertTranscriptionRequestIntent = async (
   row: TranscriptionRequestQueueRow,
 ): Promise<TranscriptionRequestQueueRow> => {

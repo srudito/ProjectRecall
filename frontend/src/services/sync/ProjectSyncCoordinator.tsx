@@ -12,6 +12,7 @@ import { requestRecordingUploadSync } from "./recording-upload-worker";
 import { requestSessionDeletionSync } from "./session-deletion-worker";
 import { requestTranscriptionRequestSync } from "./transcription-request-worker";
 import { requestTranscriptionResultSync } from "./transcription-result-worker";
+import { requestTranscriptEditSync } from "./transcript-edit-worker";
 import { subscribeTranscriptionRequestSubmissions } from "./transcription-sync-events";
 
 const requestAllSync = (): void => {
@@ -22,6 +23,7 @@ const requestAllSync = (): void => {
   requestMediaUploadSync();
   requestTranscriptionRequestSync();
   requestTranscriptionResultSync();
+  requestTranscriptEditSync();
 };
 
 /**

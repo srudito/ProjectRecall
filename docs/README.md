@@ -172,9 +172,11 @@ stale-base conflict rejection, and immutable Full Text version lineage. The
 migration was applied once to development and the rollback-wrapped behavior test
 passed with no persisted verification rows. Milestone 2B.4B.3A then adds
 SQLite v11 local draft and durable edit-outbox foundations with a pinned draft
-base and stable client-version UUID replay protection. Network submission,
-cross-device version synchronization, editor UI, history, restore, and playback
-seeking remain later milestones.
+base and stable client-version UUID replay protection. Milestone 2B.4B.3B adds
+the authenticated RPC/outbox worker with crash-safe stable-UUID replay, bounded
+retry, explicit stale-base conflict state, and conditional draft cleanup.
+Generic current-version pull/cross-device synchronization, editor UI, history,
+restore, and playback seeking remain later milestones.
 
 See `ROADMAP.md`, `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_IMPLEMENTATION.md`,
 `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_TEST.md`,
@@ -202,8 +204,10 @@ See `ROADMAP.md`, `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_IMPLEMENTATION.m
 `MILESTONE2B4A4_EN_ID_NULLABLE_PRIMARY_COMPATIBILITY_V1_TEST.md`,
 `MILESTONE2B4B2_TRANSCRIPT_USER_EDIT_SERVER_CONTRACT_V1_IMPLEMENTATION.md`,
 `MILESTONE2B4B2_TRANSCRIPT_USER_EDIT_SERVER_CONTRACT_V1_TEST.md`,
-`MILESTONE2B4B3A_TRANSCRIPT_EDIT_LOCAL_FOUNDATION_V1_IMPLEMENTATION.md`, and
-`MILESTONE2B4B3A_TRANSCRIPT_EDIT_LOCAL_FOUNDATION_V1_TEST.md`.
+`MILESTONE2B4B3A_TRANSCRIPT_EDIT_LOCAL_FOUNDATION_V1_IMPLEMENTATION.md`,
+`MILESTONE2B4B3A_TRANSCRIPT_EDIT_LOCAL_FOUNDATION_V1_TEST.md`,
+`MILESTONE2B4B3B_TRANSCRIPT_EDIT_SYNC_WORKER_V1_IMPLEMENTATION.md`, and
+`MILESTONE2B4B3B_TRANSCRIPT_EDIT_SYNC_WORKER_V1_TEST.md`.
 
 ## Public legal pages
 
@@ -299,4 +303,11 @@ login before configuring production EAS or Play Console.
 - Implementation: `MILESTONE2B4B3A_TRANSCRIPT_EDIT_LOCAL_FOUNDATION_V1_IMPLEMENTATION.md`
 - Test plan: `MILESTONE2B4B3A_TRANSCRIPT_EDIT_LOCAL_FOUNDATION_V1_TEST.md`
 - Scope: additive SQLite v11 local draft and durable edit-outbox foundation, pinned draft base lineage, stable client-version UUID replay safety, and scoped cleanup integration. No RPC/network worker or editor UI is included.
+- Status: development source validation complete; server/database deployment and production untouched.
+
+## Milestone 2B.4B.3B transcript edit sync worker
+
+- Implementation: `MILESTONE2B4B3B_TRANSCRIPT_EDIT_SYNC_WORKER_V1_IMPLEMENTATION.md`
+- Test plan: `MILESTONE2B4B3B_TRANSCRIPT_EDIT_SYNC_WORKER_V1_TEST.md`
+- Scope: authenticated migration-0016 RPC client, durable edit-outbox worker, stable-UUID crash recovery, bounded retry, explicit stale-base conflicts, and guarded exact-draft cleanup. No SQLite/Supabase migration, generic version pull, or editor UI is included.
 - Status: development source validation complete; server/database deployment and production untouched.

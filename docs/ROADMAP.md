@@ -282,10 +282,33 @@ Completed in development:
 - no Supabase migration, Edge Function, worker, Cron, provider, secret, package,
   native, UI, or production change.
 
+### Phase 2B.4B.3B - authenticated transcript-edit sync worker
+
+Completed in development source:
+
+- an authenticated Supabase RPC client calls the existing migration-0016
+  `create_transcript_user_edit_version_v1` contract with the stable client UUID;
+- late stable-UUID replay remains successful even if another edit has since
+  become current;
+- the SQLite v11 outbox gains guarded claim, defer, retry, conflict, terminal,
+  crash-recovery, and success transitions without a schema change;
+- stale-base responses become explicit local `conflict` state and never
+  silently rebase;
+- retryable failures use bounded backoff while feature/auth waiting does not
+  consume retry budget;
+- successful completion deletes only a draft that still exactly matches the
+  submitted base/text snapshot;
+- native authenticated initialization, app-active, and reconnect lifecycle
+  paths wake the edit worker through the existing sync coordinator;
+- RPC success does not directly mutate local transcript versions or timestamp
+  segments; generic current-version pull remains separate;
+- TypeScript, 28 focused tests, targeted ESLint, 625 full tests, release
+  readiness, Expo install check, and Expo Doctor all passed;
+- no SQLite/Supabase migration, Edge Function, worker deployment, Cron, provider,
+  secret, package, native, editor-UI, or production change.
+
 ### Later Milestone 2 phases
 
-- authenticated transcript-edit RPC/outbox worker and explicit retry/conflict
-  transitions;
 - generic current-version pull and cross-device transcript version
   synchronization;
 - local-first Full Text editor and explicit conflict presentation;
@@ -388,3 +411,10 @@ Completed in development:
 - Test plan: `MILESTONE2B4B3A_TRANSCRIPT_EDIT_LOCAL_FOUNDATION_V1_TEST.md`
 - Scope: SQLite v11 draft/outbox persistence, pinned base lineage, stable client-version UUID replay protection, retry metadata, and cleanup coverage with no network worker or editor UI.
 - Status: development source validation complete; Supabase and production untouched.
+
+## Milestone 2B.4B.3B - Transcript edit sync worker
+
+- Implementation: `MILESTONE2B4B3B_TRANSCRIPT_EDIT_SYNC_WORKER_V1_IMPLEMENTATION.md`
+- Test plan: `MILESTONE2B4B3B_TRANSCRIPT_EDIT_SYNC_WORKER_V1_TEST.md`
+- Scope: authenticated immutable-edit RPC submission, stable-UUID crash recovery, bounded retry/defer, explicit stale-base conflicts, guarded completion, and lifecycle wake-up on the existing SQLite v11 outbox.
+- Status: development source validation complete; no database/server deployment or production action.
