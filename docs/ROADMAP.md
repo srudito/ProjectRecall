@@ -245,7 +245,7 @@ Completed as a read-only architecture phase:
 
 ### Phase 2B.4B.2 - immutable transcript user-edit server contract
 
-Implemented in source; migration apply remains pending:
+Completed in development:
 
 - append-only migration 0016 adds one authenticated security-definer RPC;
 - a caller-supplied stable UUID provides durable idempotency;
@@ -356,4 +356,4 @@ Implemented in source; migration apply remains pending:
 - Implementation: `MILESTONE2B4B2_TRANSCRIPT_USER_EDIT_SERVER_CONTRACT_V1_IMPLEMENTATION.md`
 - Test plan: `MILESTONE2B4B2_TRANSCRIPT_USER_EDIT_SERVER_CONTRACT_V1_TEST.md`
 - Scope: append-only migration 0016 with authenticated stable-UUID idempotency, stale-base compare-and-swap, immutable Full Text version lineage, and no segment fabrication or mobile change.
-- Status: implemented in source; migration 0016 apply and behavior verification remain pending; production untouched.
+- Status: development migration 0016 apply and rollback-wrapped behavior verification complete; production untouched.

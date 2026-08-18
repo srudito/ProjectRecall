@@ -36,7 +36,9 @@ Timestamps, provider cleanup, and final backend-zero cleanup all passed.
 Milestone 2B.4B.1 audits the transcript editing/versioning foundation, and
 Milestone 2B.4B.2 adds source-reviewed append-only migration 0016 with a narrow
 authenticated, idempotent compare-and-swap contract for immutable Full Text
-edits. Migration 0016 has not yet been applied. Production remains untouched;
+edits. Migration 0016 was applied exactly once to the linked development
+database; post-apply schema/security checks and the rollback-wrapped behavior
+test passed with no verification rows persisted. Production remains untouched;
 local drafts, editor UI, version history, restore, search, and export remain
 later milestones.
 

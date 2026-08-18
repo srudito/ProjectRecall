@@ -6,8 +6,11 @@ This milestone adds the server-side contract required for future local-first
 transcript editing. A user edit creates a new immutable transcript version; it
 never overwrites the provider transcript or mutates timestamp evidence.
 
-Source checkpoint:
+Implementation base source:
 `217d89a44a6827e437e80999bb6370b55228c854` on `milestone1sync`.
+
+Final development-closure source:
+`16e90555ccb950e4adbc9f257646419eace09740` on `milestone1sync`.
 
 Milestone 2B.4B.1 was a read-only architecture audit. It confirmed that remote
 `transcript_versions`, `transcript_segments`, the one-current-version index,
@@ -142,6 +145,9 @@ This milestone does not add:
 - Edge Functions, worker changes, Cron changes, provider calls, or secrets;
 - production activation.
 
-Migration 0016 is implemented in source but must not be applied until all source
-gates, exact-scope review, commit/push, and a development precondition review
-have passed. Worker v8 does not require redeployment for this SQL-only milestone.
+Development rollout is complete. Migration 0016 was applied exactly once
+after read-only precondition review. Post-apply schema/security checks passed,
+and the rollback-wrapped behavior test passed after a test-only PL/pgSQL fixture
+correction using `#variable_conflict use_variable`. The test left no verification
+rows behind. Worker v8 was not redeployed, production remains untouched, and
+migration 0016 must not be rerun.

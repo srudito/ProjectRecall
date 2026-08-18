@@ -2,8 +2,11 @@
 
 ## Source checkpoint
 
-Base source:
+Implementation base source:
 `217d89a44a6827e437e80999bb6370b55228c854` on `milestone1sync`.
+
+Final verified behavior source:
+`16e90555ccb950e4adbc9f257646419eace09740` on `milestone1sync`.
 
 The implementation must remain limited to append-only migration 0016, its
 rollback-wrapped SQL behavior test, one focused Jest source test, and milestone
@@ -141,3 +144,40 @@ DO_NOT_START_EDITOR_UI_YET
 
 After source and database behavior gates pass, close only Milestone 2B.4B.2.
 Local drafts/outbox/version sync are the next separate milestone.
+
+## Development verification result
+
+Development verification completed successfully at source head
+`16e90555ccb950e4adbc9f257646419eace09740` on `milestone1sync`.
+
+The linked development database passed the read-only precondition audit before
+migration apply. Migration 0016 was then applied exactly once. Post-apply checks
+confirmed the constraints, indexes, immutable trigger, authenticated
+security-definer RPC, privilege matrix, existing one-current-version invariant,
+feature flag, and nullable-primary migration 0015 behavior remained valid.
+
+The first behavior-test execution exposed a test-fixture-only PL/pgSQL name
+ambiguity. The committed behavior test was corrected with
+`#variable_conflict use_variable`; its SQL delimiter was then verified as
+`do $$ ... $$`. The corrected rollback-wrapped behavior test passed, and the
+post-test audit confirmed that verification sessions, jobs, runs, and user-edit
+versions all returned to zero while `transcription_enabled` remained true.
+
+Final source gates passed:
+
+- TypeScript: PASS
+- Focused Jest: 21 / 21 tests
+- Full Jest: 68 / 68 suites, 596 / 596 tests
+- Targeted ESLint: PASS
+- Release readiness: PASS
+- Expo install check: PASS
+- Expo Doctor: 18 / 18
+- Database behavior test: PASS
+- Post-test rollback audit: PASS
+
+Migration 0016 must not be rerun. Migration 0015 must not be rerun.
+No worker redeployment, provider change, Cron change, secret change, native
+change, or production rollout was part of this milestone.
+
+Milestone 2B.4B.2 is complete in development. Local draft/outbox/version sync
+remains the separate next milestone and is not started by this closure.

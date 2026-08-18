@@ -91,7 +91,9 @@ apply only migrations not already present in that environment. Migration `0015`
 replaces only the nullable-primary language-summary validator and was applied
 once to the linked development project after review and zero-state validation;
 it must not be rerun. Migration `0016` adds the reviewed immutable user-edit
-server contract and remains source-only until its separate apply gate passes.
+server contract and was applied exactly once to linked development after
+read-only precondition review. Its rollback-wrapped behavior verification passed,
+and migration `0016` must not be rerun.
 
 The development project's remote CLI migration ledger is not authoritative
 because migrations were applied manually through SQL Editor. Do not run
@@ -164,11 +166,12 @@ migration behavior, transcription-worker v8 deployment, authenticated Cron HTTP
 Timestamps, provider cleanup, and final backend-zero cleanup all passed. The app
 never receives AssemblyAI or worker secrets, the server-side feature flag
 remains authoritative, and production remains untouched. Milestone 2B.4B.1 then
-audits the existing version/cache boundary. Milestone 2B.4B.2 adds source-only
+audits the existing version/cache boundary. Milestone 2B.4B.2 adds append-only
 migration 0016 with a narrow authenticated RPC, stable UUID idempotency,
-stale-base conflict rejection, and immutable Full Text version lineage. Local
-drafts, sync, editor UI, history, restore, and playback seeking remain later
-milestones.
+stale-base conflict rejection, and immutable Full Text version lineage. The
+migration was applied once to development and the rollback-wrapped behavior test
+passed with no persisted verification rows. Local drafts, sync, editor UI,
+history, restore, and playback seeking remain later milestones.
 
 See `ROADMAP.md`, `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_IMPLEMENTATION.md`,
 `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_TEST.md`,
@@ -283,5 +286,5 @@ login before configuring production EAS or Play Console.
 
 - Implementation: `MILESTONE2B4B2_TRANSCRIPT_USER_EDIT_SERVER_CONTRACT_V1_IMPLEMENTATION.md`
 - Test plan: `MILESTONE2B4B2_TRANSCRIPT_USER_EDIT_SERVER_CONTRACT_V1_TEST.md`
-- Scope: append-only migration 0016, a narrow authenticated Full Text version-creation RPC, stable UUID idempotency, stale-base conflict protection, and immutable version content. Migration apply, local drafts/sync, editor UI, history, and restore remain separate gates.
-- Status: implemented in source; migration 0016 not yet applied; production untouched.
+- Scope: append-only migration 0016, a narrow authenticated Full Text version-creation RPC, stable UUID idempotency, stale-base conflict protection, and immutable version content. Local drafts/sync, editor UI, history, and restore remain separate later gates.
+- Status: development apply and rollback-wrapped behavior verification complete; production untouched.
