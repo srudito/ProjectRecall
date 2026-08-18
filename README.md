@@ -33,8 +33,12 @@ append-only migration 0015 while preserving the user-confirmed EN–ID pair.
 Development migration validation, worker v8 deployment, authenticated Cron HTTP
 200 checks, one controlled mixed-language transcription, local Full Text and
 Timestamps, provider cleanup, and final backend-zero cleanup all passed.
-Production remains untouched. Playback seeking, editing, search, and export
-remain later milestones.
+Milestone 2B.4B.1 audits the transcript editing/versioning foundation, and
+Milestone 2B.4B.2 adds source-reviewed append-only migration 0016 with a narrow
+authenticated, idempotent compare-and-swap contract for immutable Full Text
+edits. Migration 0016 has not yet been applied. Production remains untouched;
+local drafts, editor UI, version history, restore, search, and export remain
+later milestones.
 
 ## Source of truth
 

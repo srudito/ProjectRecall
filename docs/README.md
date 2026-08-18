@@ -86,11 +86,12 @@ are missing or still use example/reserved domains.
 ## Supabase migrations
 
 Fresh environments apply migrations in filename order from `0001` through
-`0015`. Existing environments must not rerun or edit applied migrations; they
+`0016`. Existing environments must not rerun or edit applied migrations; they
 apply only migrations not already present in that environment. Migration `0015`
 replaces only the nullable-primary language-summary validator and was applied
-once to the linked development project after review and zero-state validation.
-It must not be rerun.
+once to the linked development project after review and zero-state validation;
+it must not be rerun. Migration `0016` adds the reviewed immutable user-edit
+server contract and remains source-only until its separate apply gate passes.
 
 The development project's remote CLI migration ledger is not authoritative
 because migrations were applied manually through SQL Editor. Do not run
@@ -162,8 +163,12 @@ migration behavior, transcription-worker v8 deployment, authenticated Cron HTTP
 200 checks, one controlled mixed-language transcription, local Full Text and
 Timestamps, provider cleanup, and final backend-zero cleanup all passed. The app
 never receives AssemblyAI or worker secrets, the server-side feature flag
-remains authoritative, and production remains untouched. Playback seeking,
-editing, and user-created immutable versions remain later milestones.
+remains authoritative, and production remains untouched. Milestone 2B.4B.1 then
+audits the existing version/cache boundary. Milestone 2B.4B.2 adds source-only
+migration 0016 with a narrow authenticated RPC, stable UUID idempotency,
+stale-base conflict rejection, and immutable Full Text version lineage. Local
+drafts, sync, editor UI, history, restore, and playback seeking remain later
+milestones.
 
 See `ROADMAP.md`, `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_IMPLEMENTATION.md`,
 `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_TEST.md`,
@@ -187,8 +192,10 @@ See `ROADMAP.md`, `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_IMPLEMENTATION.m
 `MILESTONE2B4A2_EN_ID_PROVIDER_RESULT_COMPATIBILITY_V1_TEST.md`,
 `MILESTONE2B4A3_EN_ID_LANGUAGE_METADATA_DIAGNOSTICS_V1_IMPLEMENTATION.md`,
 `MILESTONE2B4A3_EN_ID_LANGUAGE_METADATA_DIAGNOSTICS_V1_TEST.md`,
-`MILESTONE2B4A4_EN_ID_NULLABLE_PRIMARY_COMPATIBILITY_V1_IMPLEMENTATION.md`, and
-`MILESTONE2B4A4_EN_ID_NULLABLE_PRIMARY_COMPATIBILITY_V1_TEST.md`.
+`MILESTONE2B4A4_EN_ID_NULLABLE_PRIMARY_COMPATIBILITY_V1_IMPLEMENTATION.md`,
+`MILESTONE2B4A4_EN_ID_NULLABLE_PRIMARY_COMPATIBILITY_V1_TEST.md`,
+`MILESTONE2B4B2_TRANSCRIPT_USER_EDIT_SERVER_CONTRACT_V1_IMPLEMENTATION.md`, and
+`MILESTONE2B4B2_TRANSCRIPT_USER_EDIT_SERVER_CONTRACT_V1_TEST.md`.
 
 ## Public legal pages
 
@@ -270,3 +277,11 @@ login before configuring production EAS or Play Console.
 - Test plan: `MILESTONE2B4A4_EN_ID_NULLABLE_PRIMARY_COMPATIBILITY_V1_TEST.md`
 - Scope: narrowly accept a missing provider primary only when a completed manual result carries the reviewed EN–ID pair; preserve a null provider primary through worker validation and append-only migration 0015. No mobile, secret, Cron, or retry change.
 - Status: development live acceptance complete; production untouched.
+
+
+## Milestone 2B.4B.2 transcript user-edit server contract
+
+- Implementation: `MILESTONE2B4B2_TRANSCRIPT_USER_EDIT_SERVER_CONTRACT_V1_IMPLEMENTATION.md`
+- Test plan: `MILESTONE2B4B2_TRANSCRIPT_USER_EDIT_SERVER_CONTRACT_V1_TEST.md`
+- Scope: append-only migration 0016, a narrow authenticated Full Text version-creation RPC, stable UUID idempotency, stale-base conflict protection, and immutable version content. Migration apply, local drafts/sync, editor UI, history, and restore remain separate gates.
+- Status: implemented in source; migration 0016 not yet applied; production untouched.

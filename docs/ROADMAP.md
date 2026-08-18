@@ -229,9 +229,43 @@ Completed in development:
   remained, the test session was deleted, and the backend returned to zero;
 - no existing migration was edited or rerun, and production remains untouched.
 
+### Phase 2B.4B.1 - transcript edit/versioning foundation audit
+
+Completed as a read-only architecture phase:
+
+- remote transcript versions already provide origin, status, parent lineage,
+  checksums, one-current-version enforcement, and timestamp segments;
+- authenticated transcript tables remain read-only and require a narrow write
+  RPC rather than broader table grants;
+- SQLite v10 caches current provider results but has no edit draft/outbox or
+  generic version-history synchronization;
+- arbitrary edited Full Text cannot be honestly remapped to provider timestamps,
+  so timestamp evidence remains attached to the provider lineage;
+- no source, migration, deployment, secret, or UI change was made.
+
+### Phase 2B.4B.2 - immutable transcript user-edit server contract
+
+Implemented in source; migration apply remains pending:
+
+- append-only migration 0016 adds one authenticated security-definer RPC;
+- a caller-supplied stable UUID provides durable idempotency;
+- the observed current version ID provides compare-and-swap conflict safety;
+- each changed save creates a final `user_edit` version with parent lineage,
+  inherited source provenance/language metadata, and a server-computed checksum;
+- provider text and timestamp segments are never overwritten or fabricated;
+- transcript content/lineage becomes immutable while current switching and
+  nullable provenance cleanup remain compatible;
+- direct authenticated table mutation remains denied;
+- feature-flag, active-membership, account-deletion, and session-row locks are
+  preserved;
+- no SQLite, mobile UI, worker, provider, Cron, secret, package, lockfile, native,
+  or production change.
+
 ### Later Milestone 2 phases
 
-- transcript editor and immutable version history;
+- local transcript draft, outbox, and cross-device version synchronization;
+- local-first Full Text editor and explicit conflict presentation;
+- immutable version history and restore-as-new-version behavior;
 - release hardening before production feature activation.
 
 ## Milestone 3 — Multimodal analysis
@@ -315,3 +349,11 @@ Completed in development:
 - Test plan: `MILESTONE2B4A4_EN_ID_NULLABLE_PRIMARY_COMPATIBILITY_V1_TEST.md`
 - Scope: narrow server/database compatibility for manual EN–ID completed results that omit provider primary language, using append-only migration 0015 and no mobile change.
 - Status: development live acceptance complete; production untouched.
+
+
+## Milestone 2B.4B.2 - Transcript user-edit server contract
+
+- Implementation: `MILESTONE2B4B2_TRANSCRIPT_USER_EDIT_SERVER_CONTRACT_V1_IMPLEMENTATION.md`
+- Test plan: `MILESTONE2B4B2_TRANSCRIPT_USER_EDIT_SERVER_CONTRACT_V1_TEST.md`
+- Scope: append-only migration 0016 with authenticated stable-UUID idempotency, stale-base compare-and-swap, immutable Full Text version lineage, and no segment fabrication or mobile change.
+- Status: implemented in source; migration 0016 apply and behavior verification remain pending; production untouched.

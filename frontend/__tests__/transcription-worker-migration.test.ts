@@ -37,10 +37,11 @@ describe("Milestone 2B.1B transcription request/worker migration", () => {
       .filter((file) => file.endsWith(".sql"))
       .sort();
 
-    expect(files.slice(-3)).toEqual([
+    expect(files.slice(-4)).toEqual([
       "0013_transcription_foundation_v1.sql",
       "0014_transcription_request_worker_v1.sql",
       "0015_transcription_nullable_primary_en_id.sql",
+      "0016_transcript_user_edit_versioning_v1.sql",
     ]);
   });
 
