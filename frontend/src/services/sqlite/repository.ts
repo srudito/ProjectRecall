@@ -1667,6 +1667,244 @@ const parseTranscriptionRequestQueueRow = (
   expected_spoken_languages: parseStringArray(row.expected_spoken_languages),
 });
 
+export interface TranscriptEditDraftRow {
+  user_id: string;
+  workspace_id: string;
+  session_id: string;
+  base_version_id: string;
+  plain_text: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type TranscriptEditQueueStatus =
+  | "pending"
+  | "submitting"
+  | "failed"
+  | "conflict"
+  | "succeeded"
+  | "cancelled";
+
+export interface TranscriptEditQueueRow {
+  id: string;
+  user_id: string;
+  workspace_id: string;
+  session_id: string;
+  expected_current_version_id: string;
+  plain_text: string;
+  queue_status: TranscriptEditQueueStatus;
+  attempt_count: number;
+  max_attempts: number;
+  next_retry_at: string | null;
+  last_error_code: string | null;
+  last_safe_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export const saveTranscriptEditDraft = async (input: {
+  userId: string;
+  workspaceId: string;
+  sessionId: string;
+  baseVersionId: string;
+  plainText: string;
+}): Promise<TranscriptEditDraftRow> => {
+  const timestamp = nowIso();
+  const row: TranscriptEditDraftRow = {
+    user_id: input.userId,
+    workspace_id: input.workspaceId,
+    session_id: input.sessionId,
+    base_version_id: input.baseVersionId,
+    plain_text: input.plainText,
+    created_at: timestamp,
+    updated_at: timestamp,
+  };
+  const db = await openLocalDb();
+  if (!db) return row;
+
+  await db.runAsync(
+    `INSERT INTO local_transcript_edit_drafts
+      (user_id, workspace_id, session_id, base_version_id, plain_text,
+       created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(user_id, session_id) DO UPDATE SET
+       plain_text = excluded.plain_text,
+       updated_at = excluded.updated_at`,
+    [
+      row.user_id,
+      row.workspace_id,
+      row.session_id,
+      row.base_version_id,
+      row.plain_text,
+      row.created_at,
+      row.updated_at,
+    ],
+  );
+
+  const saved = (await db.getFirstAsync(
+    `SELECT *
+       FROM local_transcript_edit_drafts
+      WHERE user_id = ? AND session_id = ?
+      LIMIT 1`,
+    [row.user_id, row.session_id],
+  )) as TranscriptEditDraftRow | null;
+  return saved ?? row;
+};
+
+export const getTranscriptEditDraft = async (
+  userId: string,
+  sessionId: string,
+): Promise<TranscriptEditDraftRow | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+  return (await db.getFirstAsync(
+    `SELECT *
+       FROM local_transcript_edit_drafts
+      WHERE user_id = ? AND session_id = ?
+      LIMIT 1`,
+    [userId, sessionId],
+  )) as TranscriptEditDraftRow | null;
+};
+
+export const deleteTranscriptEditDraft = async (
+  userId: string,
+  sessionId: string,
+): Promise<void> => {
+  const db = await openLocalDb();
+  if (!db) return;
+  await db.runAsync(
+    `DELETE FROM local_transcript_edit_drafts
+      WHERE user_id = ? AND session_id = ?`,
+    [userId, sessionId],
+  );
+};
+
+const transcriptEditQueueReplayMatches = (
+  existing: TranscriptEditQueueRow,
+  input: {
+    userId: string;
+    workspaceId: string;
+    sessionId: string;
+    expectedCurrentVersionId: string;
+    plainText: string;
+  },
+): boolean =>
+  existing.user_id === input.userId &&
+  existing.workspace_id === input.workspaceId &&
+  existing.session_id === input.sessionId &&
+  existing.expected_current_version_id === input.expectedCurrentVersionId &&
+  existing.plain_text === input.plainText;
+
+export const enqueueTranscriptEditSnapshot = async (input: {
+  clientVersionId: string;
+  userId: string;
+  workspaceId: string;
+  sessionId: string;
+  expectedCurrentVersionId: string;
+  plainText: string;
+  maxAttempts?: number;
+}): Promise<TranscriptEditQueueRow> => {
+  if (input.plainText.trim().length === 0) {
+    throw new Error("Transcript edit text must not be blank.");
+  }
+  const maxAttempts = input.maxAttempts ?? 5;
+  if (!Number.isSafeInteger(maxAttempts) || maxAttempts <= 0) {
+    throw new Error("Transcript edit max attempts must be a positive integer.");
+  }
+
+  const timestamp = nowIso();
+  const row: TranscriptEditQueueRow = {
+    id: input.clientVersionId,
+    user_id: input.userId,
+    workspace_id: input.workspaceId,
+    session_id: input.sessionId,
+    expected_current_version_id: input.expectedCurrentVersionId,
+    plain_text: input.plainText,
+    queue_status: "pending",
+    attempt_count: 0,
+    max_attempts: maxAttempts,
+    next_retry_at: null,
+    last_error_code: null,
+    last_safe_error: null,
+    created_at: timestamp,
+    updated_at: timestamp,
+  };
+  const db = await openLocalDb();
+  if (!db) return row;
+
+  return runSerializedLocalTransaction(db, async () => {
+    const existing = (await db.getFirstAsync(
+      `SELECT * FROM local_transcript_edit_queue WHERE id = ? LIMIT 1`,
+      [row.id],
+    )) as TranscriptEditQueueRow | null;
+    if (existing) {
+      if (!transcriptEditQueueReplayMatches(existing, input)) {
+        throw new Error("Transcript edit client version id was reused with different content.");
+      }
+      return existing;
+    }
+
+    await db.runAsync(
+      `INSERT INTO local_transcript_edit_queue
+        (id, user_id, workspace_id, session_id, expected_current_version_id,
+         plain_text, queue_status, attempt_count, max_attempts, next_retry_at,
+         last_error_code, last_safe_error, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        row.id,
+        row.user_id,
+        row.workspace_id,
+        row.session_id,
+        row.expected_current_version_id,
+        row.plain_text,
+        row.queue_status,
+        row.attempt_count,
+        row.max_attempts,
+        row.next_retry_at,
+        row.last_error_code,
+        row.last_safe_error,
+        row.created_at,
+        row.updated_at,
+      ],
+    );
+    return row;
+  });
+};
+
+export const getNextEligibleTranscriptEditQueue = async (
+  userId: string,
+  now: string,
+): Promise<TranscriptEditQueueRow | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+  return (await db.getFirstAsync(
+    `SELECT *
+       FROM local_transcript_edit_queue
+      WHERE user_id = ?
+        AND queue_status IN ('pending','failed')
+        AND attempt_count < max_attempts
+        AND (next_retry_at IS NULL OR next_retry_at <= ?)
+      ORDER BY created_at ASC
+      LIMIT 1`,
+    [userId, now],
+  )) as TranscriptEditQueueRow | null;
+};
+
+export const listTranscriptEditQueueForSession = async (
+  userId: string,
+  sessionId: string,
+): Promise<TranscriptEditQueueRow[]> => {
+  const db = await openLocalDb();
+  if (!db) return [];
+  return (await db.getAllAsync(
+    `SELECT *
+       FROM local_transcript_edit_queue
+      WHERE user_id = ? AND session_id = ?
+      ORDER BY created_at ASC`,
+    [userId, sessionId],
+  )) as TranscriptEditQueueRow[];
+};
+
 export const upsertTranscriptionRequestIntent = async (
   row: TranscriptionRequestQueueRow,
 ): Promise<TranscriptionRequestQueueRow> => {
@@ -4078,6 +4316,14 @@ export const hardDeleteLocalSessionData = async (
       [sessionId],
     );
     await db.runAsync(
+      `DELETE FROM local_transcript_edit_queue WHERE session_id = ?`,
+      [sessionId],
+    );
+    await db.runAsync(
+      `DELETE FROM local_transcript_edit_drafts WHERE session_id = ?`,
+      [sessionId],
+    );
+    await db.runAsync(
       `DELETE FROM local_transcript_versions WHERE session_id = ?`,
       [sessionId],
     );
@@ -4306,6 +4552,28 @@ export const deleteLocalAccountData = async (input: {
         ...workspaceClause.params,
         ...sessionClause.params,
         input.userId,
+      ],
+    );
+    await db.runAsync(
+      `DELETE FROM local_transcript_edit_queue
+        WHERE user_id = ?
+           OR workspace_id IN ${workspaceClause.sql}
+           OR session_id IN ${sessionClause.sql}`,
+      [
+        input.userId,
+        ...workspaceClause.params,
+        ...sessionClause.params,
+      ],
+    );
+    await db.runAsync(
+      `DELETE FROM local_transcript_edit_drafts
+        WHERE user_id = ?
+           OR workspace_id IN ${workspaceClause.sql}
+           OR session_id IN ${sessionClause.sql}`,
+      [
+        input.userId,
+        ...workspaceClause.params,
+        ...sessionClause.params,
       ],
     );
     await db.runAsync(

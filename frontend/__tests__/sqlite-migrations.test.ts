@@ -102,10 +102,10 @@ describe("local SQLite migration runner", () => {
 
     const result = await runMigrations(db, MIGRATIONS);
 
-    expect(LATEST_LOCAL_SCHEMA_VERSION).toBe(10);
+    expect(LATEST_LOCAL_SCHEMA_VERSION).toBe(11);
     expect(result).toEqual({
-      appliedVersions: [3, 4, 5, 6, 7, 8, 9, 10],
-      finalVersion: 10,
+      appliedVersions: [3, 4, 5, 6, 7, 8, 9, 10, 11],
+      finalVersion: 11,
     });
     expect(
       state.executed.some((sql) => sql.includes("upsert:project:")),
@@ -118,8 +118,8 @@ describe("local SQLite migration runner", () => {
     const result = await runMigrations(db, MIGRATIONS);
 
     expect(result).toEqual({
-      appliedVersions: [4, 5, 6, 7, 8, 9, 10],
-      finalVersion: 10,
+      appliedVersions: [4, 5, 6, 7, 8, 9, 10, 11],
+      finalVersion: 11,
     });
     expect(
       state.executed.some((sql) =>
@@ -140,8 +140,8 @@ describe("local SQLite migration runner", () => {
     const result = await runMigrations(db, MIGRATIONS);
 
     expect(result).toEqual({
-      appliedVersions: [5, 6, 7, 8, 9, 10],
-      finalVersion: 10,
+      appliedVersions: [5, 6, 7, 8, 9, 10, 11],
+      finalVersion: 11,
     });
     expect(
       state.executed.some((sql) =>
@@ -168,8 +168,8 @@ describe("local SQLite migration runner", () => {
     const result = await runMigrations(db, MIGRATIONS);
 
     expect(result).toEqual({
-      appliedVersions: [6, 7, 8, 9, 10],
-      finalVersion: 10,
+      appliedVersions: [6, 7, 8, 9, 10, 11],
+      finalVersion: 11,
     });
     expect(
       state.executed.some((sql) =>
@@ -190,8 +190,8 @@ describe("local SQLite migration runner", () => {
     const result = await runMigrations(db, MIGRATIONS);
 
     expect(result).toEqual({
-      appliedVersions: [7, 8, 9, 10],
-      finalVersion: 10,
+      appliedVersions: [7, 8, 9, 10, 11],
+      finalVersion: 11,
     });
     expect(
       state.executed.some((sql) => sql.includes("upload:media_asset:")),
@@ -210,8 +210,8 @@ describe("local SQLite migration runner", () => {
     const result = await runMigrations(db, MIGRATIONS);
 
     expect(result).toEqual({
-      appliedVersions: [8, 9, 10],
-      finalVersion: 10,
+      appliedVersions: [8, 9, 10, 11],
+      finalVersion: 11,
     });
     expect(
       state.executed.some((sql) =>
@@ -238,8 +238,8 @@ describe("local SQLite migration runner", () => {
     const result = await runMigrations(db, MIGRATIONS);
 
     expect(result).toEqual({
-      appliedVersions: [9, 10],
-      finalVersion: 10,
+      appliedVersions: [9, 10, 11],
+      finalVersion: 11,
     });
     expect(
       state.executed.some((sql) =>
@@ -260,7 +260,7 @@ describe("local SQLite migration runner", () => {
 
     const result = await runMigrations(db, MIGRATIONS);
 
-    expect(result).toEqual({ appliedVersions: [10], finalVersion: 10 });
+    expect(result).toEqual({ appliedVersions: [10, 11], finalVersion: 11 });
 
     for (const tableName of [
       "local_processing_jobs",
@@ -324,6 +324,39 @@ describe("local SQLite migration runner", () => {
         sql.includes(
           "ON local_transcription_request_queue(user_id, session_id",
         ),
+      ),
+    ).toBe(true);
+  });
+
+  it("adds local transcript edit drafts and durable outbox at version 11", async () => {
+    const { db, state } = createFakeDb(10);
+
+    const result = await runMigrations(db, MIGRATIONS);
+
+    expect(result).toEqual({ appliedVersions: [11], finalVersion: 11 });
+    for (const tableName of [
+      "local_transcript_edit_drafts",
+      "local_transcript_edit_queue",
+    ]) {
+      expect(
+        state.executed.some((sql) =>
+          sql.includes(`CREATE TABLE IF NOT EXISTS ${tableName}`),
+        ),
+      ).toBe(true);
+    }
+    expect(
+      state.executed.some((sql) =>
+        sql.includes("UNIQUE(user_id, session_id)"),
+      ),
+    ).toBe(true);
+    expect(
+      state.executed.some((sql) =>
+        sql.includes("idx_local_transcript_edit_queue_next"),
+      ),
+    ).toBe(true);
+    expect(
+      state.executed.some((sql) =>
+        sql.includes("expected_current_version_id TEXT NOT NULL"),
       ),
     ).toBe(true);
   });

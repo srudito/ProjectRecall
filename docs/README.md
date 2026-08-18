@@ -170,8 +170,11 @@ audits the existing version/cache boundary. Milestone 2B.4B.2 adds append-only
 migration 0016 with a narrow authenticated RPC, stable UUID idempotency,
 stale-base conflict rejection, and immutable Full Text version lineage. The
 migration was applied once to development and the rollback-wrapped behavior test
-passed with no persisted verification rows. Local drafts, sync, editor UI,
-history, restore, and playback seeking remain later milestones.
+passed with no persisted verification rows. Milestone 2B.4B.3A then adds
+SQLite v11 local draft and durable edit-outbox foundations with a pinned draft
+base and stable client-version UUID replay protection. Network submission,
+cross-device version synchronization, editor UI, history, restore, and playback
+seeking remain later milestones.
 
 See `ROADMAP.md`, `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_IMPLEMENTATION.md`,
 `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_TEST.md`,
@@ -197,8 +200,10 @@ See `ROADMAP.md`, `MILESTONE2_BATCH_TRANSCRIPTION_FOUNDATION_V1_IMPLEMENTATION.m
 `MILESTONE2B4A3_EN_ID_LANGUAGE_METADATA_DIAGNOSTICS_V1_TEST.md`,
 `MILESTONE2B4A4_EN_ID_NULLABLE_PRIMARY_COMPATIBILITY_V1_IMPLEMENTATION.md`,
 `MILESTONE2B4A4_EN_ID_NULLABLE_PRIMARY_COMPATIBILITY_V1_TEST.md`,
-`MILESTONE2B4B2_TRANSCRIPT_USER_EDIT_SERVER_CONTRACT_V1_IMPLEMENTATION.md`, and
-`MILESTONE2B4B2_TRANSCRIPT_USER_EDIT_SERVER_CONTRACT_V1_TEST.md`.
+`MILESTONE2B4B2_TRANSCRIPT_USER_EDIT_SERVER_CONTRACT_V1_IMPLEMENTATION.md`,
+`MILESTONE2B4B2_TRANSCRIPT_USER_EDIT_SERVER_CONTRACT_V1_TEST.md`,
+`MILESTONE2B4B3A_TRANSCRIPT_EDIT_LOCAL_FOUNDATION_V1_IMPLEMENTATION.md`, and
+`MILESTONE2B4B3A_TRANSCRIPT_EDIT_LOCAL_FOUNDATION_V1_TEST.md`.
 
 ## Public legal pages
 
@@ -288,3 +293,10 @@ login before configuring production EAS or Play Console.
 - Test plan: `MILESTONE2B4B2_TRANSCRIPT_USER_EDIT_SERVER_CONTRACT_V1_TEST.md`
 - Scope: append-only migration 0016, a narrow authenticated Full Text version-creation RPC, stable UUID idempotency, stale-base conflict protection, and immutable version content. Local drafts/sync, editor UI, history, and restore remain separate later gates.
 - Status: development apply and rollback-wrapped behavior verification complete; production untouched.
+
+## Milestone 2B.4B.3A transcript edit local foundation
+
+- Implementation: `MILESTONE2B4B3A_TRANSCRIPT_EDIT_LOCAL_FOUNDATION_V1_IMPLEMENTATION.md`
+- Test plan: `MILESTONE2B4B3A_TRANSCRIPT_EDIT_LOCAL_FOUNDATION_V1_TEST.md`
+- Scope: additive SQLite v11 local draft and durable edit-outbox foundation, pinned draft base lineage, stable client-version UUID replay safety, and scoped cleanup integration. No RPC/network worker or editor UI is included.
+- Status: development source validation complete; server/database deployment and production untouched.

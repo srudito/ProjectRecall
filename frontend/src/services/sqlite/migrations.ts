@@ -910,6 +910,46 @@ const v10Ddl: readonly string[] = [
      ON local_transcription_request_queue(user_id, session_id, created_at DESC)`,
 ];
 
+// Version 11: local-first transcript edit draft and durable outbox foundation.
+// Draft text remains separate from immutable transcript_versions. Queue rows use
+// the stable client version UUID as their primary key so retries are idempotent.
+const v11Ddl: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS local_transcript_edit_drafts (
+    user_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    base_version_id TEXT NOT NULL,
+    plain_text TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(user_id, session_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_local_transcript_edit_drafts_session
+     ON local_transcript_edit_drafts(session_id, updated_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS local_transcript_edit_queue (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    expected_current_version_id TEXT NOT NULL,
+    plain_text TEXT NOT NULL CHECK(length(trim(plain_text)) > 0),
+    queue_status TEXT NOT NULL DEFAULT 'pending'
+      CHECK(queue_status IN ('pending','submitting','failed','conflict','succeeded','cancelled')),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+    max_attempts INTEGER NOT NULL DEFAULT 5 CHECK(max_attempts > 0),
+    next_retry_at TEXT,
+    last_error_code TEXT,
+    last_safe_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK(attempt_count <= max_attempts)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_local_transcript_edit_queue_next
+     ON local_transcript_edit_queue(user_id, queue_status, next_retry_at, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_local_transcript_edit_queue_session
+     ON local_transcript_edit_queue(user_id, session_id, created_at DESC)`,
+];
+
 export const MIGRATIONS: readonly Migration[] = [
   {
     version: 1,
@@ -997,6 +1037,15 @@ export const MIGRATIONS: readonly Migration[] = [
     description: "Batch-transcription cache and durable request queue.",
     up: async ({ db }) => {
       for (const stmt of v10Ddl) {
+        await db.execAsync(stmt);
+      }
+    },
+  },
+  {
+    version: 11,
+    description: "Transcript edit draft and durable outbox foundation.",
+    up: async ({ db }) => {
+      for (const stmt of v11Ddl) {
         await db.execAsync(stmt);
       }
     },

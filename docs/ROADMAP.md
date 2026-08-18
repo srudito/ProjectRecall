@@ -261,9 +261,33 @@ Completed in development:
 - no SQLite, mobile UI, worker, provider, Cron, secret, package, lockfile, native,
   or production change.
 
+### Phase 2B.4B.3A - transcript edit local draft/outbox foundation
+
+Completed in development:
+
+- additive SQLite v11 adds a per-user/session draft table and durable edit queue;
+- draft autosave updates text only, so the original `base_version_id` stays
+  pinned instead of silently rebasing;
+- the outbound queue uses the stable client transcript-version UUID as its
+  primary key and preserves the exact expected-current-version/text snapshot;
+- identical stable-UUID replay is idempotent while conflicting UUID reuse fails
+  closed;
+- queue rows carry retry/conflict state for a later worker, but 3A performs no
+  network or RPC call;
+- draft/outbox writes never mutate local transcript versions or timestamp
+  segments;
+- hard session deletion and scoped account deletion include both new tables;
+- TypeScript, 24 focused tests, targeted ESLint, 602 full tests, release
+  readiness, Expo install check, and Expo Doctor all passed;
+- no Supabase migration, Edge Function, worker, Cron, provider, secret, package,
+  native, UI, or production change.
+
 ### Later Milestone 2 phases
 
-- local transcript draft, outbox, and cross-device version synchronization;
+- authenticated transcript-edit RPC/outbox worker and explicit retry/conflict
+  transitions;
+- generic current-version pull and cross-device transcript version
+  synchronization;
 - local-first Full Text editor and explicit conflict presentation;
 - immutable version history and restore-as-new-version behavior;
 - release hardening before production feature activation.
@@ -357,3 +381,10 @@ Completed in development:
 - Test plan: `MILESTONE2B4B2_TRANSCRIPT_USER_EDIT_SERVER_CONTRACT_V1_TEST.md`
 - Scope: append-only migration 0016 with authenticated stable-UUID idempotency, stale-base compare-and-swap, immutable Full Text version lineage, and no segment fabrication or mobile change.
 - Status: development migration 0016 apply and rollback-wrapped behavior verification complete; production untouched.
+
+## Milestone 2B.4B.3A - Transcript edit local foundation
+
+- Implementation: `MILESTONE2B4B3A_TRANSCRIPT_EDIT_LOCAL_FOUNDATION_V1_IMPLEMENTATION.md`
+- Test plan: `MILESTONE2B4B3A_TRANSCRIPT_EDIT_LOCAL_FOUNDATION_V1_TEST.md`
+- Scope: SQLite v11 draft/outbox persistence, pinned base lineage, stable client-version UUID replay protection, retry metadata, and cleanup coverage with no network worker or editor UI.
+- Status: development source validation complete; Supabase and production untouched.

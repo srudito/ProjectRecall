@@ -130,6 +130,8 @@ describe("SQLite account cleanup scope", () => {
 
     for (const tableName of [
       "local_transcript_segments",
+      "local_transcript_edit_queue",
+      "local_transcript_edit_drafts",
       "local_transcript_versions",
       "local_transcription_runs",
       "local_processing_jobs",
@@ -198,6 +200,8 @@ describe("SQLite account cleanup scope", () => {
 
     for (const tableName of [
       "local_transcript_segments",
+      "local_transcript_edit_queue",
+      "local_transcript_edit_drafts",
       "local_transcript_versions",
       "local_transcription_runs",
       "local_processing_jobs",
@@ -212,6 +216,8 @@ describe("SQLite account cleanup scope", () => {
 
     for (const tableName of [
       "local_transcript_segments",
+      "local_transcript_edit_queue",
+      "local_transcript_edit_drafts",
       "local_transcript_versions",
       "local_transcription_runs",
       "local_processing_jobs",
