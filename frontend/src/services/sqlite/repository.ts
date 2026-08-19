@@ -7,9 +7,11 @@ import { openLocalDb } from "./schema";
 import { runSerializedLocalTransaction } from "./transaction";
 
 import type {
+  CurrentTranscriptVersionSnapshot,
   SyncedProcessingJob,
   SyncedTranscriptSegment,
   SyncedTranscriptVersion,
+  SyncedTranscriptVersionRecord,
   SyncedTranscriptionRun,
 } from "@/src/services/transcription/result-types";
 
@@ -2920,6 +2922,204 @@ export const persistCompletedTranscriptionResult = async (input: {
       errorCode: null,
       safeError: null,
     });
+  });
+};
+
+const upsertGenericTranscriptVersionOnDb = async (
+  db: SQLite.SQLiteDatabase,
+  version: SyncedTranscriptVersionRecord,
+  isCurrent: boolean,
+): Promise<void> => {
+  await db.runAsync(
+    `INSERT INTO local_transcript_versions
+      (id, workspace_id, session_id, transcription_run_id, created_by,
+       version, version_origin, version_status, parent_version_id, plain_text,
+       language_summary, content_checksum_sha256, is_current,
+       created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       workspace_id=excluded.workspace_id,
+       session_id=excluded.session_id,
+       transcription_run_id=excluded.transcription_run_id,
+       created_by=excluded.created_by,
+       version=excluded.version,
+       version_origin=excluded.version_origin,
+       version_status=excluded.version_status,
+       parent_version_id=excluded.parent_version_id,
+       plain_text=excluded.plain_text,
+       language_summary=excluded.language_summary,
+       content_checksum_sha256=excluded.content_checksum_sha256,
+       is_current=excluded.is_current,
+       created_at=excluded.created_at,
+       updated_at=excluded.updated_at`,
+    [
+      version.id,
+      version.workspace_id,
+      version.session_id,
+      version.transcription_run_id,
+      version.created_by,
+      version.version,
+      version.version_origin,
+      version.version_status,
+      version.parent_version_id,
+      version.plain_text,
+      JSON.stringify(version.language_summary),
+      version.content_checksum_sha256,
+      isCurrent ? 1 : 0,
+      version.created_at,
+      version.updated_at,
+    ],
+  );
+};
+
+const replaceGenericTranscriptSegmentsOnDb = async (
+  db: SQLite.SQLiteDatabase,
+  version: SyncedTranscriptVersionRecord,
+  segments: readonly SyncedTranscriptSegment[],
+): Promise<void> => {
+  await db.runAsync(
+    "DELETE FROM local_transcript_segments WHERE transcript_version_id = ?",
+    [version.id],
+  );
+  for (const segment of segments) {
+    await db.runAsync(
+      `INSERT INTO local_transcript_segments
+        (id, workspace_id, session_id, transcript_version_id, segment_index,
+         start_ms, end_ms, text, language_code, speaker_label, confidence,
+         provider_segment_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         workspace_id=excluded.workspace_id,
+         session_id=excluded.session_id,
+         transcript_version_id=excluded.transcript_version_id,
+         segment_index=excluded.segment_index,
+         start_ms=excluded.start_ms,
+         end_ms=excluded.end_ms,
+         text=excluded.text,
+         language_code=excluded.language_code,
+         speaker_label=excluded.speaker_label,
+         confidence=excluded.confidence,
+         provider_segment_id=excluded.provider_segment_id,
+         created_at=excluded.created_at,
+         updated_at=excluded.updated_at`,
+      [
+        segment.id,
+        segment.workspace_id,
+        segment.session_id,
+        segment.transcript_version_id,
+        segment.segment_index,
+        segment.start_ms,
+        segment.end_ms,
+        segment.text,
+        segment.language_code,
+        segment.speaker_label,
+        segment.confidence,
+        segment.provider_segment_id,
+        segment.created_at,
+        segment.updated_at,
+      ],
+    );
+  }
+};
+
+const segmentsMatchVersion = (
+  version: SyncedTranscriptVersionRecord,
+  segments: readonly SyncedTranscriptSegment[],
+): boolean =>
+  segments.every(
+    (segment) =>
+      segment.workspace_id === version.workspace_id &&
+      segment.session_id === version.session_id &&
+      segment.transcript_version_id === version.id,
+  );
+
+export const persistCurrentTranscriptVersionSnapshot = async (
+  snapshot: Extract<CurrentTranscriptVersionSnapshot, { kind: "ready" }>,
+): Promise<void> => {
+  const {
+    currentVersion,
+    currentSegments,
+    evidenceVersion,
+    evidenceSegments,
+  } = snapshot;
+
+  if (
+    currentVersion.is_current !== true ||
+    currentVersion.version_status !== "final" ||
+    !segmentsMatchVersion(currentVersion, currentSegments) ||
+    (currentVersion.version_origin === "user_edit" &&
+      currentSegments.length > 0)
+  ) {
+    throw new Error("The current transcript snapshot is invalid.");
+  }
+
+  if (evidenceVersion === null) {
+    if (evidenceSegments.length > 0) {
+      throw new Error("The transcript evidence snapshot is invalid.");
+    }
+  } else if (
+    evidenceVersion.is_current ||
+    evidenceVersion.version_origin !== "provider" ||
+    evidenceVersion.version_status !== "final" ||
+    evidenceVersion.id === currentVersion.id ||
+    evidenceVersion.workspace_id !== currentVersion.workspace_id ||
+    evidenceVersion.session_id !== currentVersion.session_id ||
+    evidenceVersion.version >= currentVersion.version ||
+    !segmentsMatchVersion(evidenceVersion, evidenceSegments)
+  ) {
+    throw new Error("The transcript evidence snapshot is invalid.");
+  }
+
+  const db = await openLocalDb();
+  if (!db) return;
+
+  await runSerializedLocalTransaction(db, async () => {
+    const localCurrent = (await db.getFirstAsync(
+      `SELECT id, version
+         FROM local_transcript_versions
+        WHERE session_id = ? AND is_current = 1
+        LIMIT 1`,
+      [currentVersion.session_id],
+    )) as { id: string; version: number } | null;
+
+    // Remote reads and app lifecycle events can overlap. Never let an older
+    // completed snapshot demote a newer immutable server version that is
+    // already cached locally.
+    if (localCurrent && localCurrent.version > currentVersion.version) {
+      return;
+    }
+    if (
+      localCurrent &&
+      localCurrent.version === currentVersion.version &&
+      localCurrent.id !== currentVersion.id
+    ) {
+      throw new Error(
+        "The current transcript version identity conflicts with local history.",
+      );
+    }
+
+    if (evidenceVersion) {
+      await upsertGenericTranscriptVersionOnDb(db, evidenceVersion, false);
+      await replaceGenericTranscriptSegmentsOnDb(
+        db,
+        evidenceVersion,
+        evidenceSegments,
+      );
+    }
+
+    await db.runAsync(
+      `UPDATE local_transcript_versions
+          SET is_current = 0
+        WHERE session_id = ? AND id <> ?`,
+      [currentVersion.session_id, currentVersion.id],
+    );
+
+    await upsertGenericTranscriptVersionOnDb(db, currentVersion, true);
+    await replaceGenericTranscriptSegmentsOnDb(
+      db,
+      currentVersion,
+      currentSegments,
+    );
   });
 };
 

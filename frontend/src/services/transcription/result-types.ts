@@ -69,11 +69,11 @@ export interface SyncedTranscriptionRun {
   updated_at: string;
 }
 
-export interface SyncedTranscriptVersion {
+export interface SyncedTranscriptVersionRecord {
   id: string;
   workspace_id: string;
   session_id: string;
-  transcription_run_id: string;
+  transcription_run_id: string | null;
   created_by: string | null;
   version: number;
   version_origin: "provider" | "user_edit" | "import";
@@ -82,9 +82,14 @@ export interface SyncedTranscriptVersion {
   plain_text: string;
   language_summary: Record<string, unknown>;
   content_checksum_sha256: string | null;
-  is_current: true;
+  is_current: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface SyncedTranscriptVersion
+  extends SyncedTranscriptVersionRecord {
+  is_current: true;
 }
 
 export interface SyncedTranscriptSegment {
@@ -103,6 +108,20 @@ export interface SyncedTranscriptSegment {
   created_at: string;
   updated_at: string;
 }
+
+export type CurrentTranscriptVersionSnapshot =
+  | {
+      kind: "empty";
+      workspaceId: string;
+      sessionId: string;
+    }
+  | {
+      kind: "ready";
+      currentVersion: SyncedTranscriptVersion;
+      currentSegments: SyncedTranscriptSegment[];
+      evidenceVersion: SyncedTranscriptVersionRecord | null;
+      evidenceSegments: SyncedTranscriptSegment[];
+    };
 
 export type TranscriptionResultSnapshot =
   | {

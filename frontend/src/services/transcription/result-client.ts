@@ -7,6 +7,7 @@ import type {
   SyncedProcessingJob,
   SyncedTranscriptSegment,
   SyncedTranscriptVersion,
+  SyncedTranscriptVersionRecord,
   SyncedTranscriptionRun,
   TranscriptionResultSnapshot,
   TranscriptionRunStatus,
@@ -120,6 +121,11 @@ const enumValue = <T extends string>(value: unknown, allowed: readonly T[]): T =
   return value as T;
 };
 
+const booleanValue = (value: unknown): boolean => {
+  if (typeof value !== "boolean") throw invalid();
+  return value;
+};
+
 export const parseSyncedProcessingJob = (value: unknown): SyncedProcessingJob => {
   const row = asRecord(value);
   return {
@@ -184,18 +190,18 @@ export const parseSyncedTranscriptionRun = (
   };
 };
 
-export const parseSyncedTranscriptVersion = (
+export const parseSyncedTranscriptVersionRecord = (
   value: unknown,
-): SyncedTranscriptVersion => {
+): SyncedTranscriptVersionRecord => {
   const row = asRecord(value);
-  if (row.is_current !== true) throw invalid();
   const checksum = optionalText(row.content_checksum_sha256);
   if (checksum !== null && !CHECKSUM_PATTERN.test(checksum)) throw invalid();
   return {
     id: uuid(row.id),
     workspace_id: uuid(row.workspace_id),
     session_id: uuid(row.session_id),
-    transcription_run_id: uuid(row.transcription_run_id),
+    transcription_run_id:
+      row.transcription_run_id == null ? null : uuid(row.transcription_run_id),
     created_by: row.created_by == null ? null : uuid(row.created_by),
     version: integer(row.version, 1),
     version_origin: enumValue(row.version_origin, [
@@ -209,10 +215,18 @@ export const parseSyncedTranscriptVersion = (
     plain_text: text(row.plain_text, true),
     language_summary: jsonObject(row.language_summary),
     content_checksum_sha256: checksum,
-    is_current: true,
+    is_current: booleanValue(row.is_current),
     created_at: text(row.created_at),
     updated_at: text(row.updated_at),
   };
+};
+
+export const parseSyncedTranscriptVersion = (
+  value: unknown,
+): SyncedTranscriptVersion => {
+  const version = parseSyncedTranscriptVersionRecord(value);
+  if (version.is_current !== true) throw invalid();
+  return { ...version, is_current: true };
 };
 
 export const parseSyncedTranscriptSegment = (

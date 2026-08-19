@@ -2,6 +2,7 @@ import {
   parseSyncedProcessingJob,
   parseSyncedTranscriptSegment,
   parseSyncedTranscriptVersion,
+  parseSyncedTranscriptVersionRecord,
   parseSyncedTranscriptionRun,
   TranscriptionResultClientError,
 } from "@/src/services/transcription/result-client";
@@ -58,6 +59,31 @@ describe("transcription result client validation", () => {
       provider_segment_id: null, created_at: now, updated_at: now,
     });
     expect(segment.end_ms).toBe(100);
+  });
+
+  it("supports nullable transcript provenance without weakening current parsing", () => {
+    const nullableCurrent = parseSyncedTranscriptVersion({
+      id: UUIDS[0], workspace_id: UUIDS[1], session_id: UUIDS[2],
+      transcription_run_id: null, created_by: null, version: 2,
+      version_origin: "import", version_status: "final", parent_version_id: null,
+      plain_text: "imported", language_summary: {}, content_checksum_sha256: null,
+      is_current: true, created_at: now, updated_at: now,
+    });
+    expect(nullableCurrent.transcription_run_id).toBeNull();
+
+    const evidence = parseSyncedTranscriptVersionRecord({
+      id: UUIDS[3], workspace_id: UUIDS[1], session_id: UUIDS[2],
+      transcription_run_id: UUIDS[0], created_by: null, version: 1,
+      version_origin: "provider", version_status: "final", parent_version_id: null,
+      plain_text: "source", language_summary: {}, content_checksum_sha256: null,
+      is_current: false, created_at: now, updated_at: now,
+    });
+    expect(evidence.is_current).toBe(false);
+
+    expect(() => parseSyncedTranscriptVersion({
+      ...evidence,
+      language_summary: {},
+    })).toThrow(TranscriptionResultClientError);
   });
 
   it("rejects malformed transcript rows", () => {
