@@ -1,6 +1,9 @@
 import { openLocalDb } from "@/src/services/sqlite/schema";
 import { runSerializedLocalTransaction } from "@/src/services/sqlite/transaction";
-import { persistCurrentTranscriptVersionSnapshot } from "@/src/services/sqlite/repository";
+import {
+  listTranscriptCurrentVersionSyncTargets,
+  persistCurrentTranscriptVersionSnapshot,
+} from "@/src/services/sqlite/repository";
 import type {
   CurrentTranscriptVersionSnapshot,
   SyncedTranscriptSegment,
@@ -97,6 +100,23 @@ const readySnapshot = (
 
 describe("generic current transcript SQLite persistence", () => {
   beforeEach(() => jest.clearAllMocks());
+
+  it("discovers non-deleted local sessions for current-version pull", async () => {
+    const getAllAsync = jest.fn(async () => [
+      { workspace_id: WORKSPACE_ID, session_id: SESSION_ID },
+    ]);
+    mockedOpen.mockResolvedValue({ getAllAsync } as never);
+
+    await expect(listTranscriptCurrentVersionSyncTargets()).resolves.toEqual([
+      { workspace_id: WORKSPACE_ID, session_id: SESSION_ID },
+    ]);
+    expect(getAllAsync).toHaveBeenCalledWith(
+      expect.stringContaining("deleted_at IS NULL"),
+    );
+    expect(getAllAsync).toHaveBeenCalledWith(
+      expect.stringContaining("id AS session_id"),
+    );
+  });
 
   it("atomically switches current Full Text while preserving provider evidence", async () => {
     const calls: { sql: string; params: unknown }[] = [];

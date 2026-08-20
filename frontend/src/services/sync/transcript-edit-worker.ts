@@ -12,6 +12,7 @@ import {
   markTranscriptEditQueueFailed,
   resetSubmittingTranscriptEditQueue,
   rescheduleTranscriptEditQueue,
+  type TranscriptCurrentVersionSyncTarget,
   type TranscriptEditQueueRow,
 } from "@/src/services/sqlite/repository";
 import { getSupabase } from "@/src/services/supabase/client";
@@ -24,6 +25,7 @@ import {
 import { nextBackoffMs } from "@/src/services/upload-queue/backoff";
 import { useAuthStore } from "@/src/stores/auth-store";
 
+import { requestTranscriptCurrentVersionSync } from "./transcript-current-version-worker";
 import { notifyTranscriptionSyncChanges } from "./transcription-sync-events";
 
 export interface TranscriptEditSyncRunResult {
@@ -100,6 +102,9 @@ export interface TranscriptEditWorkerDependencies {
   maxOperationsPerRun: number;
   maxAttempts: number;
   notifyChanged: () => void;
+  requestCurrentVersionSync: (
+    target: TranscriptCurrentVersionSyncTarget,
+  ) => void;
 }
 
 const defaultDependencies: TranscriptEditWorkerDependencies = {
@@ -131,6 +136,7 @@ const defaultDependencies: TranscriptEditWorkerDependencies = {
   maxOperationsPerRun: 10,
   maxAttempts: 5,
   notifyChanged: notifyTranscriptionSyncChanges,
+  requestCurrentVersionSync: requestTranscriptCurrentVersionSync,
 };
 
 const emptyResult = (
@@ -260,6 +266,15 @@ export const createTranscriptEditWorker = (
           plainText: claimed.plain_text,
         });
         result.succeeded += 1;
+        try {
+          dependencies.requestCurrentVersionSync({
+            workspace_id: claimed.workspace_id,
+            session_id: claimed.session_id,
+          });
+        } catch {
+          // The immutable edit is already committed and locally completed.
+          // Cache refresh is best-effort and must never change that outcome.
+        }
       } catch (error) {
         const normalized = dependencies.normalizeRemoteError(error);
 

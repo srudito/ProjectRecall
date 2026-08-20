@@ -3,6 +3,7 @@ import { waitForMediaUploadIdle } from "@/src/services/sync/media-upload-worker"
 import { waitForMetadataSyncIdle } from "@/src/services/sync/project-sync-worker";
 import { waitForRecordingUploadIdle } from "@/src/services/sync/recording-upload-worker";
 import { waitForSessionDeletionIdle } from "@/src/services/sync/session-deletion-worker";
+import { waitForTranscriptCurrentVersionSyncIdle } from "@/src/services/sync/transcript-current-version-worker";
 
 const DEFAULT_IDLE_TIMEOUT_MS = 20_000;
 
@@ -45,6 +46,7 @@ export const waitForAccountDeletionBackgroundWork = async (
       waitForRecordingUploadIdle(),
       waitForMediaUploadIdle(),
       waitForSessionDeletionIdle(),
+      waitForTranscriptCurrentVersionSyncIdle(),
     ]).then(() => undefined),
     timeoutMs,
   );

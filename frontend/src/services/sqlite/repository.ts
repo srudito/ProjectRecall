@@ -2465,7 +2465,8 @@ const resultIncompleteSql = `
         ON result_run.processing_job_id = result_job.id
       JOIN local_transcript_versions result_version
         ON result_version.transcription_run_id = result_run.id
-       AND result_version.is_current = 1
+       AND result_version.version_origin = 'provider'
+       AND result_version.version_status = 'final'
      WHERE result_job.id = request_row.server_job_id
        AND result_job.status = 'succeeded'
        AND result_run.status = 'succeeded'
@@ -2793,12 +2794,14 @@ export const persistCompletedTranscriptionResult = async (input: {
   queueId: string;
   job: SyncedProcessingJob;
   run: SyncedTranscriptionRun;
-  version: SyncedTranscriptVersion;
+  version: SyncedTranscriptVersionRecord;
   segments: SyncedTranscriptSegment[];
 }): Promise<void> => {
   if (
     input.run.processing_job_id !== input.job.id ||
     input.version.transcription_run_id !== input.run.id ||
+    input.version.version_origin !== "provider" ||
+    input.version.version_status !== "final" ||
     input.version.workspace_id !== input.job.workspace_id ||
     input.version.session_id !== input.job.session_id ||
     input.segments.some(
@@ -2823,6 +2826,72 @@ export const persistCompletedTranscriptionResult = async (input: {
     });
     await upsertSyncedProcessingJobOnDb(db, input.job);
     await upsertSyncedTranscriptionRunOnDb(db, input.run);
+
+    const localCurrent = (await db.getFirstAsync(
+      `SELECT id, version
+         FROM local_transcript_versions
+        WHERE session_id = ? AND is_current = 1
+        LIMIT 1`,
+      [input.version.session_id],
+    )) as { id: string; version: number } | null;
+
+    // A provider result may already be non-current remotely because a newer
+    // provider result or user edit has become current. Persist its immutable
+    // transcript/evidence without changing whichever local version is current.
+    if (!input.version.is_current) {
+      await upsertGenericTranscriptVersionOnDb(
+        db,
+        input.version,
+        localCurrent?.id === input.version.id,
+      );
+      await replaceGenericTranscriptSegmentsOnDb(
+        db,
+        input.version,
+        input.segments,
+      );
+      await updateResultRequestOnDb(db, {
+        queueId: input.queueId,
+        queueStatus: "submitted",
+        nextRetryAt: null,
+        attemptCountSql: "reset",
+        errorCode: null,
+        safeError: null,
+      });
+      return;
+    }
+
+    // Result polling can overlap a generic current-version pull. Never allow
+    // an older provider result snapshot to demote a newer immutable edit that
+    // is already cached locally.
+    if (localCurrent && localCurrent.version > input.version.version) {
+      // Keep the provider result as immutable non-current history so the
+      // durable completion marker remains satisfied without demoting the
+      // newer local current version.
+      await upsertGenericTranscriptVersionOnDb(db, input.version, false);
+      await replaceGenericTranscriptSegmentsOnDb(
+        db,
+        input.version,
+        input.segments,
+      );
+      await updateResultRequestOnDb(db, {
+        queueId: input.queueId,
+        queueStatus: "submitted",
+        nextRetryAt: null,
+        attemptCountSql: "reset",
+        errorCode: null,
+        safeError: null,
+      });
+      return;
+    }
+    if (
+      localCurrent &&
+      localCurrent.version === input.version.version &&
+      localCurrent.id !== input.version.id
+    ) {
+      throw new Error(
+        "The completed transcript result conflicts with local version history.",
+      );
+    }
 
     await db.runAsync(
       `UPDATE local_transcript_versions
@@ -3032,6 +3101,24 @@ const segmentsMatchVersion = (
       segment.session_id === version.session_id &&
       segment.transcript_version_id === version.id,
   );
+
+export interface TranscriptCurrentVersionSyncTarget {
+  workspace_id: string;
+  session_id: string;
+}
+
+export const listTranscriptCurrentVersionSyncTargets = async (): Promise<
+  TranscriptCurrentVersionSyncTarget[]
+> => {
+  const db = await openLocalDb();
+  if (!db) return [];
+  return (await db.getAllAsync(
+    `SELECT workspace_id, id AS session_id
+       FROM local_sessions
+      WHERE deleted_at IS NULL
+      ORDER BY updated_at DESC, id ASC`,
+  )) as TranscriptCurrentVersionSyncTarget[];
+};
 
 export const persistCurrentTranscriptVersionSnapshot = async (
   snapshot: Extract<CurrentTranscriptVersionSnapshot, { kind: "ready" }>,

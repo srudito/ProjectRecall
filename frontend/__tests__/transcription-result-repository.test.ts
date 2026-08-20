@@ -1,6 +1,7 @@
 import { openLocalDb } from "@/src/services/sqlite/schema";
 import { runSerializedLocalTransaction } from "@/src/services/sqlite/transaction";
 import {
+  getNextEligibleTranscriptionResultRequest,
   persistCompletedTranscriptionResult,
   persistTranscriptionResultProgress,
 } from "@/src/services/sqlite/repository";
@@ -93,6 +94,123 @@ describe("SQLite transcription result persistence", () => {
     expect(sql.indexOf("SET is_current = 0")).toBeLessThan(
       sql.indexOf("INSERT INTO local_transcript_versions"),
     );
+  });
+
+  it("keeps a cached final provider result complete after current switches to an edit", async () => {
+    const getFirstAsync = jest.fn(
+      async (_sql: string, _params?: unknown[]) => null,
+    );
+    mockedOpen.mockResolvedValue({ getFirstAsync } as never);
+
+    await getNextEligibleTranscriptionResultRequest(ids[4], now);
+
+    expect(getFirstAsync).toHaveBeenCalledTimes(1);
+    const sql = String(getFirstAsync.mock.calls[0]?.[0] ?? "");
+    expect(sql).toContain("result_version.version_origin = 'provider'");
+    expect(sql).toContain("result_version.version_status = 'final'");
+    expect(sql).not.toContain("result_version.is_current = 1");
+    expect(getFirstAsync).toHaveBeenCalledWith(expect.any(String), [
+      ids[4],
+      now,
+    ]);
+  });
+
+  it("does not let an in-flight provider result downgrade a newer local edit", async () => {
+    const newerVersionId = "99999999-9999-4999-8999-999999999999";
+    const statements: string[] = [];
+    let providerVersionParams: unknown[] | undefined;
+    const getFirstAsync = jest.fn(async (sql: string) => {
+      if (sql.includes("local_transcription_request_queue")) {
+        return { id: "queue" };
+      }
+      if (sql.includes("local_transcript_versions")) {
+        return { id: newerVersionId, version: version.version + 1 };
+      }
+      return null;
+    });
+    const runAsync = jest.fn(async (sql: string, params?: unknown[]) => {
+      statements.push(sql);
+      if (sql.includes("INSERT INTO local_transcript_versions")) {
+        providerVersionParams = params;
+      }
+      return { changes: 1 };
+    });
+    mockedOpen.mockResolvedValue({ getFirstAsync, runAsync } as never);
+
+    await persistCompletedTranscriptionResult({
+      queueId: "queue",
+      job,
+      run,
+      version,
+      segments: [segment],
+    });
+
+    const sql = statements.join("\n");
+    expect(sql).toContain("INSERT INTO local_processing_jobs");
+    expect(sql).toContain("INSERT INTO local_transcription_runs");
+    expect(sql).toContain("UPDATE local_transcription_request_queue");
+    expect(sql).not.toContain("SET is_current = 0");
+    expect(sql).toContain("INSERT INTO local_transcript_versions");
+    expect(sql).toContain("INSERT INTO local_transcript_segments");
+    expect(providerVersionParams?.[12]).toBe(0);
+  });
+
+  it("rejects a current user edit as a provider-result payload", async () => {
+    mockedOpen.mockResolvedValue(null);
+
+    await expect(
+      persistCompletedTranscriptionResult({
+        queueId: "queue",
+        job,
+        run,
+        version: {
+          ...version,
+          version_origin: "user_edit",
+          parent_version_id: ids[7],
+        },
+        segments: [],
+      }),
+    ).rejects.toThrow("The transcript result scope is invalid.");
+
+    expect(mockedTransaction).not.toHaveBeenCalled();
+  });
+
+  it("persists a remotely non-current provider result without switching local current", async () => {
+    const existingCurrentId = "99999999-9999-4999-8999-999999999999";
+    const statements: string[] = [];
+    let providerVersionParams: unknown[] | undefined;
+    const getFirstAsync = jest.fn(async (sql: string) => {
+      if (sql.includes("local_transcription_request_queue")) {
+        return { id: "queue" };
+      }
+      if (sql.includes("local_transcript_versions")) {
+        return { id: existingCurrentId, version: version.version + 1 };
+      }
+      return null;
+    });
+    const runAsync = jest.fn(async (sql: string, params?: unknown[]) => {
+      statements.push(sql);
+      if (sql.includes("INSERT INTO local_transcript_versions")) {
+        providerVersionParams = params;
+      }
+      return { changes: 1 };
+    });
+    mockedOpen.mockResolvedValue({ getFirstAsync, runAsync } as never);
+
+    await persistCompletedTranscriptionResult({
+      queueId: "queue",
+      job,
+      run,
+      version: { ...version, is_current: false },
+      segments: [segment],
+    });
+
+    const sql = statements.join("\n");
+    expect(sql).not.toContain("SET is_current = 0");
+    expect(sql).toContain("INSERT INTO local_transcript_versions");
+    expect(sql).toContain("INSERT INTO local_transcript_segments");
+    expect(sql).toContain("UPDATE local_transcription_request_queue");
+    expect(providerVersionParams?.[12]).toBe(0);
   });
 
   it("persists processing status without transcript rows", async () => {

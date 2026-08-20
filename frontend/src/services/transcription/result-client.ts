@@ -306,7 +306,7 @@ const requireSession = async (
 
 const readSegments = async (
   client: SupabaseClient,
-  version: SyncedTranscriptVersion,
+  version: SyncedTranscriptVersionRecord,
 ): Promise<SyncedTranscriptSegment[]> => {
   const segments: SyncedTranscriptSegment[] = [];
   for (let offset = 0; offset < MAX_SEGMENTS; offset += SEGMENT_PAGE_SIZE) {
@@ -420,17 +420,22 @@ export const fetchRemoteTranscriptionResult = async (
       "id,workspace_id,session_id,transcription_run_id,created_by,version,version_origin,version_status,parent_version_id,plain_text,language_summary,content_checksum_sha256,is_current,created_at,updated_at",
     )
     .eq("transcription_run_id", run.id)
-    .eq("is_current", true)
+    .eq("version_origin", "provider")
+    .eq("version_status", "final")
+    .order("version", { ascending: false })
+    .limit(1)
     .maybeSingle();
   if (versionResponse.error) throw queryFailed(versionResponse.error);
   if (!versionResponse.data) {
     return { kind: "pending", reason: "result", job, run };
   }
-  const version = parseSyncedTranscriptVersion(versionResponse.data);
+  const version = parseSyncedTranscriptVersionRecord(versionResponse.data);
   if (
     version.workspace_id !== job.workspace_id ||
     version.session_id !== job.session_id ||
-    version.transcription_run_id !== run.id
+    version.transcription_run_id !== run.id ||
+    version.version_origin !== "provider" ||
+    version.version_status !== "final"
   ) {
     throw invalid();
   }

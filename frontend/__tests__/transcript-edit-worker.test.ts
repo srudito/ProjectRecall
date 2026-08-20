@@ -110,6 +110,7 @@ const makeDependencies = (
     maxOperationsPerRun: 10,
     maxAttempts: 5,
     notifyChanged: jest.fn(),
+    requestCurrentVersionSync: jest.fn(),
     ...overrides,
   };
 };
@@ -136,6 +137,10 @@ describe("transcript edit outbox worker", () => {
       sessionId: SESSION_ID,
       expectedCurrentVersionId: BASE_VERSION_ID,
       plainText: "corrected transcript",
+    });
+    expect(dependencies.requestCurrentVersionSync).toHaveBeenCalledWith({
+      workspace_id: WORKSPACE_ID,
+      session_id: SESSION_ID,
     });
     expect(dependencies.notifyChanged).toHaveBeenCalledTimes(1);
   });
@@ -179,6 +184,7 @@ describe("transcript edit outbox worker", () => {
     );
     expect(dependencies.completeOperation).not.toHaveBeenCalled();
     expect(dependencies.rescheduleOperation).not.toHaveBeenCalled();
+    expect(dependencies.requestCurrentVersionSync).not.toHaveBeenCalled();
   });
 
   it("defers a feature-disabled edit without consuming it as terminal failure", async () => {

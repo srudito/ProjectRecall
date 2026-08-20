@@ -145,6 +145,6 @@ export type TranscriptionResultSnapshot =
       kind: "succeeded";
       job: SyncedProcessingJob;
       run: SyncedTranscriptionRun;
-      version: SyncedTranscriptVersion;
+      version: SyncedTranscriptVersionRecord;
       segments: SyncedTranscriptSegment[];
     };

@@ -2,6 +2,7 @@ import { waitForMediaUploadIdle } from "@/src/services/sync/media-upload-worker"
 import { waitForMetadataSyncIdle } from "@/src/services/sync/project-sync-worker";
 import { waitForRecordingUploadIdle } from "@/src/services/sync/recording-upload-worker";
 import { waitForSessionDeletionIdle } from "@/src/services/sync/session-deletion-worker";
+import { waitForTranscriptCurrentVersionSyncIdle } from "@/src/services/sync/transcript-current-version-worker";
 import { waitForAccountDeletionBackgroundWork } from "@/src/services/account-deletion/quiescence";
 
 jest.mock("@/src/services/sync/media-upload-worker", () => ({
@@ -16,6 +17,9 @@ jest.mock("@/src/services/sync/recording-upload-worker", () => ({
 jest.mock("@/src/services/sync/session-deletion-worker", () => ({
   waitForSessionDeletionIdle: jest.fn(),
 }));
+jest.mock("@/src/services/sync/transcript-current-version-worker", () => ({
+  waitForTranscriptCurrentVersionSyncIdle: jest.fn(),
+}));
 
 const waits: jest.MockedFunction<() => Promise<void>>[] = [
   waitForMediaUploadIdle as jest.MockedFunction<
@@ -29,6 +33,9 @@ const waits: jest.MockedFunction<() => Promise<void>>[] = [
   >,
   waitForSessionDeletionIdle as jest.MockedFunction<
     typeof waitForSessionDeletionIdle
+  >,
+  waitForTranscriptCurrentVersionSyncIdle as jest.MockedFunction<
+    typeof waitForTranscriptCurrentVersionSyncIdle
   >,
 ];
 
