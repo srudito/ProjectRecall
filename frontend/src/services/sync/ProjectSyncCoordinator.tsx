@@ -13,7 +13,10 @@ import { requestSessionDeletionSync } from "./session-deletion-worker";
 import { requestTranscriptionRequestSync } from "./transcription-request-worker";
 import { requestTranscriptionResultSync } from "./transcription-result-worker";
 import { requestTranscriptCurrentVersionSync } from "./transcript-current-version-worker";
-import { requestTranscriptEditSync } from "./transcript-edit-worker";
+import {
+  pauseTranscriptEditSync,
+  resumeTranscriptEditSync,
+} from "./transcript-edit-worker";
 import { subscribeTranscriptionRequestSubmissions } from "./transcription-sync-events";
 
 const requestAllSync = (): void => {
@@ -25,7 +28,59 @@ const requestAllSync = (): void => {
   requestTranscriptionRequestSync();
   requestTranscriptionResultSync();
   requestTranscriptCurrentVersionSync();
-  requestTranscriptEditSync();
+};
+
+/**
+ * Edit-worker admission only; this does not create an editor/controller.
+ * Auth subscription is synchronous so A -> B -> A invalidates the old run,
+ * even if React batches away the intermediate render. Token refresh wakes a
+ * deferred same-user operation without replacing its UUID or retry metadata.
+ */
+export const startTranscriptEditSyncLifecycle = (): (() => void) => {
+  if (Platform.OS === "web") return () => {};
+  let disposed = false;
+  let active = AppState.currentState === "active";
+  let online = true; // Unknown connectivity is checked by the worker itself.
+  let previousAuth = useAuthStore.getState();
+
+  const updateAdmission = (): void => {
+    if (disposed) return;
+    const auth = useAuthStore.getState();
+    if (active && online && auth.initialized && auth.user?.id && !isAccountDeletionLocallyPending()) {
+      resumeTranscriptEditSync();
+    } else {
+      pauseTranscriptEditSync();
+    }
+  };
+
+  const unsubscribeAuth = useAuthStore.subscribe((auth) => {
+    if (disposed) return;
+    const identityChanged = auth.user?.id !== previousAuth.user?.id;
+    const changed = identityChanged || auth.initialized !== previousAuth.initialized ||
+      auth.session !== previousAuth.session;
+    previousAuth = auth;
+    if (identityChanged) pauseTranscriptEditSync();
+    if (changed) updateAdmission();
+  });
+  const appSubscription = AppState.addEventListener("change", (state) => {
+    if (disposed) return;
+    active = state === "active";
+    updateAdmission();
+  });
+  const unsubscribeConnection = NetInfo.addEventListener((state) => {
+    if (disposed) return;
+    online = state.isConnected !== false && state.isInternetReachable !== false;
+    updateAdmission();
+  });
+  updateAdmission();
+
+  return () => {
+    disposed = true;
+    pauseTranscriptEditSync();
+    unsubscribeAuth();
+    appSubscription.remove();
+    unsubscribeConnection();
+  };
 };
 
 /**
@@ -34,6 +89,7 @@ const requestAllSync = (): void => {
  * directly to Supabase and therefore do not use the local SQLite queues.
  */
 export function ProjectSyncCoordinator() {
+  useEffect(() => startTranscriptEditSyncLifecycle(), []);
   const initialized = useAuthStore((state) => state.initialized);
   const userId = useAuthStore((state) => state.user?.id ?? null);
 

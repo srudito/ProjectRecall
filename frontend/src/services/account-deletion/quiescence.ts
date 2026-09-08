@@ -5,6 +5,11 @@ import { waitForRecordingUploadIdle } from "@/src/services/sync/recording-upload
 import { waitForSessionDeletionIdle } from "@/src/services/sync/session-deletion-worker";
 import { waitForTranscriptCurrentVersionSyncIdle } from "@/src/services/sync/transcript-current-version-worker";
 
+import {
+  pauseTranscriptEditSync,
+  waitForTranscriptEditSyncIdle,
+} from "@/src/services/sync/transcript-edit-worker";
+
 const DEFAULT_IDLE_TIMEOUT_MS = 20_000;
 
 const withTimeout = async (
@@ -40,6 +45,9 @@ const withTimeout = async (
 export const waitForAccountDeletionBackgroundWork = async (
   timeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
 ): Promise<void> => {
+  // Close edit admission and invalidate scheduled callbacks BEFORE taking the
+  // idle snapshot. The account-deletion marker prevents lifecycle resumption.
+  pauseTranscriptEditSync();
   await withTimeout(
     Promise.all([
       waitForMetadataSyncIdle(),
@@ -47,6 +55,7 @@ export const waitForAccountDeletionBackgroundWork = async (
       waitForMediaUploadIdle(),
       waitForSessionDeletionIdle(),
       waitForTranscriptCurrentVersionSyncIdle(),
+      waitForTranscriptEditSyncIdle(),
     ]).then(() => undefined),
     timeoutMs,
   );

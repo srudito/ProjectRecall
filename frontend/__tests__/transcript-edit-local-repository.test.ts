@@ -1,6 +1,14 @@
 import { openLocalDb } from "@/src/services/sqlite/schema";
 import { runSerializedLocalTransaction } from "@/src/services/sqlite/transaction";
 import {
+  canSubmitTranscriptEditQueue,
+  deferTranscriptEditQueue,
+  getNextEligibleTranscriptEditQueue,
+  getNextTranscriptEditWakeAt,
+  markTranscriptEditQueueCancelled,
+  markTranscriptEditQueueConflict,
+  rescheduleTranscriptEditQueue,
+  type TranscriptEditQueueGuard,
   discardGuardedTranscriptEditDraft,
   enqueueGuardedTranscriptEditSnapshot,
   loadTranscriptEditorState,
@@ -39,6 +47,205 @@ const mockedOpenLocalDb = openLocalDb as jest.MockedFunction<
 const mockedTransaction = runSerializedLocalTransaction as jest.MockedFunction<
   typeof runSerializedLocalTransaction
 >;
+
+describe("3D.2B serialized edit-queue admission", () => {
+  const NOW = "2026-09-08T00:00:00.000Z";
+  const row: TranscriptEditQueueRow = {
+    id: CLIENT_VERSION_ID, user_id: USER_ID, workspace_id: WORKSPACE_ID,
+    session_id: SESSION_ID, expected_current_version_id: BASE_VERSION_ID,
+    plain_text: "unchanged snapshot", queue_status: "submitting", attempt_count: 1,
+    max_attempts: 5, next_retry_at: null, last_error_code: null, last_safe_error: null,
+    created_at: NOW, updated_at: NOW,
+  };
+  const guard = (): TranscriptEditQueueGuard => ({ userId: USER_ID, assertActive: jest.fn() });
+  const completion = { queueId: row.id, userId: USER_ID, workspaceId: WORKSPACE_ID,
+    sessionId: SESSION_ID, expectedCurrentVersionId: BASE_VERSION_ID, plainText: row.plain_text };
+  const actual = jest.requireActual<typeof import("@/src/services/sqlite/transaction")>(
+    "@/src/services/sqlite/transaction",
+  );
+  const fixture = () => {
+    const events: string[] = [];
+    const db = {
+      getFirstAsync: jest.fn(async (_sql: string, _params?: unknown[]): Promise<unknown> => ({ ...row })),
+      runAsync: jest.fn(async (_sql: string, _params?: unknown[]) => ({ changes: 1 })),
+      withTransactionAsync: jest.fn(async (task: () => Promise<void>) => {
+        events.push("begin");
+        try { await task(); events.push("commit"); }
+        catch (error) { events.push("rollback"); throw error; }
+      }),
+    };
+    mockedOpenLocalDb.mockResolvedValue(db as never);
+    return { db, events };
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    actual.__resetSerializedLocalTransactionsForTests();
+    mockedTransaction.mockImplementation(actual.runSerializedLocalTransaction);
+  });
+  afterEach(() => {
+    mockedTransaction.mockImplementation(async (_db, task) => task());
+  });
+
+  it("uses live session and identical attempt-budget gates for eligibility and wake time", async () => {
+    const { db, events } = fixture(); const context = guard();
+    await getNextEligibleTranscriptEditQueue(USER_ID, NOW, 3, context);
+    db.getFirstAsync.mockResolvedValueOnce({ wake_at: NOW });
+    await expect(getNextTranscriptEditWakeAt(USER_ID, NOW, 3, context)).resolves.toBe(NOW);
+    for (const [sql] of db.getFirstAsync.mock.calls) {
+      expect(sql).toContain("edit_session.workspace_id = local_transcript_edit_queue.workspace_id");
+      expect(sql).toContain("edit_session.deleted_at IS NULL");
+      expect(sql).toContain("NOT IN ('deleting','deleted')");
+      expect(sql).toContain("local_session_deletion_queue");
+      expect(sql).toContain("attempt_count < max_attempts AND attempt_count < ?");
+    }
+    expect(db.getFirstAsync.mock.calls[0][1]).toEqual([USER_ID, 3, NOW]);
+    expect(db.getFirstAsync.mock.calls[1][1]).toEqual([NOW, USER_ID, 3]);
+    expect(events).toEqual(["begin", "commit", "begin", "commit"]);
+  });
+
+  it("checks due-time, user and deletion state again inside the claim UPDATE", async () => {
+    const { db, events } = fixture(); const context = guard();
+    await expect(claimTranscriptEditQueue(row.id, context, 3)).resolves.toEqual(row);
+    const [sql, params] = db.runAsync.mock.calls[0];
+    expect(sql).toContain("next_retry_at IS NULL OR next_retry_at <= ?");
+    expect(sql).toContain("(? IS NULL OR user_id = ?)");
+    expect(sql).toContain("local_session_deletion_queue");
+    expect(params).toEqual([expect.any(String), row.id, 3, expect.any(String), USER_ID, USER_ID]);
+    expect(events).toEqual(["begin", "commit"]);
+  });
+
+  it("does not resolve claim until COMMIT has actually returned", async () => {
+    const { db } = fixture(); let release!: () => void; let reached!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const atCommit = new Promise<void>((resolve) => { reached = resolve; });
+    db.withTransactionAsync.mockImplementation(async (task) => {
+      await task(); reached(); await blocked;
+    });
+    let completed = false;
+    const pending = claimTranscriptEditQueue(row.id, guard()).then((value) => { completed = true; return value; });
+    await atCommit; expect(completed).toBe(false); release();
+    await expect(pending).resolves.toEqual(row);
+  });
+
+  it("queues claim behind an existing editor transaction without overlapping BEGIN", async () => {
+    const { db, events } = fixture(); let release!: () => void; let entered!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const ready = new Promise<void>((resolve) => { entered = resolve; });
+    const editor = actual.runSerializedLocalTransaction(db, async () => { entered(); await blocked; });
+    await ready;
+    const claim = claimTranscriptEditQueue(row.id, guard());
+    await Promise.resolve(); await Promise.resolve();
+    expect(events).toEqual(["begin"]); expect(db.runAsync).not.toHaveBeenCalled();
+    release(); await editor; await claim;
+    expect(events).toEqual(["begin", "commit", "begin", "commit"]);
+  });
+
+  it("propagates COMMIT failure instead of returning a durable claim", async () => {
+    const { db } = fixture();
+    db.withTransactionAsync.mockImplementation(async (task) => { await task(); throw new Error("Commit failed"); });
+    await expect(claimTranscriptEditQueue(row.id, guard())).rejects.toThrow("Commit failed");
+  });
+
+  it("returns no claim when another operation or deletion made it ineligible", async () => {
+    const { db } = fixture(); db.runAsync.mockResolvedValue({ changes: 0 });
+    await expect(claimTranscriptEditQueue(row.id, guard())).resolves.toBeNull();
+    expect(db.getFirstAsync).not.toHaveBeenCalled();
+  });
+
+  it("rechecks the exact claimed payload and live session before submission", async () => {
+    const { db } = fixture();
+    db.getFirstAsync.mockResolvedValueOnce(null);
+    await expect(canSubmitTranscriptEditQueue(row, guard())).resolves.toBe(false);
+    db.getFirstAsync.mockResolvedValueOnce({ id: row.id });
+    await expect(canSubmitTranscriptEditQueue(row, guard())).resolves.toBe(true);
+    expect(db.getFirstAsync).toHaveBeenCalledWith(expect.stringContaining("local_session_deletion_queue"),
+      [row.id, USER_ID, WORKSPACE_ID, SESSION_ID, BASE_VERSION_ID, row.plain_text]);
+    expect(db.runAsync).not.toHaveBeenCalled();
+  });
+
+  it("rolls back an operation when its run guard is invalidated during SQL", async () => {
+    const { db, events } = fixture(); let active = true;
+    db.runAsync.mockImplementation(async () => { active = false; return { changes: 1 }; });
+    await expect(claimTranscriptEditQueue(row.id, { userId: USER_ID, assertActive: () => {
+      if (!active) throw new Error("Stopped");
+    } })).rejects.toThrow("Stopped");
+    expect(events).toEqual(["begin", "rollback"]);
+  });
+
+  it("rejects a mismatched explicit user before opening the database", async () => {
+    const context = { ...guard(), userId: WORKSPACE_ID };
+    await expect(getNextEligibleTranscriptEditQueue(USER_ID, NOW, 5, context)).rejects.toThrow("user changed");
+    await expect(resetSubmittingTranscriptEditQueue(USER_ID, context)).rejects.toThrow("user changed");
+    await expect(canSubmitTranscriptEditQueue(row, context)).rejects.toThrow("user changed");
+    await expect(completeTranscriptEditQueueSuccess(completion, context)).rejects.toThrow("user changed");
+    expect(mockedOpenLocalDb).not.toHaveBeenCalled();
+  });
+
+  const guardedOperations: { name: string; run: (context: TranscriptEditQueueGuard) => Promise<unknown> }[] = [
+    { name: "eligible", run: (g) => getNextEligibleTranscriptEditQueue(USER_ID, NOW, 5, g) },
+    { name: "wake", run: (g) => getNextTranscriptEditWakeAt(USER_ID, NOW, 5, g) },
+    { name: "claim", run: (g) => claimTranscriptEditQueue(row.id, g) },
+    { name: "submit-check", run: (g) => canSubmitTranscriptEditQueue(row, g) },
+    { name: "reset", run: (g) => resetSubmittingTranscriptEditQueue(USER_ID, g) },
+    { name: "complete", run: (g) => completeTranscriptEditQueueSuccess(completion, g) },
+    { name: "defer", run: (g) => deferTranscriptEditQueue(row.id, NOW, "AUTH", "Wait.", g) },
+    { name: "retry", run: (g) => rescheduleTranscriptEditQueue(row.id, NOW, "NETWORK", "Wait.", g) },
+    { name: "conflict", run: (g) => markTranscriptEditQueueConflict(row.id, "CONFLICT", "Changed.", g) },
+    { name: "failed", run: (g) => markTranscriptEditQueueFailed(row.id, "FAILED", "Failed.", g) },
+    { name: "cancelled", run: (g) => markTranscriptEditQueueCancelled(row.id, "DELETED", "Deleted.", g) },
+  ];
+  it.each(guardedOperations)("fails closed when SQLite is unavailable for $name", async ({ run }) => {
+    mockedOpenLocalDb.mockResolvedValue(null);
+    await expect(run(guard())).rejects.toThrow("queue storage is unavailable");
+  });
+
+  it.each(guardedOperations)("rejects a stopped run before database access for $name", async ({ run }) => {
+    await expect(run({ userId: USER_ID, assertActive: () => { throw new Error("Stopped"); } })).rejects.toThrow("Stopped");
+    expect(mockedOpenLocalDb).not.toHaveBeenCalled();
+  });
+
+  it("serializes all status transitions and scopes each to the running user", async () => {
+    const { db, events } = fixture(); const context = guard();
+    await deferTranscriptEditQueue(row.id, NOW, "AUTH", "Wait.", context);
+    await rescheduleTranscriptEditQueue(row.id, NOW, "NETWORK", "Wait.", context);
+    await markTranscriptEditQueueConflict(row.id, "CONFLICT", "Changed.", context);
+    await markTranscriptEditQueueFailed(row.id, "FAILED", "Failed.", context);
+    await markTranscriptEditQueueCancelled(row.id, "DELETED", "Deleted.", context);
+    expect(events).toEqual(Array.from({ length: 5 }, () => ["begin", "commit"]).flat());
+    for (const [sql, params] of db.runAsync.mock.calls) {
+      expect(sql).toContain("queue_status = 'submitting'");
+      expect(sql).toContain("user_id = ?"); expect(params).toContain(USER_ID);
+      expect(sql).not.toContain("INSERT"); expect(sql).not.toContain("SET plain_text");
+    }
+  });
+
+  it("does not report a completed transition or delete a draft when the row vanished", async () => {
+    const { db } = fixture(); db.runAsync.mockResolvedValue({ changes: 0 });
+    await expect(completeTranscriptEditQueueSuccess(completion, guard())).rejects.toThrow("no longer matches");
+    expect(db.runAsync).toHaveBeenCalledTimes(1);
+    await expect(rescheduleTranscriptEditQueue(row.id, NOW, "NETWORK", "Wait.", guard())).rejects.toThrow("no longer available");
+    expect(db.runAsync.mock.calls.every(([sql]) => !sql.includes("INSERT"))).toBe(true);
+  });
+
+  it("completes and deletes only the exact matching draft within one transaction", async () => {
+    const { db, events } = fixture();
+    await completeTranscriptEditQueueSuccess(completion, guard());
+    expect(events).toEqual(["begin", "commit"]);
+    expect(db.runAsync.mock.calls[0][0]).toContain("local_session_deletion_queue");
+    expect(db.runAsync.mock.calls[1][1]).toEqual([USER_ID, WORKSPACE_ID, SESSION_ID, BASE_VERSION_ID, row.plain_text]);
+  });
+
+  it("recovery skips unavailable sessions and never changes failed rows or immutable payloads", async () => {
+    const { db } = fixture();
+    await resetSubmittingTranscriptEditQueue(USER_ID, guard());
+    const [sql, params] = db.runAsync.mock.calls[0];
+    expect(sql).toContain("user_id = ? AND queue_status = 'submitting'");
+    expect(sql).toContain("local_session_deletion_queue");
+    expect(sql).not.toContain("plain_text ="); expect(sql).not.toContain("expected_current_version_id =");
+    expect(params).toEqual([expect.any(String), USER_ID]);
+  });
+});
 
 describe("3D.2 guarded editor persistence", () => {
   const NOW = "2026-09-08T00:00:00.000Z";

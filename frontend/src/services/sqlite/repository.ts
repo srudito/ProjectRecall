@@ -1888,23 +1888,117 @@ export const enqueueTranscriptEditSnapshot = async (input: {
   });
 };
 
+/** A run-owned guard. Paused or superseded runs may not mutate queue state. */
+export interface TranscriptEditQueueGuard {
+  userId: string;
+  assertActive: () => void;
+}
+
+// Use the outer table name in both SELECT and UPDATE queries. A cached edit
+// must not be submitted after local session deletion, even while offline.
+const transcriptEditLiveSessionSql = `
+  EXISTS (
+    SELECT 1 FROM local_sessions edit_session
+     WHERE edit_session.id = local_transcript_edit_queue.session_id
+       AND edit_session.workspace_id = local_transcript_edit_queue.workspace_id
+       AND edit_session.deleted_at IS NULL
+       AND edit_session.status NOT IN ('deleting','deleted')
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM local_session_deletion_queue edit_deletion
+     WHERE edit_deletion.session_id = local_transcript_edit_queue.session_id
+  )
+`;
+
+const withTranscriptEditQueueDb = async <T>(
+  fallback: T,
+  guard: TranscriptEditQueueGuard | undefined,
+  operation: (db: SQLite.SQLiteDatabase) => Promise<T>,
+): Promise<T> => {
+  guard?.assertActive();
+  const db = await openLocalDb();
+  if (!db) {
+    if (guard) throw new Error("Transcript edit queue storage is unavailable.");
+    return fallback;
+  }
+  // Share the editor transaction lane. In particular, claim must COMMIT before
+  // its caller starts an RPC; no network operation belongs in this callback.
+  return runSerializedLocalTransaction(db, async () => {
+    guard?.assertActive();
+    const result = await operation(db);
+    guard?.assertActive();
+    return result;
+  });
+};
+
+const requireTranscriptEditQueueUser = (
+  userId: string,
+  guard?: TranscriptEditQueueGuard,
+): void => {
+  if (guard && guard.userId !== userId) {
+    throw new Error("The transcript edit queue user changed.");
+  }
+};
+
+const transcriptEditAttemptLimit = (value: number): number => {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error("The transcript edit attempt limit is invalid.");
+  }
+  return value;
+};
+
+const requireTranscriptEditQueueTransition = (
+  changes: number,
+  guard?: TranscriptEditQueueGuard,
+): void => {
+  if (guard && changes !== 1) {
+    throw new Error("The claimed transcript edit is no longer available.");
+  }
+};
+
 export const getNextEligibleTranscriptEditQueue = async (
   userId: string,
   now: string,
+  maxAttempts = 5,
+  guard?: TranscriptEditQueueGuard,
 ): Promise<TranscriptEditQueueRow | null> => {
-  const db = await openLocalDb();
-  if (!db) return null;
-  return (await db.getFirstAsync(
-    `SELECT *
-       FROM local_transcript_edit_queue
-      WHERE user_id = ?
-        AND queue_status IN ('pending','failed')
-        AND attempt_count < max_attempts
-        AND (next_retry_at IS NULL OR next_retry_at <= ?)
-      ORDER BY created_at ASC
-      LIMIT 1`,
-    [userId, now],
-  )) as TranscriptEditQueueRow | null;
+  requireTranscriptEditQueueUser(userId, guard);
+  const limit = transcriptEditAttemptLimit(maxAttempts);
+  return withTranscriptEditQueueDb<TranscriptEditQueueRow | null>(null, guard, (db) =>
+    db.getFirstAsync<TranscriptEditQueueRow>(
+      `SELECT * FROM local_transcript_edit_queue
+        WHERE user_id = ?
+          AND queue_status IN ('pending','failed')
+          AND attempt_count < max_attempts AND attempt_count < ?
+          AND (next_retry_at IS NULL OR next_retry_at <= ?)
+          AND ${transcriptEditLiveSessionSql}
+        ORDER BY created_at ASC, id ASC LIMIT 1`,
+      [userId, limit, now],
+    ),
+  );
+};
+
+/** Durable retry schedule; eligibility and claim use the same budget/scope. */
+export const getNextTranscriptEditWakeAt = async (
+  userId: string,
+  now: string,
+  maxAttempts = 5,
+  guard?: TranscriptEditQueueGuard,
+): Promise<string | null> => {
+  requireTranscriptEditQueueUser(userId, guard);
+  const limit = transcriptEditAttemptLimit(maxAttempts);
+  return withTranscriptEditQueueDb<string | null>(null, guard, async (db) => {
+    const row = await db.getFirstAsync<{ wake_at: string | null }>(
+      `SELECT MIN(COALESCE(next_retry_at, ?)) AS wake_at
+         FROM local_transcript_edit_queue
+        WHERE user_id = ?
+          AND queue_status IN ('pending','failed')
+          AND attempt_count < max_attempts AND attempt_count < ?
+          AND ${transcriptEditLiveSessionSql}`,
+      [now, userId, limit],
+    );
+    return row?.wake_at ?? null;
+  });
 };
 
 export const listTranscriptEditQueueForSession = async (
@@ -1924,29 +2018,59 @@ export const listTranscriptEditQueueForSession = async (
 
 export const claimTranscriptEditQueue = async (
   id: string,
+  guard?: TranscriptEditQueueGuard,
+  maxAttempts = 5,
 ): Promise<TranscriptEditQueueRow | null> => {
-  const db = await openLocalDb();
-  if (!db) return null;
-  const timestamp = nowIso();
-  const result = await db.runAsync(
-    `UPDATE local_transcript_edit_queue
-        SET queue_status = 'submitting',
-            attempt_count = attempt_count + 1,
-            next_retry_at = NULL,
-            last_error_code = NULL,
-            last_safe_error = NULL,
-            updated_at = ?
-      WHERE id = ?
-        AND queue_status IN ('pending','failed')
-        AND attempt_count < max_attempts
-        AND (next_retry_at IS NULL OR next_retry_at <= ?)`,
-    [timestamp, id, timestamp],
-  );
-  if (result.changes !== 1) return null;
-  return (await db.getFirstAsync(
-    `SELECT * FROM local_transcript_edit_queue WHERE id = ? LIMIT 1`,
-    [id],
-  )) as TranscriptEditQueueRow | null;
+  const limit = transcriptEditAttemptLimit(maxAttempts);
+  return withTranscriptEditQueueDb<TranscriptEditQueueRow | null>(null, guard, async (db) => {
+    const timestamp = nowIso();
+    const result = await db.runAsync(
+      `UPDATE local_transcript_edit_queue
+          SET queue_status = 'submitting',
+              attempt_count = attempt_count + 1,
+              next_retry_at = NULL,
+              last_error_code = NULL,
+              last_safe_error = NULL,
+              updated_at = ?
+        WHERE id = ?
+          AND queue_status IN ('pending','failed')
+          AND attempt_count < max_attempts AND attempt_count < ?
+          AND (next_retry_at IS NULL OR next_retry_at <= ?)
+          AND (? IS NULL OR user_id = ?)
+          AND ${transcriptEditLiveSessionSql}`,
+      [timestamp, id, limit, timestamp, guard?.userId ?? null, guard?.userId ?? null],
+    );
+    if (result.changes !== 1) return null;
+    const claimed = await db.getFirstAsync<TranscriptEditQueueRow>(
+      "SELECT * FROM local_transcript_edit_queue WHERE id = ? LIMIT 1", [id],
+    );
+    if (!claimed || claimed.id !== id || claimed.queue_status !== "submitting" ||
+        (guard && claimed.user_id !== guard.userId)) {
+      throw new Error("The transcript edit claim no longer matches its operation.");
+    }
+    return claimed;
+  });
+};
+
+/** Recheck the exact durable claim and live session immediately before RPC. */
+export const canSubmitTranscriptEditQueue = async (
+  claimed: TranscriptEditQueueRow,
+  guard?: TranscriptEditQueueGuard,
+): Promise<boolean> => {
+  requireTranscriptEditQueueUser(claimed.user_id, guard);
+  return withTranscriptEditQueueDb(false, guard, async (db) => {
+    const row = await db.getFirstAsync<{ id: string }>(
+      `SELECT id FROM local_transcript_edit_queue
+        WHERE id = ? AND queue_status = 'submitting'
+          AND user_id = ? AND workspace_id = ? AND session_id = ?
+          AND expected_current_version_id = ? AND plain_text = ?
+          AND ${transcriptEditLiveSessionSql}
+        LIMIT 1`,
+      [claimed.id, claimed.user_id, claimed.workspace_id, claimed.session_id,
+        claimed.expected_current_version_id, claimed.plain_text],
+    );
+    return row?.id === claimed.id;
+  });
 };
 
 export const deferTranscriptEditQueue = async (
@@ -1954,10 +2078,9 @@ export const deferTranscriptEditQueue = async (
   nextRetryAt: string,
   errorCode: string,
   safeError: string,
-): Promise<void> => {
-  const db = await openLocalDb();
-  if (!db) return;
-  await db.runAsync(
+  guard?: TranscriptEditQueueGuard,
+): Promise<void> => withTranscriptEditQueueDb<void>(undefined, guard, async (db) => {
+  const result = await db.runAsync(
     `UPDATE local_transcript_edit_queue
         SET queue_status = 'pending',
             attempt_count = CASE
@@ -1968,30 +2091,33 @@ export const deferTranscriptEditQueue = async (
             last_error_code = ?,
             last_safe_error = ?,
             updated_at = ?
-      WHERE id = ? AND queue_status = 'submitting'`,
-    [nextRetryAt, errorCode, safeError, nowIso(), id],
+      WHERE id = ? AND queue_status = 'submitting'
+        AND (? IS NULL OR user_id = ?)`,
+    [nextRetryAt, errorCode, safeError, nowIso(), id, guard?.userId ?? null, guard?.userId ?? null],
   );
-};
+  requireTranscriptEditQueueTransition(result.changes, guard);
+});
 
 export const rescheduleTranscriptEditQueue = async (
   id: string,
   nextRetryAt: string,
   errorCode: string,
   safeError: string,
-): Promise<void> => {
-  const db = await openLocalDb();
-  if (!db) return;
-  await db.runAsync(
+  guard?: TranscriptEditQueueGuard,
+): Promise<void> => withTranscriptEditQueueDb<void>(undefined, guard, async (db) => {
+  const result = await db.runAsync(
     `UPDATE local_transcript_edit_queue
         SET queue_status = 'failed',
             next_retry_at = ?,
             last_error_code = ?,
             last_safe_error = ?,
             updated_at = ?
-      WHERE id = ? AND queue_status = 'submitting'`,
-    [nextRetryAt, errorCode, safeError, nowIso(), id],
+      WHERE id = ? AND queue_status = 'submitting'
+        AND (? IS NULL OR user_id = ?)`,
+    [nextRetryAt, errorCode, safeError, nowIso(), id, guard?.userId ?? null, guard?.userId ?? null],
   );
-};
+  requireTranscriptEditQueueTransition(result.changes, guard);
+});
 
 export const completeTranscriptEditQueueSuccess = async (input: {
   queueId: string;
@@ -2000,11 +2126,9 @@ export const completeTranscriptEditQueueSuccess = async (input: {
   sessionId: string;
   expectedCurrentVersionId: string;
   plainText: string;
-}): Promise<void> => {
-  const db = await openLocalDb();
-  if (!db) return;
-
-  await runSerializedLocalTransaction(db, async () => {
+}, guard?: TranscriptEditQueueGuard): Promise<void> => {
+  requireTranscriptEditQueueUser(input.userId, guard);
+  await withTranscriptEditQueueDb<void>(undefined, guard, async (db) => {
     const completion = await db.runAsync(
       `UPDATE local_transcript_edit_queue
           SET queue_status = 'succeeded',
@@ -2018,7 +2142,8 @@ export const completeTranscriptEditQueueSuccess = async (input: {
           AND workspace_id = ?
           AND session_id = ?
           AND expected_current_version_id = ?
-          AND plain_text = ?`,
+          AND plain_text = ?
+          AND ${transcriptEditLiveSessionSql}`,
       [
         nowIso(),
         input.queueId,
@@ -2061,10 +2186,9 @@ const updateTranscriptEditQueueTerminal = async (
   queueStatus: "failed" | "conflict" | "cancelled",
   errorCode: string,
   safeError: string,
-): Promise<void> => {
-  const db = await openLocalDb();
-  if (!db) return;
-  await db.runAsync(
+  guard?: TranscriptEditQueueGuard,
+): Promise<void> => withTranscriptEditQueueDb<void>(undefined, guard, async (db) => {
+  const result = await db.runAsync(
     `UPDATE local_transcript_edit_queue
         SET queue_status = ?,
             attempt_count = CASE
@@ -2075,65 +2199,59 @@ const updateTranscriptEditQueueTerminal = async (
             last_error_code = ?,
             last_safe_error = ?,
             updated_at = ?
-      WHERE id = ? AND queue_status = 'submitting'`,
-    [queueStatus, queueStatus, errorCode, safeError, nowIso(), id],
+      WHERE id = ? AND queue_status = 'submitting'
+        ${guard ? "AND user_id = ?" : ""}`,
+    [queueStatus, queueStatus, errorCode, safeError, nowIso(), id,
+      ...(guard ? [guard.userId] : [])],
   );
-};
+  requireTranscriptEditQueueTransition(result.changes, guard);
+});
 
 export const markTranscriptEditQueueConflict = async (
   id: string,
   errorCode: string,
   safeError: string,
+  guard?: TranscriptEditQueueGuard,
 ): Promise<void> =>
-  updateTranscriptEditQueueTerminal(
-    id,
-    "conflict",
-    errorCode,
-    safeError,
-  );
+  updateTranscriptEditQueueTerminal(id, "conflict", errorCode, safeError, guard);
 
 export const markTranscriptEditQueueFailed = async (
   id: string,
   errorCode: string,
   safeError: string,
+  guard?: TranscriptEditQueueGuard,
 ): Promise<void> =>
-  updateTranscriptEditQueueTerminal(
-    id,
-    "failed",
-    errorCode,
-    safeError,
-  );
+  updateTranscriptEditQueueTerminal(id, "failed", errorCode, safeError, guard);
 
 export const markTranscriptEditQueueCancelled = async (
   id: string,
   errorCode: string,
   safeError: string,
+  guard?: TranscriptEditQueueGuard,
 ): Promise<void> =>
-  updateTranscriptEditQueueTerminal(
-    id,
-    "cancelled",
-    errorCode,
-    safeError,
-  );
+  updateTranscriptEditQueueTerminal(id, "cancelled", errorCode, safeError, guard);
 
 export const resetSubmittingTranscriptEditQueue = async (
   userId: string,
+  guard?: TranscriptEditQueueGuard,
 ): Promise<number> => {
-  const db = await openLocalDb();
-  if (!db) return 0;
-  const result = await db.runAsync(
-    `UPDATE local_transcript_edit_queue
-        SET queue_status = 'pending',
-            attempt_count = CASE
-              WHEN attempt_count > 0 THEN attempt_count - 1
-              ELSE 0
-            END,
-            next_retry_at = NULL,
-            updated_at = ?
-      WHERE user_id = ? AND queue_status = 'submitting'`,
-    [nowIso(), userId],
-  );
-  return result.changes;
+  requireTranscriptEditQueueUser(userId, guard);
+  return withTranscriptEditQueueDb(0, guard, async (db) => {
+    const result = await db.runAsync(
+      `UPDATE local_transcript_edit_queue
+          SET queue_status = 'pending',
+              attempt_count = CASE
+                WHEN attempt_count > 0 THEN attempt_count - 1
+                ELSE 0
+              END,
+              next_retry_at = NULL,
+              updated_at = ?
+        WHERE user_id = ? AND queue_status = 'submitting'
+          AND ${transcriptEditLiveSessionSql}`,
+      [nowIso(), userId],
+    );
+    return result.changes;
+  });
 };
 
 // Guarded editor entry points (3D.2 patch 1). Legacy worker APIs above retain
