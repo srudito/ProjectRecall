@@ -2,11 +2,14 @@ import {
   buildLocalTranscriptSegmentRows,
   formatTranscriptSegmentTimeRange,
   loadLocalTranscriptReadModel,
+  loadLocalTranscriptReadModelWithEvidence,
+  type LocalTranscriptEvidenceReadDependencies,
   LocalTranscriptReadError,
 } from "@/src/services/transcription/read-model";
 import type {
   SyncedTranscriptSegment,
   SyncedTranscriptVersion,
+  SyncedTranscriptVersionRecord,
 } from "@/src/services/transcription/result-types";
 
 const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
@@ -204,5 +207,213 @@ describe("local transcript read model", () => {
         segment(1, "Second.", { id: first.id }),
       ]),
     ).toThrow(LocalTranscriptReadError);
+  });
+});
+
+describe("3D.1 opt-in local provider evidence read model", () => {
+  const EDIT2_ID = "66666666-6666-4666-8666-666666666666";
+  const EDIT3_ID = "77777777-7777-4777-8777-777777777777";
+  const provider: SyncedTranscriptVersionRecord = { ...version, is_current: false };
+  const edit2: SyncedTranscriptVersionRecord = {
+    ...version,
+    id: EDIT2_ID,
+    version: 2,
+    version_origin: "user_edit",
+    parent_version_id: VERSION_ID,
+    is_current: false,
+    plain_text: "earlier edit",
+  };
+  const edit3: SyncedTranscriptVersion = {
+    ...edit2,
+    id: EDIT3_ID,
+    version: 3,
+    parent_version_id: EDIT2_ID,
+    is_current: true,
+    plain_text: "  corrected text\n",
+  };
+  const make = (
+    overrides: Partial<LocalTranscriptEvidenceReadDependencies> = {},
+  ): LocalTranscriptEvidenceReadDependencies => ({
+    getCurrentVersion: jest.fn(async () => edit3),
+    getVersionById: jest.fn(async (input: { versionId: string }) => {
+      if (input.versionId === EDIT2_ID) return edit2;
+      if (input.versionId === VERSION_ID) return provider;
+      return null;
+    }),
+    listSegments: jest.fn(async (id: string) =>
+      id === VERSION_ID ? [segment(0, "provider words")] : [],
+    ),
+    ...overrides,
+  });
+
+  it("keeps the legacy reader unchanged and does not load ancestry implicitly", async () => {
+    const deps = make();
+    const result = await loadLocalTranscriptReadModel(SESSION_ID, deps);
+    expect(result).toMatchObject({ kind: "ready", plainText: "corrected text", segmentCount: 0 });
+    expect(result).not.toHaveProperty("evidence");
+    expect(deps.getVersionById).not.toHaveBeenCalled();
+  });
+
+  it("returns empty without reading parents or segments", async () => {
+    const deps = make({ getCurrentVersion: jest.fn(async () => null) });
+    await expect(loadLocalTranscriptReadModelWithEvidence(SESSION_ID, deps))
+      .resolves.toEqual({ kind: "empty" });
+    expect(deps.getVersionById).not.toHaveBeenCalled();
+    expect(deps.listSegments).not.toHaveBeenCalled();
+  });
+
+  it("uses a current provider's own segments without reading parents", async () => {
+    const deps = make({ getCurrentVersion: jest.fn(async () => version) });
+    const result = await loadLocalTranscriptReadModelWithEvidence(SESSION_ID, deps);
+    expect(result).toMatchObject({
+      kind: "ready",
+      rawPlainText: version.plain_text,
+      segmentCount: 1,
+      evidence: { kind: "available", source: "current", version, segmentCount: 1 },
+    });
+    expect(deps.getVersionById).not.toHaveBeenCalled();
+    expect(deps.listSegments).toHaveBeenCalledTimes(1);
+  });
+
+  it("follows the exact multi-edit path and keeps raw text and evidence separate", async () => {
+    const deps = make();
+    const result = await loadLocalTranscriptReadModelWithEvidence(SESSION_ID, deps);
+    expect(result).toMatchObject({
+      kind: "ready",
+      version: { id: EDIT3_ID },
+      rawPlainText: "  corrected text\n",
+      plainText: "corrected text",
+      segmentRows: [],
+      segmentCount: 0,
+      evidence: {
+        kind: "available",
+        source: "ancestor",
+        version: { id: VERSION_ID, is_current: false },
+        segmentCount: 1,
+        segmentRows: [{ text: "provider words", startMs: 0, endMs: 1000 }],
+      },
+    });
+    expect(deps.getVersionById).toHaveBeenNthCalledWith(1, {
+      versionId: EDIT2_ID, workspaceId: WORKSPACE_ID, sessionId: SESSION_ID,
+    });
+    expect(deps.getVersionById).toHaveBeenNthCalledWith(2, {
+      versionId: VERSION_ID, workspaceId: WORKSPACE_ID, sessionId: SESSION_ID,
+    });
+    expect(deps.listSegments).toHaveBeenNthCalledWith(1, EDIT3_ID);
+    expect(deps.listSegments).toHaveBeenNthCalledWith(2, VERSION_ID);
+  });
+
+  it("supports a direct provider parent with null or differing run provenance", async () => {
+    const deps = make({
+      getCurrentVersion: jest.fn(async () => ({
+        ...edit3, parent_version_id: VERSION_ID, transcription_run_id: null,
+      })),
+      getVersionById: jest.fn(async () => ({ ...provider, transcription_run_id: RUN_ID })),
+    });
+    await expect(loadLocalTranscriptReadModelWithEvidence(SESSION_ID, deps))
+      .resolves.toMatchObject({ evidence: { kind: "available", version: { id: VERSION_ID } } });
+  });
+
+  it("preserves a terminal import ancestor as a legitimate no-provider outcome", async () => {
+    const deps = make({ getVersionById: jest.fn(async () => ({
+      ...edit2, version_origin: "import" as const, parent_version_id: null,
+    })) });
+    await expect(loadLocalTranscriptReadModelWithEvidence(SESSION_ID, deps))
+      .resolves.toMatchObject({ evidence: { kind: "none" } });
+    expect(deps.listSegments).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not guess a cached provider when an intermediate parent is missing", async () => {
+    const deps = make({ getVersionById: jest.fn(async () => null) });
+    await expect(loadLocalTranscriptReadModelWithEvidence(SESSION_ID, deps))
+      .resolves.toMatchObject({
+        rawPlainText: edit3.plain_text,
+        evidence: { kind: "unavailable", reason: "parent_missing" },
+      });
+    expect(deps.listSegments).not.toHaveBeenCalledWith(VERSION_ID);
+  });
+
+  const invalidParents: { label: string; patch: Partial<SyncedTranscriptVersionRecord> }[] = [
+    { label: "id", patch: { id: VERSION_ID } },
+    { label: "workspace", patch: { workspace_id: RUN_ID } },
+    { label: "session", patch: { session_id: RUN_ID } },
+    { label: "current marker", patch: { is_current: true } },
+    { label: "draft status", patch: { version_status: "draft" } },
+    { label: "equal version", patch: { version: 3 } },
+    { label: "higher version", patch: { version: 4 } },
+    { label: "noninteger version", patch: { version: 1.5 } },
+    { label: "zero version", patch: { version: 0 } },
+    { label: "self parent", patch: { parent_version_id: EDIT2_ID } },
+    { label: "malformed parent id", patch: { parent_version_id: "invalid" } },
+  ];
+  it.each(invalidParents)("fails closed on a parent's $label", async ({ patch }) => {
+    const deps = make({ getVersionById: jest.fn(async () => ({ ...edit2, ...patch })) });
+    await expect(loadLocalTranscriptReadModelWithEvidence(SESSION_ID, deps))
+      .resolves.toMatchObject({ evidence: { kind: "unavailable", reason: "invalid_cache" } });
+    expect(deps.listSegments).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a cycle before issuing a repeated parent lookup", async () => {
+    const deps = make({ getVersionById: jest.fn(async () => ({
+      ...edit2, parent_version_id: EDIT3_ID,
+    })) });
+    await expect(loadLocalTranscriptReadModelWithEvidence(SESSION_ID, deps))
+      .resolves.toMatchObject({ evidence: { kind: "unavailable", reason: "invalid_cache" } });
+    expect(deps.getVersionById).toHaveBeenCalledTimes(1);
+  });
+
+  it("distinguishes local read failure from an absent provider ancestor", async () => {
+    const deps = make({ getVersionById: jest.fn(async () => { throw new Error("read failed"); }) });
+    await expect(loadLocalTranscriptReadModelWithEvidence(SESSION_ID, deps))
+      .resolves.toMatchObject({
+        rawPlainText: edit3.plain_text,
+        evidence: { kind: "unavailable", reason: "read_failed" },
+      });
+  });
+
+  it("does not attach malformed provider segments to valid current Full Text", async () => {
+    const deps = make({ listSegments: jest.fn(async (id: string) => id === VERSION_ID
+      ? [segment(0, "bad evidence", { transcript_version_id: EDIT3_ID })] : []) });
+    await expect(loadLocalTranscriptReadModelWithEvidence(SESSION_ID, deps))
+      .resolves.toMatchObject({
+        rawPlainText: edit3.plain_text,
+        segmentRows: [],
+        evidence: { kind: "unavailable", reason: "invalid_cache" },
+      });
+  });
+
+  it("rejects timestamp segments attached to the current user edit", async () => {
+    const deps = make({ listSegments: jest.fn(async () => [
+      segment(0, "not real evidence", { transcript_version_id: EDIT3_ID }),
+    ]) });
+    await expect(loadLocalTranscriptReadModelWithEvidence(SESSION_ID, deps))
+      .rejects.toBeInstanceOf(LocalTranscriptReadError);
+    expect(deps.getVersionById).not.toHaveBeenCalled();
+  });
+
+  it.each([64, 65])("handles a path of %i parents at the exact bound", async (length) => {
+    const id = (index: number) =>
+      `bbbbbbbb-bbbb-4bbb-8bbb-${String(index).padStart(12, "0")}`;
+    const parents: SyncedTranscriptVersionRecord[] = Array.from({ length }, (_, index) => ({
+      ...provider,
+      id: id(index + 1),
+      version: length - index,
+      version_origin: index === length - 1 ? "provider" : "user_edit",
+      parent_version_id: index === length - 1 ? null : id(index + 2),
+    }));
+    const deps = make({
+      getCurrentVersion: jest.fn(async () => ({
+        ...edit3, version: length + 1, parent_version_id: id(1),
+      })),
+      getVersionById: jest.fn(async (input: { versionId: string }) =>
+        parents.find((row) => row.id === input.versionId) ?? null,
+      ),
+      listSegments: jest.fn(async () => []),
+    });
+    const result = await loadLocalTranscriptReadModelWithEvidence(SESSION_ID, deps);
+    expect(result).toMatchObject({ evidence: length === 64
+      ? { kind: "available", source: "ancestor", version: { id: id(64) } }
+      : { kind: "unavailable", reason: "depth_limit" } });
+    expect(deps.getVersionById).toHaveBeenCalledTimes(64);
   });
 });

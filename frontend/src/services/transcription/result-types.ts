@@ -109,6 +109,38 @@ export interface SyncedTranscriptSegment {
   updated_at: string;
 }
 
+/** Maximum number of parent links, including the provider evidence leaf. */
+export const MAX_TRANSCRIPT_LINEAGE_DEPTH = 64;
+
+const isLineageUuid = (value: unknown): value is string =>
+  typeof value === "string" &&
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+
+/** Validate one exact immutable parent link, never nullable run provenance. */
+export const isTranscriptLineageParent = (
+  child: SyncedTranscriptVersionRecord,
+  parent: SyncedTranscriptVersionRecord,
+): boolean =>
+  isLineageUuid(child.id) &&
+  isLineageUuid(child.workspace_id) &&
+  isLineageUuid(child.session_id) &&
+  isLineageUuid(child.parent_version_id) &&
+  isLineageUuid(parent.id) &&
+  parent.id === child.parent_version_id &&
+  parent.id !== child.id &&
+  parent.parent_version_id !== parent.id &&
+  (parent.parent_version_id === null || isLineageUuid(parent.parent_version_id)) &&
+  parent.workspace_id === child.workspace_id &&
+  parent.session_id === child.session_id &&
+  parent.is_current === false &&
+  parent.version_status === "final" &&
+  child.version_status === "final" &&
+  ["provider", "user_edit", "import"].includes(parent.version_origin) &&
+  Number.isSafeInteger(parent.version) &&
+  Number.isSafeInteger(child.version) &&
+  parent.version > 0 &&
+  parent.version < child.version;
+
 export type CurrentTranscriptVersionSnapshot =
   | {
       kind: "empty";
@@ -119,6 +151,12 @@ export type CurrentTranscriptVersionSnapshot =
       kind: "ready";
       currentVersion: SyncedTranscriptVersion;
       currentSegments: SyncedTranscriptSegment[];
+      /**
+       * Non-provider parents in immediate-parent-first order. Excludes current
+       * and evidenceVersion; together they form the complete validated path.
+       * Includes a terminal import parent when no provider evidence exists.
+       */
+      intermediateVersions: SyncedTranscriptVersionRecord[];
       evidenceVersion: SyncedTranscriptVersionRecord | null;
       evidenceSegments: SyncedTranscriptSegment[];
     };

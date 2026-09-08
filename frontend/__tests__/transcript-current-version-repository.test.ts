@@ -1,6 +1,7 @@
 import { openLocalDb } from "@/src/services/sqlite/schema";
 import { runSerializedLocalTransaction } from "@/src/services/sqlite/transaction";
 import {
+  getTranscriptVersionByIdForSession,
   listTranscriptCurrentVersionSyncTargets,
   persistCurrentTranscriptVersionSnapshot,
 } from "@/src/services/sqlite/repository";
@@ -93,6 +94,7 @@ const readySnapshot = (
   kind: "ready",
   currentVersion,
   currentSegments: [],
+  intermediateVersions: [],
   evidenceVersion,
   evidenceSegments: [evidenceSegment],
   ...overrides,
@@ -276,5 +278,173 @@ describe("generic current transcript SQLite persistence", () => {
         sql.includes("INSERT INTO local_transcript_segments"),
       ),
     ).toBe(false);
+  });
+});
+
+describe("3D.1 complete local transcript ancestry", () => {
+  const EDIT3_ID = "88888888-8888-4888-8888-888888888888";
+  const intermediate: SyncedTranscriptVersionRecord = { ...currentVersion, is_current: false };
+  const chain = (): Extract<CurrentTranscriptVersionSnapshot, { kind: "ready" }> => readySnapshot({
+    currentVersion: { ...currentVersion, id: EDIT3_ID, version: 3, parent_version_id: EDIT_VERSION_ID },
+    intermediateVersions: [intermediate],
+  });
+
+  beforeEach(() => jest.clearAllMocks());
+
+  it("persists an unseen intermediate parent in the same snapshot transaction", async () => {
+    const calls: { sql: string; params: unknown[] }[] = [];
+    const db = {
+      getFirstAsync: jest.fn(async (_sql: string, _params?: unknown[]) => null),
+      runAsync: jest.fn(async (sql: string, params: unknown[] = []) => {
+        calls.push({ sql, params });
+        return { changes: 1 };
+      }),
+    };
+    mockedOpen.mockResolvedValue(db as never);
+    const snapshot = chain();
+    await persistCurrentTranscriptVersionSnapshot(snapshot);
+
+    expect(mockedTransaction).toHaveBeenCalledTimes(1);
+    expect(mockedTransaction).toHaveBeenCalledWith(db, expect.any(Function));
+    const inserts = calls.filter((call) => call.sql.includes("INSERT INTO local_transcript_versions"));
+    expect(inserts.map((call) => [call.params[0], call.params[12]])).toEqual([
+      [PROVIDER_VERSION_ID, 0], [EDIT_VERSION_ID, 0], [EDIT3_ID, 1],
+    ]);
+    expect(inserts[1].params[8]).toBe(PROVIDER_VERSION_ID);
+    expect(snapshot.intermediateVersions).toEqual([intermediate]);
+    const segmentInserts = calls.filter((call) => call.sql.includes("INSERT INTO local_transcript_segments"));
+    expect(segmentInserts).toHaveLength(1);
+    expect(segmentInserts[0].params[3]).toBe(PROVIDER_VERSION_ID);
+  });
+
+  it("does not erase timestamp rows of an intermediate import it did not fetch", async () => {
+    const statements: { sql: string; params: unknown[] }[] = [];
+    mockedOpen.mockResolvedValue({
+      getFirstAsync: jest.fn(async () => null),
+      runAsync: jest.fn(async (sql: string, params: unknown[] = []) => {
+        statements.push({ sql, params });
+        return { changes: 1 };
+      }),
+    } as never);
+    await persistCurrentTranscriptVersionSnapshot({
+      ...chain(), intermediateVersions: [{ ...intermediate, version_origin: "import" }],
+    });
+    const deletes = statements.filter((call) => call.sql.includes("DELETE FROM local_transcript_segments"));
+    expect(deletes.map((call) => call.params)).toEqual([[PROVIDER_VERSION_ID], [EDIT3_ID]]);
+  });
+
+  it("accepts a complete terminal-import path without provider evidence", async () => {
+    const runAsync = jest.fn(async (_sql: string, _params?: unknown[]) => ({ changes: 1 }));
+    mockedOpen.mockResolvedValue({ getFirstAsync: jest.fn(async () => null), runAsync } as never);
+    await expect(persistCurrentTranscriptVersionSnapshot({
+      ...chain(),
+      intermediateVersions: [{ ...intermediate, version_origin: "import", parent_version_id: null }],
+      evidenceVersion: null,
+      evidenceSegments: [],
+    })).resolves.toBeUndefined();
+    expect(runAsync).toHaveBeenCalled();
+  });
+
+  const badParents: { label: string; patch: Partial<SyncedTranscriptVersionRecord> }[] = [
+    { label: "identity", patch: { id: SEGMENT_ID } },
+    { label: "workspace", patch: { workspace_id: RUN_ID } },
+    { label: "session", patch: { session_id: RUN_ID } },
+    { label: "current marker", patch: { is_current: true } },
+    { label: "draft", patch: { version_status: "draft" } },
+    { label: "equal version", patch: { version: 3 } },
+    { label: "noninteger version", patch: { version: 1.5 } },
+    { label: "provider in intermediates", patch: { version_origin: "provider" } },
+    { label: "self parent", patch: { parent_version_id: EDIT_VERSION_ID } },
+  ];
+  it.each(badParents)("rejects the intermediate $label before opening SQLite", async ({ patch }) => {
+    await expect(persistCurrentTranscriptVersionSnapshot({
+      ...chain(), intermediateVersions: [{ ...intermediate, ...patch }],
+    })).rejects.toThrow("The transcript ancestry snapshot is invalid.");
+    expect(mockedOpen).not.toHaveBeenCalled();
+    expect(mockedTransaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects a missing intermediate instead of treating the provider as a direct parent", async () => {
+    await expect(persistCurrentTranscriptVersionSnapshot({
+      ...chain(), intermediateVersions: [],
+    })).rejects.toThrow("The transcript ancestry snapshot is invalid.");
+    expect(mockedOpen).not.toHaveBeenCalled();
+  });
+
+  it("rejects a truncated no-evidence snapshot and a repeated ancestor", async () => {
+    await expect(persistCurrentTranscriptVersionSnapshot({
+      ...chain(), evidenceVersion: null, evidenceSegments: [],
+    })).rejects.toThrow("The transcript ancestry snapshot is invalid.");
+    await expect(persistCurrentTranscriptVersionSnapshot({
+      ...chain(), intermediateVersions: [intermediate, intermediate],
+    })).rejects.toThrow("The transcript ancestry snapshot is invalid.");
+    expect(mockedOpen).not.toHaveBeenCalled();
+  });
+
+  it("enforces the same 64-link cap as remote pull and local evidence reads", async () => {
+    const id = (index: number) =>
+      `cccccccc-cccc-4ccc-8ccc-${String(index).padStart(12, "0")}`;
+    const parents = Array.from({ length: 64 }, (_, index) => ({
+      ...intermediate, id: id(index + 1), version: 65 - index,
+      parent_version_id: index === 63 ? PROVIDER_VERSION_ID : id(index + 2),
+    }));
+    await expect(persistCurrentTranscriptVersionSnapshot({
+      ...chain(),
+      currentVersion: { ...chain().currentVersion, version: 66, parent_version_id: id(1) },
+      intermediateVersions: parents,
+    })).rejects.toThrow("The transcript ancestry snapshot is invalid.");
+    expect(mockedOpen).not.toHaveBeenCalled();
+  });
+
+  it("backfills intermediate parents when the same current version is already cached", async () => {
+    const runAsync = jest.fn(async (_sql: string, _params?: unknown[]) => ({ changes: 1 }));
+    mockedOpen.mockResolvedValue({
+      getFirstAsync: jest.fn(async () => ({ id: EDIT3_ID, version: 3 })), runAsync,
+    } as never);
+    await persistCurrentTranscriptVersionSnapshot(chain());
+    const parentInsert = runAsync.mock.calls.find(([sql, params]) =>
+      sql.includes("INSERT INTO local_transcript_versions") && params?.[0] === EDIT_VERSION_ID,
+    );
+    expect(parentInsert?.[1]?.[12]).toBe(0);
+    expect(parentInsert?.[1]?.[8]).toBe(PROVIDER_VERSION_ID);
+  });
+
+  it("preserves the stale-snapshot guard before all ancestor writes", async () => {
+    const runAsync = jest.fn();
+    mockedOpen.mockResolvedValue({
+      getFirstAsync: jest.fn(async () => ({ id: SEGMENT_ID, version: 4 })), runAsync,
+    } as never);
+    await persistCurrentTranscriptVersionSnapshot(chain());
+    expect(runAsync).not.toHaveBeenCalled();
+  });
+
+  it("reads an exact scoped non-current row without fabricating a true marker", async () => {
+    const getFirstAsync = jest.fn(async (_sql: string, _params?: unknown[]) => ({
+      ...intermediate,
+      transcription_run_id: null,
+      created_by: null,
+      language_summary: JSON.stringify(intermediate.language_summary),
+      is_current: 0,
+    }));
+    mockedOpen.mockResolvedValue({ getFirstAsync } as never);
+    const input = { versionId: EDIT_VERSION_ID, workspaceId: WORKSPACE_ID, sessionId: SESSION_ID };
+    await expect(getTranscriptVersionByIdForSession(input)).resolves.toEqual({
+      ...intermediate, transcription_run_id: null, created_by: null,
+    });
+    expect(getFirstAsync).toHaveBeenCalledWith(
+      expect.stringContaining("WHERE id = ? AND workspace_id = ? AND session_id = ?"),
+      [EDIT_VERSION_ID, WORKSPACE_ID, SESSION_ID],
+    );
+  });
+
+  it("returns null for a missing scoped row and rejects a scope/malformed-marker response", async () => {
+    const input = { versionId: EDIT_VERSION_ID, workspaceId: WORKSPACE_ID, sessionId: SESSION_ID };
+    const getFirstAsync = jest.fn(async (_sql: string, _params?: unknown[]) => null as unknown);
+    mockedOpen.mockResolvedValue({ getFirstAsync } as never);
+    await expect(getTranscriptVersionByIdForSession(input)).resolves.toBeNull();
+    getFirstAsync.mockResolvedValue({ ...intermediate, workspace_id: RUN_ID, is_current: 0 });
+    await expect(getTranscriptVersionByIdForSession(input)).rejects.toThrow("The cached transcript version scope is invalid.");
+    getFirstAsync.mockResolvedValue({ ...intermediate, is_current: 2 });
+    await expect(getTranscriptVersionByIdForSession(input)).rejects.toThrow("The cached transcript version scope is invalid.");
   });
 });

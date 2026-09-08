@@ -45,6 +45,7 @@ const readySnapshot: Extract<
     updated_at: NOW,
   },
   currentSegments: [],
+  intermediateVersions: [],
   evidenceVersion: null,
   evidenceSegments: [],
 };

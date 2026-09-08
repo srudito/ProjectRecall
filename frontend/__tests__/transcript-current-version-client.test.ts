@@ -159,6 +159,7 @@ describe("generic current transcript version client", () => {
         id: PROVIDER_VERSION_ID,
         version_origin: "provider",
       },
+      intermediateVersions: [],
       evidenceVersion: null,
       evidenceSegments: [],
     });
@@ -205,6 +206,7 @@ describe("generic current transcript version client", () => {
         plain_text: "corrected transcript",
       },
       currentSegments: [],
+      intermediateVersions: [],
       evidenceVersion: {
         id: PROVIDER_VERSION_ID,
         version_origin: "provider",
@@ -263,6 +265,7 @@ describe("generic current transcript version client", () => {
     expect(snapshot).toMatchObject({
       kind: "ready",
       currentVersion: { id: EDIT_VERSION_3_ID, version: 3 },
+      intermediateVersions: [priorEdit],
       evidenceVersion: { id: PROVIDER_VERSION_ID, version: 1 },
     });
     expect(calls).toContain(`transcript_versions.eq:id=${EDIT_VERSION_ID}`);
@@ -601,5 +604,161 @@ describe("generic current transcript version client", () => {
         mismatchedClient,
       ),
     ).rejects.toMatchObject({ code: "TRANSCRIPT_CURRENT_INVALID" });
+  });
+});
+
+describe("3D.1 complete current-version ancestry snapshots", () => {
+  const input = {
+    sessionId: SESSION_ID,
+    expectedWorkspaceId: WORKSPACE_ID,
+    expectedUserId: USER_ID,
+  };
+
+  it("retains every intermediate edit in immediate-parent-first order", async () => {
+    const calls: string[] = [];
+    const edit4Id = "99999999-9999-4999-8999-999999999999";
+    const edit2 = { ...userEditVersion, is_current: false };
+    const edit3 = {
+      ...edit2,
+      id: EDIT_VERSION_3_ID,
+      version: 3,
+      parent_version_id: EDIT_VERSION_ID,
+      transcription_run_id: null,
+    };
+    const current = {
+      ...edit3,
+      id: edit4Id,
+      version: 4,
+      parent_version_id: EDIT_VERSION_3_ID,
+      is_current: true,
+    };
+    const client = authenticatedClient({
+      transcript_versions: [
+        { data: current, error: null },
+        { data: edit3, error: null },
+        { data: edit2, error: null },
+        { data: { ...providerVersion, is_current: false }, error: null },
+      ],
+      transcript_segments: [
+        { data: [], error: null },
+        { data: [sourceSegment], error: null },
+      ],
+    }, calls);
+
+    const snapshot = await fetchCurrentTranscriptVersionSnapshot(input, client);
+    expect(snapshot).toMatchObject({
+      kind: "ready",
+      currentVersion: { id: edit4Id },
+      intermediateVersions: [edit3, edit2],
+      evidenceVersion: { id: PROVIDER_VERSION_ID },
+    });
+    expect(calls.filter((call) => call === "from:transcript_versions")).toHaveLength(4);
+    expect(calls.filter((call) => call === "from:transcript_segments")).toHaveLength(2);
+    expect(calls).not.toContain(`transcript_versions.eq:transcription_run_id=${RUN_ID}`);
+  });
+
+  it("keeps an import leaf when the complete path has no provider evidence", async () => {
+    const leaf = {
+      ...providerVersion,
+      version_origin: "import",
+      transcription_run_id: null,
+      is_current: false,
+    };
+    const snapshot = await fetchCurrentTranscriptVersionSnapshot(input,
+      authenticatedClient({
+        transcript_versions: [
+          { data: userEditVersion, error: null },
+          { data: leaf, error: null },
+        ],
+        transcript_segments: [{ data: [], error: null }],
+      }, []),
+    );
+    expect(snapshot).toMatchObject({
+      kind: "ready",
+      intermediateVersions: [leaf],
+      evidenceVersion: null,
+      evidenceSegments: [],
+    });
+  });
+
+  it("traverses an import intermediary without inventing timestamp mappings", async () => {
+    const importedParent = {
+      ...userEditVersion,
+      version_origin: "import",
+      is_current: false,
+      transcription_run_id: null,
+    };
+    const current = {
+      ...userEditVersion,
+      id: EDIT_VERSION_3_ID,
+      version: 3,
+      parent_version_id: EDIT_VERSION_ID,
+    };
+    const snapshot = await fetchCurrentTranscriptVersionSnapshot(input,
+      authenticatedClient({
+        transcript_versions: [
+          { data: current, error: null },
+          { data: importedParent, error: null },
+          { data: { ...providerVersion, is_current: false }, error: null },
+        ],
+        transcript_segments: [
+          { data: [], error: null },
+          { data: [sourceSegment], error: null },
+        ],
+      }, []),
+    );
+    expect(snapshot).toMatchObject({
+      kind: "ready",
+      intermediateVersions: [importedParent],
+      evidenceVersion: { id: PROVIDER_VERSION_ID },
+      currentSegments: [],
+    });
+  });
+
+  it("does not return a partial path when a later parent is missing", async () => {
+    const calls: string[] = [];
+    await expect(fetchCurrentTranscriptVersionSnapshot(input,
+      authenticatedClient({
+        transcript_versions: [
+          { data: { ...userEditVersion, id: EDIT_VERSION_3_ID, version: 3,
+            parent_version_id: EDIT_VERSION_ID }, error: null },
+          { data: { ...userEditVersion, is_current: false }, error: null },
+          { data: null, error: null },
+        ],
+        transcript_segments: [{ data: [], error: null }],
+      }, calls),
+    )).rejects.toMatchObject({ code: "TRANSCRIPT_CURRENT_INVALID" });
+    expect(calls.filter((call) => call === "from:transcript_segments")).toHaveLength(1);
+  });
+
+  it("accepts exactly 64 links including the provider, without extra remote reads", async () => {
+    const id = (index: number) =>
+      `aaaaaaaa-aaaa-4aaa-8aaa-${String(index).padStart(12, "0")}`;
+    const parents = Array.from({ length: 63 }, (_, index) => ({
+      ...userEditVersion,
+      id: id(index + 1),
+      version: 64 - index,
+      parent_version_id: index === 62 ? PROVIDER_VERSION_ID : id(index + 2),
+      is_current: false,
+    }));
+    const calls: string[] = [];
+    const snapshot = await fetchCurrentTranscriptVersionSnapshot(input,
+      authenticatedClient({
+        transcript_versions: [
+          { data: { ...userEditVersion, version: 65, parent_version_id: id(1) }, error: null },
+          ...parents.map((data) => ({ data, error: null })),
+          { data: { ...providerVersion, is_current: false }, error: null },
+        ],
+        transcript_segments: [
+          { data: [], error: null },
+          { data: [sourceSegment], error: null },
+        ],
+      }, calls),
+    );
+    expect(snapshot.kind).toBe("ready");
+    if (snapshot.kind !== "ready") throw new Error("Expected ready snapshot.");
+    expect(snapshot.intermediateVersions).toEqual(parents);
+    expect(snapshot.evidenceVersion?.id).toBe(PROVIDER_VERSION_ID);
+    expect(calls.filter((call) => call === "from:transcript_versions")).toHaveLength(65);
   });
 });

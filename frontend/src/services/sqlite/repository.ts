@@ -6,13 +6,15 @@ import * as SQLite from "expo-sqlite";
 import { openLocalDb } from "./schema";
 import { runSerializedLocalTransaction } from "./transaction";
 
-import type {
-  CurrentTranscriptVersionSnapshot,
-  SyncedProcessingJob,
-  SyncedTranscriptSegment,
-  SyncedTranscriptVersion,
-  SyncedTranscriptVersionRecord,
-  SyncedTranscriptionRun,
+import {
+  isTranscriptLineageParent,
+  MAX_TRANSCRIPT_LINEAGE_DEPTH,
+  type CurrentTranscriptVersionSnapshot,
+  type SyncedProcessingJob,
+  type SyncedTranscriptSegment,
+  type SyncedTranscriptVersion,
+  type SyncedTranscriptVersionRecord,
+  type SyncedTranscriptionRun,
 } from "@/src/services/transcription/result-types";
 
 const nowIso = () => new Date().toISOString();
@@ -3120,12 +3122,59 @@ export const listTranscriptCurrentVersionSyncTargets = async (): Promise<
   )) as TranscriptCurrentVersionSyncTarget[];
 };
 
+/** Require an unbroken path before caching any intermediate/evidence rows. */
+const assertCurrentTranscriptLineage = (
+  snapshot: Extract<CurrentTranscriptVersionSnapshot, { kind: "ready" }>,
+): void => {
+  const { currentVersion, intermediateVersions, evidenceVersion } = snapshot;
+  const invalid = () => new Error("The transcript ancestry snapshot is invalid.");
+  if (!Array.isArray(intermediateVersions)) throw invalid();
+
+  if (currentVersion.version_origin !== "user_edit") {
+    if (intermediateVersions.length > 0 || evidenceVersion !== null) {
+      throw invalid();
+    }
+    return;
+  }
+
+  const depth = intermediateVersions.length + (evidenceVersion ? 1 : 0);
+  if (depth > MAX_TRANSCRIPT_LINEAGE_DEPTH) throw invalid();
+
+  const visited = new Set<string>([currentVersion.id]);
+  let child: SyncedTranscriptVersionRecord = currentVersion;
+  for (const parent of intermediateVersions) {
+    if (
+      !parent ||
+      parent.version_origin === "provider" ||
+      visited.has(parent.id) ||
+      !isTranscriptLineageParent(child, parent)
+    ) {
+      throw invalid();
+    }
+    visited.add(parent.id);
+    child = parent;
+  }
+
+  if (evidenceVersion) {
+    if (
+      visited.has(evidenceVersion.id) ||
+      !isTranscriptLineageParent(child, evidenceVersion)
+    ) {
+      throw invalid();
+    }
+  } else if (child.parent_version_id !== null) {
+    // An omitted parent is an incomplete snapshot, not proof of no evidence.
+    throw invalid();
+  }
+};
+
 export const persistCurrentTranscriptVersionSnapshot = async (
   snapshot: Extract<CurrentTranscriptVersionSnapshot, { kind: "ready" }>,
 ): Promise<void> => {
   const {
     currentVersion,
     currentSegments,
+    intermediateVersions,
     evidenceVersion,
     evidenceSegments,
   } = snapshot;
@@ -3156,6 +3205,8 @@ export const persistCurrentTranscriptVersionSnapshot = async (
   ) {
     throw new Error("The transcript evidence snapshot is invalid.");
   }
+
+  assertCurrentTranscriptLineage(snapshot);
 
   const db = await openLocalDb();
   if (!db) return;
@@ -3192,6 +3243,15 @@ export const persistCurrentTranscriptVersionSnapshot = async (
         evidenceVersion,
         evidenceSegments,
       );
+    }
+
+    // Keep all validated intermediate parents, including an unseen edit from
+    // another device. Do not rewrite import segments we did not fetch.
+    for (const ancestor of [...intermediateVersions].reverse()) {
+      await upsertGenericTranscriptVersionOnDb(db, ancestor, false);
+      if (ancestor.version_origin === "user_edit") {
+        await replaceGenericTranscriptSegmentsOnDb(db, ancestor, []);
+      }
     }
 
     await db.runAsync(
@@ -3251,6 +3311,37 @@ export const getCurrentTranscriptVersionForSession = async (
     [sessionId],
   )) as LocalTranscriptVersionRow | null;
   return row ? parseLocalTranscriptVersion(row) : null;
+};
+
+/** Read an exact cached version without promoting its current marker. */
+export const getTranscriptVersionByIdForSession = async (input: {
+  versionId: string;
+  workspaceId: string;
+  sessionId: string;
+}): Promise<SyncedTranscriptVersionRecord | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+  const row = (await db.getFirstAsync(
+    `SELECT *
+       FROM local_transcript_versions
+      WHERE id = ? AND workspace_id = ? AND session_id = ?
+      LIMIT 1`,
+    [input.versionId, input.workspaceId, input.sessionId],
+  )) as LocalTranscriptVersionRow | null;
+  if (!row) return null;
+  if (
+    row.id !== input.versionId ||
+    row.workspace_id !== input.workspaceId ||
+    row.session_id !== input.sessionId ||
+    (row.is_current !== 0 && row.is_current !== 1)
+  ) {
+    throw new Error("The cached transcript version scope is invalid.");
+  }
+  return {
+    ...row,
+    language_summary: parseJsonObject(row.language_summary) ?? {},
+    is_current: row.is_current === 1,
+  };
 };
 
 export const listTranscriptSegmentsForVersion = async (

@@ -7,10 +7,12 @@ import {
   parseSyncedTranscriptVersion,
   parseSyncedTranscriptVersionRecord,
 } from "./result-client";
-import type {
-  CurrentTranscriptVersionSnapshot,
-  SyncedTranscriptSegment,
-  SyncedTranscriptVersionRecord,
+import {
+  isTranscriptLineageParent,
+  MAX_TRANSCRIPT_LINEAGE_DEPTH,
+  type CurrentTranscriptVersionSnapshot,
+  type SyncedTranscriptSegment,
+  type SyncedTranscriptVersionRecord,
 } from "./result-types";
 
 export type CurrentTranscriptVersionClientErrorCode =
@@ -42,7 +44,6 @@ const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SEGMENT_PAGE_SIZE = 500;
 const MAX_SEGMENTS = 100_000;
-const MAX_LINEAGE_DEPTH = 64;
 const VERSION_SELECT =
   "id,workspace_id,session_id,transcription_run_id,created_by,version,version_origin,version_status,parent_version_id,plain_text,language_summary,content_checksum_sha256,is_current,created_at,updated_at";
 const SEGMENT_SELECT =
@@ -211,6 +212,7 @@ export const fetchCurrentTranscriptVersionSnapshot = async (
     throw invalid(new Error("TRANSCRIPT_USER_EDIT_SEGMENTS_FORBIDDEN"));
   }
 
+  const intermediateVersions: SyncedTranscriptVersionRecord[] = [];
   let evidenceVersion: SyncedTranscriptVersionRecord | null = null;
   let evidenceSegments: SyncedTranscriptSegment[] = [];
 
@@ -220,7 +222,7 @@ export const fetchCurrentTranscriptVersionSnapshot = async (
     let parentVersionId = currentVersion.parent_version_id;
 
     for (let depth = 0; parentVersionId !== null; depth += 1) {
-      if (depth >= MAX_LINEAGE_DEPTH) {
+      if (depth >= MAX_TRANSCRIPT_LINEAGE_DEPTH) {
         throw invalid(new Error("TRANSCRIPT_CURRENT_LINEAGE_DEPTH_EXCEEDED"));
       }
       if (visitedVersionIds.has(parentVersionId)) {
@@ -254,11 +256,7 @@ export const fetchCurrentTranscriptVersionSnapshot = async (
       }
       if (
         parentVersion.id !== parentVersionId ||
-        parentVersion.workspace_id !== workspaceId ||
-        parentVersion.session_id !== sessionId ||
-        parentVersion.is_current ||
-        parentVersion.version_status !== "final" ||
-        parentVersion.version >= childVersion.version
+        !isTranscriptLineageParent(childVersion, parentVersion)
       ) {
         throw invalid();
       }
@@ -269,6 +267,7 @@ export const fetchCurrentTranscriptVersionSnapshot = async (
         break;
       }
 
+      intermediateVersions.push(parentVersion);
       childVersion = parentVersion;
       parentVersionId = parentVersion.parent_version_id;
     }
@@ -278,6 +277,7 @@ export const fetchCurrentTranscriptVersionSnapshot = async (
     kind: "ready",
     currentVersion,
     currentSegments,
+    intermediateVersions,
     evidenceVersion,
     evidenceSegments,
   };

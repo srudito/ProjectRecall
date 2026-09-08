@@ -1,12 +1,16 @@
 import {
   getCurrentTranscriptVersionForSession,
+  getTranscriptVersionByIdForSession,
   listTranscriptSegmentsForVersion,
 } from "@/src/services/sqlite/repository";
 import { formatDurationMs } from "@/src/utils/format";
 
-import type {
-  SyncedTranscriptSegment,
-  SyncedTranscriptVersion,
+import {
+  isTranscriptLineageParent,
+  MAX_TRANSCRIPT_LINEAGE_DEPTH,
+  type SyncedTranscriptSegment,
+  type SyncedTranscriptVersion,
+  type SyncedTranscriptVersionRecord,
 } from "./result-types";
 
 export interface LocalTranscriptSegmentReadRow {
@@ -76,7 +80,7 @@ export const formatTranscriptSegmentTimeRange = (
 
 export const buildLocalTranscriptSegmentRows = (
   sessionId: string,
-  version: SyncedTranscriptVersion,
+  version: SyncedTranscriptVersionRecord,
   segments: readonly SyncedTranscriptSegment[],
 ): LocalTranscriptSegmentReadRow[] => {
   let previousIndex = -1;
@@ -150,5 +154,141 @@ export const loadLocalTranscriptReadModel = async (
     segmentRows,
     plainText,
     segmentCount: segmentRows.length,
+  };
+};
+
+/** Provider timestamps never become timestamp mappings for edited Full Text. */
+export type LocalTranscriptEvidenceState =
+  | {
+      kind: "available";
+      source: "current" | "ancestor";
+      version: SyncedTranscriptVersionRecord;
+      segmentRows: LocalTranscriptSegmentReadRow[];
+      segmentCount: number;
+    }
+  | { kind: "none" }
+  | {
+      kind: "unavailable";
+      reason: "parent_missing" | "invalid_cache" | "depth_limit" | "read_failed";
+    };
+
+export type LocalTranscriptReadModelWithEvidence =
+  | { kind: "empty" }
+  | (Extract<LocalTranscriptReadModel, { kind: "ready" }> & {
+      /** Exact stored text for future editing; never trimmed or synthesized. */
+      rawPlainText: string;
+      evidence: LocalTranscriptEvidenceState;
+    });
+
+export interface LocalTranscriptEvidenceReadDependencies
+  extends LocalTranscriptReadDependencies {
+  getVersionById: (input: {
+    versionId: string;
+    workspaceId: string;
+    sessionId: string;
+  }) => Promise<SyncedTranscriptVersionRecord | null>;
+}
+
+const loadLocalProviderEvidence = async (
+  model: Extract<LocalTranscriptReadModel, { kind: "ready" }>,
+  dependencies: LocalTranscriptEvidenceReadDependencies,
+): Promise<LocalTranscriptEvidenceState> => {
+  const { version } = model;
+  if (version.version_origin === "provider") {
+    return {
+      kind: "available",
+      source: "current",
+      version,
+      segmentRows: model.segmentRows,
+      segmentCount: model.segmentCount,
+    };
+  }
+  // Match the remote snapshot contract: only user edits traverse ancestry.
+  if (version.version_origin !== "user_edit") return { kind: "none" };
+
+  const visited = new Set<string>([version.id]);
+  let child: SyncedTranscriptVersionRecord = version;
+  for (let depth = 0; child.parent_version_id !== null; depth += 1) {
+    if (depth >= MAX_TRANSCRIPT_LINEAGE_DEPTH) {
+      return { kind: "unavailable", reason: "depth_limit" };
+    }
+    const parentId = child.parent_version_id;
+    if (visited.has(parentId)) {
+      return { kind: "unavailable", reason: "invalid_cache" };
+    }
+    visited.add(parentId);
+
+    let parent: SyncedTranscriptVersionRecord | null;
+    try {
+      parent = await dependencies.getVersionById({
+        versionId: parentId,
+        workspaceId: version.workspace_id,
+        sessionId: version.session_id,
+      });
+    } catch {
+      return { kind: "unavailable", reason: "read_failed" };
+    }
+    if (!parent) return { kind: "unavailable", reason: "parent_missing" };
+    if (!isTranscriptLineageParent(child, parent)) {
+      return { kind: "unavailable", reason: "invalid_cache" };
+    }
+
+    if (parent.version_origin === "provider") {
+      try {
+        const segments = await dependencies.listSegments(parent.id);
+        const segmentRows = buildLocalTranscriptSegmentRows(
+          version.session_id,
+          parent,
+          segments,
+        );
+        return {
+          kind: "available",
+          source: "ancestor",
+          version: parent,
+          segmentRows,
+          segmentCount: segmentRows.length,
+        };
+      } catch (error) {
+        return {
+          kind: "unavailable",
+          reason: error instanceof LocalTranscriptReadError
+            ? "invalid_cache"
+            : "read_failed",
+        };
+      }
+    }
+    child = parent;
+  }
+  return { kind: "none" };
+};
+
+/**
+ * Opt-in readiness API. The existing reader continues using
+ * loadLocalTranscriptReadModel, so no unlabelled provider evidence is displayed
+ * as timestamps for an edited current version before the later UI milestone.
+ * All reads are local. Missing/invalid ancestry never guesses an older provider.
+ */
+export const loadLocalTranscriptReadModelWithEvidence = async (
+  sessionId: string,
+  overrides: Partial<LocalTranscriptEvidenceReadDependencies> = {},
+): Promise<LocalTranscriptReadModelWithEvidence> => {
+  const dependencies: LocalTranscriptEvidenceReadDependencies = {
+    ...defaultDependencies,
+    getVersionById: getTranscriptVersionByIdForSession,
+    ...overrides,
+  };
+  const model = await loadLocalTranscriptReadModel(sessionId, dependencies);
+  if (model.kind === "empty") return model;
+  if (
+    model.version.version_status !== "final" ||
+    (model.version.version_origin === "user_edit" && model.segmentCount !== 0)
+  ) {
+    throw new LocalTranscriptReadError();
+  }
+
+  return {
+    ...model,
+    rawPlainText: model.version.plain_text,
+    evidence: await loadLocalProviderEvidence(model, dependencies),
   };
 };
