@@ -7,6 +7,21 @@ import { openLocalDb } from "./schema";
 import { runSerializedLocalTransaction } from "./transaction";
 
 import {
+  normalizeTranscriptHistoryError,
+  normalizeTranscriptHistoryPageRequest,
+  normalizeTranscriptHistoryScope,
+  normalizeTranscriptHistoryVersionRequest,
+  parseLocalTranscriptHistorySummary,
+  TranscriptHistoryError,
+  type LocalTranscriptHistoryPage,
+  type LocalTranscriptHistoryVersion,
+  type TranscriptHistoryPageRequest,
+  type TranscriptHistoryReadContext,
+  type TranscriptHistoryScope,
+  type TranscriptHistoryVersionRequest,
+} from "@/src/services/transcription/history-types";
+
+import {
   normalizeTranscriptEditorScope,
   transcriptEditorUuid,
   validateTranscriptEditorText,
@@ -30,6 +45,114 @@ import {
   type SyncedTranscriptVersionRecord,
   type SyncedTranscriptionRun,
 } from "@/src/services/transcription/result-types";
+
+// 3E.1 read-only history: bounded metadata pages and exact Full Text details.
+// No current switching, draft/outbox admission, segments, or network work here.
+const historySummaryColumns = `id, workspace_id, session_id, version, version_origin,
+  version_status, parent_version_id, created_by, transcription_run_id,
+  content_checksum_sha256, created_at, is_current`;
+
+const withTranscriptHistoryDb = async <T>(
+  input: TranscriptHistoryReadContext,
+  operation: (db: SQLite.SQLiteDatabase, scope: TranscriptHistoryScope) => Promise<T>,
+): Promise<T> => {
+  const scope = normalizeTranscriptHistoryScope(input.scope);
+  const assertActive = input.assertActive;
+  if (typeof assertActive !== "function") throw new TranscriptHistoryError("HISTORY_INPUT_INVALID");
+  try {
+    assertActive();
+    const db = await openLocalDb();
+    assertActive();
+    if (!db) throw new TranscriptHistoryError("HISTORY_LOCAL_STORAGE_UNAVAILABLE");
+    const result = await runSerializedLocalTransaction(db, async () => {
+      // Includes time waiting behind another repository transaction.
+      assertActive();
+      const session = await db.getFirstAsync<{
+        id: string; workspace_id: string; status: string; deleted_at: string | null;
+      }>(`SELECT id, workspace_id, status, deleted_at FROM local_sessions
+          WHERE id = ? AND workspace_id = ? LIMIT 1`, [scope.sessionId, scope.workspaceId]);
+      const deleting = await db.getFirstAsync<{ id: string }>(
+        "SELECT id FROM local_session_deletion_queue WHERE session_id = ? LIMIT 1", [scope.sessionId]);
+      if (!session || session.id !== scope.sessionId || session.workspace_id !== scope.workspaceId ||
+          typeof session.status !== "string" || session.deleted_at !== null ||
+          session.status === "deleting" || session.status === "deleted" || deleting) {
+        throw new TranscriptHistoryError("HISTORY_SESSION_UNAVAILABLE");
+      }
+      assertActive();
+      const value = await operation(db, scope);
+      assertActive();
+      return value;
+    });
+    // Do not release private data if identity/lifetime changed during COMMIT.
+    assertActive();
+    return result;
+  } catch (error) {
+    throw normalizeTranscriptHistoryError(error);
+  }
+};
+
+export const listLocalTranscriptHistoryPage = async (
+  input: TranscriptHistoryReadContext & TranscriptHistoryPageRequest,
+): Promise<LocalTranscriptHistoryPage> => {
+  const scope = normalizeTranscriptHistoryScope(input.scope);
+  const { pageSize, cursor } = normalizeTranscriptHistoryPageRequest(scope, input);
+  return withTranscriptHistoryDb({ scope, assertActive: input.assertActive }, async (db) => {
+    const rows = await db.getAllAsync<unknown>(
+      `SELECT ${historySummaryColumns} FROM local_transcript_versions
+        WHERE workspace_id = ? AND session_id = ? AND version_status = 'final'
+          ${cursor ? "AND version <= ? AND version < ?" : ""}
+        ORDER BY version DESC LIMIT ?`,
+      cursor ? [scope.workspaceId, scope.sessionId, cursor.upperVersion, cursor.beforeVersion, pageSize + 1]
+        : [scope.workspaceId, scope.sessionId, pageSize + 1],
+    );
+    if (!Array.isArray(rows) || rows.length > pageSize + 1) throw new TranscriptHistoryError("HISTORY_CACHE_INVALID");
+    const versions = rows.map((row) => parseLocalTranscriptHistorySummary(row, scope));
+    const ids = new Set<string>();
+    let previous = Number.POSITIVE_INFINITY;
+    let currentCount = 0;
+    for (const version of versions) {
+      if (ids.has(version.id) || version.version >= previous ||
+          (cursor && (version.version > cursor.upperVersion || version.version >= cursor.beforeVersion))) {
+        throw new TranscriptHistoryError("HISTORY_CACHE_INVALID");
+      }
+      ids.add(version.id);
+      previous = version.version;
+      if (version.is_current) currentCount += 1;
+    }
+    if (currentCount > 1) throw new TranscriptHistoryError("HISTORY_CACHE_INVALID");
+    const visible = versions.slice(0, pageSize);
+    const upperVersion = cursor?.upperVersion ?? versions[0]?.version ?? null;
+    const last = visible.at(-1);
+    return {
+      scope: { ...scope }, availability: "local_cache_only", versions: visible,
+      windowUpperVersion: upperVersion,
+      nextCursor: versions.length > pageSize && last && upperVersion !== null
+        ? { scope: { ...scope }, upperVersion, beforeVersion: last.version } : null,
+    };
+  });
+};
+
+export const loadLocalTranscriptHistoryVersion = async (
+  input: TranscriptHistoryReadContext & TranscriptHistoryVersionRequest,
+): Promise<LocalTranscriptHistoryVersion> => {
+  const scope = normalizeTranscriptHistoryScope(input.scope);
+  const { versionId, expectedVersion } = normalizeTranscriptHistoryVersionRequest(input);
+  return withTranscriptHistoryDb({ scope, assertActive: input.assertActive }, async (db) => {
+    const row = await db.getFirstAsync<Record<string, unknown>>(
+      `SELECT ${historySummaryColumns}, plain_text FROM local_transcript_versions
+        WHERE id = ? AND workspace_id = ? AND session_id = ? AND version_status = 'final' LIMIT 1`,
+      [versionId, scope.workspaceId, scope.sessionId],
+    );
+    if (!row) return { kind: "not_cached", availability: "local_cache_only", scope: { ...scope }, versionId };
+    const version = parseLocalTranscriptHistorySummary(row, scope);
+    if (version.id !== versionId || (expectedVersion !== undefined && version.version !== expectedVersion) ||
+        typeof row.plain_text !== "string" || (version.version_origin === "user_edit" && row.plain_text.trim().length === 0)) {
+      throw new TranscriptHistoryError("HISTORY_CACHE_INVALID");
+    }
+    return { kind: "ready", availability: "local_cache_only", scope: { ...scope },
+      version, rawPlainText: row.plain_text };
+  });
+};
 
 const nowIso = () => new Date().toISOString();
 
