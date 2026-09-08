@@ -7,6 +7,19 @@ import { openLocalDb } from "./schema";
 import { runSerializedLocalTransaction } from "./transaction";
 
 import {
+  normalizeTranscriptEditorScope,
+  transcriptEditorUuid,
+  validateTranscriptEditorText,
+  TranscriptEditorError,
+  type TranscriptEditorContext,
+  type TranscriptEditorDraftCommand,
+  type TranscriptEditorLocalState,
+  type TranscriptEditorSaveCommand,
+  type TranscriptEditorSaveResult,
+  type TranscriptEditorScope,
+} from "@/src/services/transcription/editor-types";
+
+import {
   isTranscriptLineageParent,
   MAX_TRANSCRIPT_LINEAGE_DEPTH,
   type CurrentTranscriptVersionSnapshot,
@@ -2121,6 +2134,267 @@ export const resetSubmittingTranscriptEditQueue = async (
     [nowIso(), userId],
   );
   return result.changes;
+};
+
+// Guarded editor entry points (3D.2 patch 1). Legacy worker APIs above retain
+// their contracts. The future editor must use these operations, not raw upserts.
+const editorDraftFields = [
+  "user_id", "workspace_id", "session_id", "base_version_id", "plain_text",
+  "created_at", "updated_at",
+] as const;
+
+const editorDraftMatches = (
+  actual: Readonly<TranscriptEditDraftRow> | null,
+  expected: Readonly<TranscriptEditDraftRow> | null,
+): boolean => actual === null || expected === null
+  ? actual === expected
+  : editorDraftFields.every((field) => actual[field] === expected[field]);
+
+const requireEditorDraftExpectation = (
+  scope: Readonly<TranscriptEditorScope>,
+  expected: Readonly<TranscriptEditDraftRow> | null,
+): TranscriptEditDraftRow | null => {
+  if (expected === null) return null;
+  if (!expected || expected.user_id !== scope.userId ||
+      expected.workspace_id !== scope.workspaceId || expected.session_id !== scope.sessionId ||
+      editorDraftFields.some((field) => typeof expected[field] !== "string") ||
+      !Number.isFinite(Date.parse(expected.created_at)) ||
+      !Number.isFinite(Date.parse(expected.updated_at))) {
+    throw new TranscriptEditorError("EDITOR_INPUT_INVALID");
+  }
+  transcriptEditorUuid(expected.base_version_id);
+  return { ...expected };
+};
+
+let lastEditorWriteMs = 0;
+const nextEditorTimestamp = (previous: TranscriptEditDraftRow | null): string => {
+  lastEditorWriteMs = Math.max(Date.now(), lastEditorWriteMs + 1,
+    previous ? Date.parse(previous.updated_at) + 1 : 0);
+  return new Date(lastEditorWriteMs).toISOString();
+};
+
+const withTranscriptEditorDb = async <T>(
+  context: TranscriptEditorContext,
+  operation: (db: SQLite.SQLiteDatabase, scope: TranscriptEditorScope) => Promise<T>,
+): Promise<T> => {
+  const scope = normalizeTranscriptEditorScope(context.scope);
+  context.assertActive();
+  const db = await openLocalDb();
+  if (!db) throw new TranscriptEditorError("EDITOR_LOCAL_STORAGE_UNAVAILABLE");
+  return runSerializedLocalTransaction(db, async () => {
+    context.assertActive();
+    const session = await db.getFirstAsync<{ id: string; workspace_id: string;
+      status: string; deleted_at: string | null }>(
+      `SELECT id, workspace_id, status, deleted_at FROM local_sessions
+        WHERE id = ? AND workspace_id = ? LIMIT 1`, [scope.sessionId, scope.workspaceId]);
+    const deleting = await db.getFirstAsync<{ id: string }>(
+      "SELECT id FROM local_session_deletion_queue WHERE session_id = ? LIMIT 1", [scope.sessionId]);
+    if (!session || session.id !== scope.sessionId || session.workspace_id !== scope.workspaceId ||
+        typeof session.status !== "string" || session.deleted_at !== null || session.status === "deleting" || session.status === "deleted" || deleting) {
+      throw new TranscriptEditorError("EDITOR_SESSION_UNAVAILABLE");
+    }
+    context.assertActive();
+    const value = await operation(db, scope);
+    // If identity/deletion/generation changed while SQL was awaiting, roll back
+    // this operation. Never emit a successful result before COMMIT has finished.
+    context.assertActive();
+    return value;
+  });
+};
+
+const readEditorVersionOnDb = async (
+  db: SQLite.SQLiteDatabase, scope: TranscriptEditorScope, versionId?: string,
+): Promise<SyncedTranscriptVersionRecord | null> => {
+  const row = await db.getFirstAsync<LocalTranscriptVersionRow>(
+    `SELECT * FROM local_transcript_versions WHERE workspace_id = ? AND session_id = ?
+      AND ${versionId ? "id = ?" : "is_current = 1"} LIMIT 1`,
+    versionId ? [scope.workspaceId, scope.sessionId, versionId] : [scope.workspaceId, scope.sessionId]);
+  if (!row) return null;
+  if (row.workspace_id !== scope.workspaceId || row.session_id !== scope.sessionId ||
+      (versionId ? row.id !== versionId : row.is_current !== 1) ||
+      ![0, 1].includes(row.is_current) || row.version_status !== "final" ||
+      !Number.isSafeInteger(row.version) || row.version < 1 ||
+      !["provider", "user_edit", "import"].includes(row.version_origin) ||
+      typeof row.plain_text !== "string") {
+    throw new TranscriptEditorError("EDITOR_CACHE_INVALID");
+  }
+  try { transcriptEditorUuid(row.id); } catch { throw new TranscriptEditorError("EDITOR_CACHE_INVALID"); }
+  return { ...row, language_summary: parseJsonObject(row.language_summary) ?? {}, is_current: row.is_current === 1 };
+};
+
+const readTranscriptEditorStateOnDb = async (
+  db: SQLite.SQLiteDatabase, scope: TranscriptEditorScope,
+): Promise<TranscriptEditorLocalState> => {
+  const currentVersion = await readEditorVersionOnDb(db, scope);
+  const draft = await db.getFirstAsync<TranscriptEditDraftRow>(
+    "SELECT * FROM local_transcript_edit_drafts WHERE user_id = ? AND session_id = ? LIMIT 1",
+    [scope.userId, scope.sessionId]);
+  try { requireEditorDraftExpectation(scope, draft); } catch { throw new TranscriptEditorError("EDITOR_CACHE_INVALID"); }
+  const queue = await db.getAllAsync<TranscriptEditQueueRow>(
+    `SELECT * FROM local_transcript_edit_queue WHERE user_id = ? AND session_id = ?
+      ORDER BY created_at ASC, id ASC`, [scope.userId, scope.sessionId]);
+  for (const row of queue) {
+    if (row.user_id !== scope.userId || row.workspace_id !== scope.workspaceId || row.session_id !== scope.sessionId ||
+        !["pending", "submitting", "failed", "conflict", "succeeded", "cancelled"].includes(row.queue_status) ||
+        !Number.isSafeInteger(row.max_attempts) || row.max_attempts < 1 ||
+        !Number.isSafeInteger(row.attempt_count) || row.attempt_count < 0 || row.attempt_count > row.max_attempts ||
+        typeof row.plain_text !== "string") {
+      throw new TranscriptEditorError("EDITOR_CACHE_INVALID");
+    }
+    try {
+      transcriptEditorUuid(row.id);
+      transcriptEditorUuid(row.expected_current_version_id);
+    } catch { throw new TranscriptEditorError("EDITOR_CACHE_INVALID"); }
+  }
+  const baseVersion = draft ? (draft.base_version_id === currentVersion?.id
+    ? currentVersion : await readEditorVersionOnDb(db, scope, draft.base_version_id)) : null;
+  return { currentVersion, draft, baseVersion, queue };
+};
+
+export const loadTranscriptEditorState = async (
+  context: TranscriptEditorContext,
+): Promise<TranscriptEditorLocalState> => withTranscriptEditorDb(context, readTranscriptEditorStateOnDb);
+
+const requireEditorDraftUnchanged = (
+  state: TranscriptEditorLocalState, expected: TranscriptEditDraftRow | null,
+): void => {
+  if (!editorDraftMatches(state.draft, expected)) throw new TranscriptEditorError("EDITOR_DRAFT_CHANGED");
+};
+
+const requireEditorCurrentBase = (state: TranscriptEditorLocalState, baseId: string): void => {
+  if (!state.currentVersion) throw new TranscriptEditorError("EDITOR_CURRENT_UNAVAILABLE");
+  if (state.currentVersion.id !== baseId) throw new TranscriptEditorError("EDITOR_BASE_CHANGED");
+  // The accepted edit (or server conflict) proves this cached base needs a
+  // refresh. A different text must not become another request against that base.
+  if (state.queue.some((row) => row.expected_current_version_id === baseId &&
+      (row.queue_status === "succeeded" || row.queue_status === "conflict"))) {
+    throw new TranscriptEditorError("EDITOR_REFRESH_REQUIRED");
+  }
+};
+
+const requireNoUnresolvedEditorSave = (state: TranscriptEditorLocalState): void => {
+  // Exhausting retries is not proof that a timed-out RPC never committed.
+  // Preserve every failed snapshot; no cancellation, budget reset or replacement.
+  if (state.queue.some((row) => row.queue_status === "failed")) {
+    throw new TranscriptEditorError("EDITOR_OUTCOME_UNCONFIRMED");
+  }
+  if (state.queue.some((row) => row.queue_status === "pending" || row.queue_status === "submitting")) {
+    throw new TranscriptEditorError("EDITOR_OPERATION_PENDING");
+  }
+};
+
+const writeEditorDraftOnDb = async (
+  db: SQLite.SQLiteDatabase, scope: TranscriptEditorScope,
+  baseId: string, text: string, previous: TranscriptEditDraftRow | null,
+): Promise<TranscriptEditDraftRow> => {
+  if (previous && previous.base_version_id !== baseId) throw new TranscriptEditorError("EDITOR_BASE_PINNED");
+  // An identical replay must not change the compare-and-swap token.
+  if (previous?.plain_text === text) return previous;
+  const timestamp = nextEditorTimestamp(previous);
+  const row: TranscriptEditDraftRow = {
+    user_id: scope.userId, workspace_id: scope.workspaceId, session_id: scope.sessionId,
+    base_version_id: baseId, plain_text: text,
+    created_at: previous?.created_at ?? timestamp, updated_at: timestamp,
+  };
+  if (previous) {
+    const result = await db.runAsync(
+      `UPDATE local_transcript_edit_drafts SET plain_text = ?, updated_at = ?
+        WHERE user_id = ? AND workspace_id = ? AND session_id = ?
+          AND base_version_id = ? AND plain_text = ? AND created_at = ? AND updated_at = ?`,
+      [text, timestamp, scope.userId, scope.workspaceId, scope.sessionId, baseId,
+        previous.plain_text, previous.created_at, previous.updated_at]);
+    if (result.changes !== 1) throw new TranscriptEditorError("EDITOR_DRAFT_CHANGED");
+  } else {
+    await db.runAsync(
+      `INSERT INTO local_transcript_edit_drafts
+        (user_id, workspace_id, session_id, base_version_id, plain_text, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [scope.userId, scope.workspaceId, scope.sessionId, baseId, text, timestamp, timestamp]);
+  }
+  return row;
+};
+
+export const saveGuardedTranscriptEditDraft = async (
+  input: TranscriptEditorContext & TranscriptEditorDraftCommand,
+): Promise<TranscriptEditDraftRow> => {
+  const scope = normalizeTranscriptEditorScope(input.scope);
+  const expected = requireEditorDraftExpectation(scope, input.expectedDraft);
+  const baseId = transcriptEditorUuid(input.baseVersionId);
+  const text = input.plainText;
+  validateTranscriptEditorText(text, true);
+  return withTranscriptEditorDb({ scope, assertActive: input.assertActive }, async (db) => {
+    const state = await readTranscriptEditorStateOnDb(db, scope);
+    requireEditorDraftUnchanged(state, expected);
+    if (!state.draft) requireEditorCurrentBase(state, baseId);
+    return writeEditorDraftOnDb(db, scope, baseId, text, state.draft);
+  });
+};
+
+export const enqueueGuardedTranscriptEditSnapshot = async (
+  input: TranscriptEditorContext & TranscriptEditorSaveCommand,
+): Promise<TranscriptEditorSaveResult> => {
+  const scope = normalizeTranscriptEditorScope(input.scope);
+  const expected = requireEditorDraftExpectation(scope, input.expectedDraft);
+  const baseId = transcriptEditorUuid(input.baseVersionId);
+  const id = transcriptEditorUuid(input.clientVersionId);
+  const text = input.plainText;
+  if (id === baseId) throw new TranscriptEditorError("EDITOR_INPUT_INVALID");
+  validateTranscriptEditorText(text, false);
+  return withTranscriptEditorDb({ scope, assertActive: input.assertActive }, async (db) => {
+    const state = await readTranscriptEditorStateOnDb(db, scope);
+    const sameId = await db.getFirstAsync<TranscriptEditQueueRow>(
+      "SELECT * FROM local_transcript_edit_queue WHERE id = ? LIMIT 1", [id]);
+    const replay = { ...scope, expectedCurrentVersionId: baseId, plainText: text };
+    if (sameId && !transcriptEditQueueReplayMatches(sameId, replay)) {
+      throw new TranscriptEditorError("EDITOR_IDEMPOTENCY_CONFLICT");
+    }
+    // Replay before stale-base/draft checks: a successful prior save may already
+    // have consumed that exact draft and advanced the current version.
+    const existing = sameId ?? state.queue.find((row) => transcriptEditQueueReplayMatches(row, replay));
+    if (existing) return { kind: "existing", operation: existing, draft: state.draft };
+    requireNoUnresolvedEditorSave(state);
+    requireEditorDraftUnchanged(state, expected);
+    if (state.draft && state.draft.base_version_id !== baseId) throw new TranscriptEditorError("EDITOR_BASE_PINNED");
+    if (state.draft && !state.baseVersion) throw new TranscriptEditorError("EDITOR_BASE_UNAVAILABLE");
+    requireEditorCurrentBase(state, baseId);
+    if (state.currentVersion?.plain_text === text) throw new TranscriptEditorError("EDITOR_UNCHANGED");
+    const draft = await writeEditorDraftOnDb(db, scope, baseId, text, state.draft);
+    const timestamp = nowIso();
+    const operation: TranscriptEditQueueRow = {
+      id, user_id: scope.userId, workspace_id: scope.workspaceId, session_id: scope.sessionId,
+      expected_current_version_id: baseId, plain_text: text, queue_status: "pending",
+      attempt_count: 0, max_attempts: 5, next_retry_at: null, last_error_code: null,
+      last_safe_error: null, created_at: timestamp, updated_at: timestamp,
+    };
+    await db.runAsync(
+      `INSERT INTO local_transcript_edit_queue
+        (id, user_id, workspace_id, session_id, expected_current_version_id, plain_text,
+         queue_status, attempt_count, max_attempts, next_retry_at, last_error_code,
+         last_safe_error, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, 5, NULL, NULL, NULL, ?, ?)`,
+      [id, scope.userId, scope.workspaceId, scope.sessionId, baseId, text, timestamp, timestamp]);
+    return { kind: "queued", operation, draft };
+  });
+};
+
+/** Discard only the observed draft. It never cancels or deletes an outbound save. */
+export const discardGuardedTranscriptEditDraft = async (
+  input: TranscriptEditorContext & { expectedDraft: Readonly<TranscriptEditDraftRow> | null },
+): Promise<void> => {
+  const scope = normalizeTranscriptEditorScope(input.scope);
+  const expected = requireEditorDraftExpectation(scope, input.expectedDraft);
+  return withTranscriptEditorDb({ scope, assertActive: input.assertActive }, async (db) => {
+    const state = await readTranscriptEditorStateOnDb(db, scope);
+    requireNoUnresolvedEditorSave(state);
+    requireEditorDraftUnchanged(state, expected);
+    if (!expected) return;
+    const result = await db.runAsync(
+      `DELETE FROM local_transcript_edit_drafts WHERE user_id = ? AND workspace_id = ? AND session_id = ?
+        AND base_version_id = ? AND plain_text = ? AND created_at = ? AND updated_at = ?`,
+      [scope.userId, scope.workspaceId, scope.sessionId, expected.base_version_id,
+        expected.plain_text, expected.created_at, expected.updated_at]);
+    if (result.changes !== 1) throw new TranscriptEditorError("EDITOR_DRAFT_CHANGED");
+  });
 };
 
 export const upsertTranscriptionRequestIntent = async (
