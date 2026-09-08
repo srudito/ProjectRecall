@@ -47,7 +47,7 @@ describe("Milestone 2B.3C timestamped transcript browser source boundary", () =>
     expect(readModel).toContain("seenIds");
   });
 
-  it("does not introduce remote reads, provider calls, playback seeking, or editing", () => {
+  it("does not introduce remote reads, provider calls, playback seeking, or direct transcript mutation", () => {
     const combined = `${transcriptPanel}
 ${readModel}`;
     for (const forbidden of [
@@ -65,4 +65,20 @@ ${readModel}`;
       expect(combined).not.toContain(forbidden);
     }
   });
+  it("hosts the writer outside the tab and uses labelled immutable evidence", () => {
+    expect(sessionScreen).toContain("<TranscriptEditorModal");
+    expect(sessionScreen).toContain("editorScope.userId === userId");
+    expect(sessionScreen).toContain("editorScope.workspaceId === session.workspace_id");
+    expect(transcriptPanel).toContain("loadLocalTranscriptReadModelWithEvidence");
+    expect(transcriptPanel).toContain("evidence.segmentRows");
+    expect(transcriptPanel).toContain("transcript.evidenceProvenance");
+    expect(transcriptPanel).toContain("transcript.evidenceUnavailable");
+    const ui = read("src/components/TranscriptEditorModal.tsx") + read("src/hooks/use-transcript-editor.ts");
+    for (const forbidden of ["getSupabase", ".rpc(", "enqueueGuardedTranscriptEditSnapshot", "updateTranscript", "setPositionAsync"]) {
+      expect(ui).not.toContain(forbidden);
+    }
+    expect(ui).toContain("onRequestClose={requestClose}");
+    expect(ui).not.toContain("maxLength=");
+  });
+
 });

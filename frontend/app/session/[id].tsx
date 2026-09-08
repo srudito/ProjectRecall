@@ -7,6 +7,8 @@ import { Screen } from "@/src/components/Screen";
 import { SessionEvidenceAsset } from "@/src/components/SessionEvidenceAsset";
 import { SessionRecordingPanel } from "@/src/components/SessionRecordingPanel";
 import { SessionTranscriptPanel } from "@/src/components/SessionTranscriptPanel";
+import { TranscriptEditorModal } from "@/src/components/TranscriptEditorModal";
+import type { TranscriptEditorScope } from "@/src/services/transcription/editor-types";
 import { useI18n } from "@/src/i18n/I18nProvider";
 import { TimelineEventType } from "@/src/domain/enums";
 import { sortTimeline } from "@/src/services/timeline/ordering";
@@ -108,6 +110,20 @@ export default function SessionDetail() {
   const [deleting, setDeleting] = useState(false);
   const deletingRef = useRef(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [editorScope, setEditorScope] = useState<TranscriptEditorScope | null>(null);
+
+  useEffect(() => {
+    setEditorScope((current) => current && (current.userId !== userId || current.sessionId !== String(id))
+      ? null : current);
+  }, [id, userId]);
+
+  const openEditor = () => {
+    if (Platform.OS === "web" || !session || !userId || deleting ||
+        session.deleted_at != null || session.id !== String(id)) return;
+    setEditorScope((current) => current ?? {
+      userId, workspaceId: session.workspace_id, sessionId: session.id,
+    });
+  };
 
   const loadSession = useCallback(async () => {
     if (!id) return;
@@ -421,7 +437,8 @@ const onOpenProject = () => {
       ) : null}
 
       {tab === "transcript" ? (
-        <SessionTranscriptPanel sessionId={session.id} />
+        <SessionTranscriptPanel sessionId={session.id} workspaceId={session.workspace_id}
+          onEdit={openEditor} editDisabled={!userId || deleting || editorScope !== null} />
       ) : null}
 
       {tab === "timeline" ? (
@@ -491,6 +508,16 @@ const onOpenProject = () => {
             </>
           )}
         </Card>
+      ) : null}
+
+      {Platform.OS !== "web" && editorScope && editorScope.userId === userId &&
+        editorScope.sessionId === session.id && session.id === String(id) &&
+        editorScope.workspaceId === session.workspace_id && session.deleted_at == null && !deleting ? (
+        <TranscriptEditorModal
+          key={`${editorScope.userId}:${editorScope.workspaceId}:${editorScope.sessionId}`}
+          scope={editorScope}
+          onClosed={() => setEditorScope((current) => current === editorScope ? null : current)}
+        />
       ) : null}
 
       <View style={{ height: spacing.lg }} />

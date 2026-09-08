@@ -4,8 +4,8 @@ import { Text, TouchableOpacity, View } from "react-native";
 import { useI18n } from "@/src/i18n/I18nProvider";
 import { subscribeTranscriptionSyncChanges } from "@/src/services/sync/transcription-sync-events";
 import {
-  loadLocalTranscriptReadModel,
-  type LocalTranscriptReadModel,
+  loadLocalTranscriptReadModelWithEvidence,
+  type LocalTranscriptReadModelWithEvidence,
   type LocalTranscriptSegmentReadRow,
 } from "@/src/services/transcription/read-model";
 import { useTheme } from "@/src/theme/ThemeProvider";
@@ -17,10 +17,15 @@ type TranscriptViewMode = "continuous" | "segments";
 
 const SEGMENT_BATCH_SIZE = 100;
 
-export function SessionTranscriptPanel({ sessionId }: { sessionId: string }) {
+export function SessionTranscriptPanel({ sessionId, workspaceId, onEdit, editDisabled }: {
+  sessionId: string;
+  workspaceId?: string;
+  onEdit?: () => void;
+  editDisabled?: boolean;
+}) {
   const { t } = useI18n();
   const { colors, spacing, radii, typography, layout } = useTheme();
-  const [model, setModel] = useState<LocalTranscriptReadModel>({ kind: "empty" });
+  const [model, setModel] = useState<LocalTranscriptReadModelWithEvidence>({ kind: "empty" });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] =
@@ -36,8 +41,11 @@ export function SessionTranscriptPanel({ sessionId }: { sessionId: string }) {
     if (!hasLoadedRef.current) setLoading(true);
 
     try {
-      const nextModel = await loadLocalTranscriptReadModel(sessionId);
+      const nextModel = await loadLocalTranscriptReadModelWithEvidence(sessionId);
       if (requestId !== loadRequestRef.current) return;
+      if (nextModel.kind === "ready" && workspaceId && nextModel.version.workspace_id !== workspaceId) {
+        throw new Error("Transcript scope changed.");
+      }
       setModel(nextModel);
       setError(null);
     } catch {
@@ -49,7 +57,7 @@ export function SessionTranscriptPanel({ sessionId }: { sessionId: string }) {
         setLoading(false);
       }
     }
-  }, [sessionId, t]);
+  }, [sessionId, workspaceId, t]);
 
   useEffect(() => {
     hasLoadedRef.current = false;
@@ -74,9 +82,20 @@ export function SessionTranscriptPanel({ sessionId }: { sessionId: string }) {
   const currentVersionId =
     model.kind === "ready" ? model.version.id : null;
 
+  const evidence = model.kind === "ready" ? model.evidence : null;
+  const evidenceVersionId = evidence?.kind === "available" ? evidence.version.id : null;
+  const ancestor = evidence?.kind === "available" && evidence.source === "ancestor" ? evidence : null;
+  // Never relabel provider evidence as segments belonging to an edited version.
+  const segmentRows = model.kind !== "ready" ? [] : evidence?.kind === "available"
+    ? evidence.segmentRows : model.version.version_origin === "user_edit" ? [] : model.segmentRows;
+  const segmentCount = segmentRows.length;
+  const segmentsEmptyKey = evidence?.kind === "unavailable" ? "transcript.evidenceUnavailable"
+    : model.kind === "ready" && model.version.version_origin === "user_edit" && evidence?.kind === "none"
+      ? "transcript.evidenceNone" : "transcript.noTimestampedSegments";
+
   useEffect(() => {
     setVisibleSegmentCount(SEGMENT_BATCH_SIZE);
-  }, [currentVersionId]);
+  }, [currentVersionId, evidenceVersionId]);
 
   const renderViewModeButton = (
     mode: TranscriptViewMode,
@@ -135,6 +154,9 @@ export function SessionTranscriptPanel({ sessionId }: { sessionId: string }) {
       title={t("session", "transcript.title")}
       testID="session-transcript-panel"
     >
+      {onEdit ? <Button testID="session-transcript-edit" label={t("session", "editor.open")}
+        variant="secondary" onPress={onEdit} disabled={editDisabled}
+        style={{ marginBottom: spacing.sm }} /> : null}
       {loading ? (
         <Text style={[typography.caption, { color: colors.textTertiary }]}>
           {t("common", "status.loading")}
@@ -190,11 +212,17 @@ export function SessionTranscriptPanel({ sessionId }: { sessionId: string }) {
               { color: colors.textTertiary, marginTop: spacing.xxs },
             ]}
           >
-            {t("session", "transcript.metadata", {
+            {t("session", ancestor ? "transcript.editedMetadata" : "transcript.metadata", {
               version: model.version.version,
-              count: model.segmentCount,
+              count: segmentCount,
+              sourceVersion: ancestor?.version.version ?? model.version.version,
             })}
           </Text>
+
+          {ancestor ? <Text testID="session-transcript-evidence-provenance"
+            style={[typography.caption, { color: colors.textSecondary, marginTop: spacing.xs }]}>
+            {t("session", "transcript.evidenceProvenance", { sourceVersion: ancestor.version.version })}
+          </Text> : null}
 
           {error ? (
             <Text
@@ -238,7 +266,7 @@ export function SessionTranscriptPanel({ sessionId }: { sessionId: string }) {
             >
               {model.plainText || t("session", "transcript.emptyContent")}
             </Text>
-          ) : model.segmentRows.length === 0 ? (
+          ) : segmentRows.length === 0 ? (
             <Text
               testID="session-transcript-segments-empty"
               style={[
@@ -246,14 +274,14 @@ export function SessionTranscriptPanel({ sessionId }: { sessionId: string }) {
                 { color: colors.textSecondary, marginTop: spacing.sm },
               ]}
             >
-              {t("session", "transcript.noTimestampedSegments")}
+              {t("session", segmentsEmptyKey)}
             </Text>
           ) : (
             <View
               testID="session-transcript-segment-list"
               style={{ marginTop: spacing.sm }}
             >
-              {model.segmentRows
+              {segmentRows
                 .slice(0, visibleSegmentCount)
                 .map((segment) => {
                   const details = segmentDetails(segment);
@@ -320,12 +348,12 @@ export function SessionTranscriptPanel({ sessionId }: { sessionId: string }) {
                 ]}
               >
                 {t("session", "transcript.segmentProgress", {
-                  shown: Math.min(visibleSegmentCount, model.segmentCount),
-                  total: model.segmentCount,
+                  shown: Math.min(visibleSegmentCount, segmentCount),
+                  total: segmentCount,
                 })}
               </Text>
 
-              {visibleSegmentCount < model.segmentCount ? (
+              {visibleSegmentCount < segmentCount ? (
                 <Button
                   testID="session-transcript-show-more"
                   label={t("session", "transcript.showMoreSegments")}
@@ -334,7 +362,7 @@ export function SessionTranscriptPanel({ sessionId }: { sessionId: string }) {
                     setVisibleSegmentCount((current) =>
                       Math.min(
                         current + SEGMENT_BATCH_SIZE,
-                        model.segmentCount,
+                        segmentCount,
                       ),
                     )
                   }
