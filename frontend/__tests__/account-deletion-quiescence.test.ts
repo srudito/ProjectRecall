@@ -7,6 +7,7 @@ import {
   pauseTranscriptEditSync,
   waitForTranscriptEditSyncIdle,
 } from "@/src/services/sync/transcript-edit-worker";
+import { invalidateTranscriptEditors, waitForTranscriptEditorsIdle } from "@/src/services/transcription/editor-lifecycle";
 import { waitForAccountDeletionBackgroundWork } from "@/src/services/account-deletion/quiescence";
 
 jest.mock("@/src/services/sync/media-upload-worker", () => ({
@@ -30,7 +31,13 @@ jest.mock("@/src/services/sync/transcript-edit-worker", () => ({
   waitForTranscriptEditSyncIdle: jest.fn(),
 }));
 
+jest.mock("@/src/services/transcription/editor-lifecycle", () => ({
+  invalidateTranscriptEditors: jest.fn(),
+  waitForTranscriptEditorsIdle: jest.fn(),
+}));
+
 const waits: jest.MockedFunction<() => Promise<void>>[] = [
+  waitForTranscriptEditorsIdle as jest.MockedFunction<typeof waitForTranscriptEditorsIdle>,
   waitForTranscriptEditSyncIdle as jest.MockedFunction<typeof waitForTranscriptEditSyncIdle>,
   waitForMediaUploadIdle as jest.MockedFunction<
     typeof waitForMediaUploadIdle
@@ -60,6 +67,9 @@ describe("account deletion background-work quiescence", () => {
     for (const wait of waits) expect(wait).toHaveBeenCalledTimes(1);
     const stop = pauseTranscriptEditSync as jest.Mock;
     const editWait = waitForTranscriptEditSyncIdle as jest.Mock;
+    expect(invalidateTranscriptEditors).toHaveBeenCalledTimes(1);
+    expect((invalidateTranscriptEditors as jest.Mock).mock.invocationCallOrder[0])
+      .toBeLessThan((waitForTranscriptEditorsIdle as jest.Mock).mock.invocationCallOrder[0]);
     expect(stop).toHaveBeenCalledTimes(1);
     expect(stop.mock.invocationCallOrder[0]).toBeLessThan(editWait.mock.invocationCallOrder[0]);
   });
@@ -81,6 +91,28 @@ describe("account deletion background-work quiescence", () => {
       jest.useRealTimers();
     }
   });
+  it("holds cleanup for a retired controller with SQL still queued", async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    (waitForTranscriptEditorsIdle as jest.Mock).mockReturnValue(blocked);
+    let finished = false;
+    const pending = waitForAccountDeletionBackgroundWork().then(() => { finished = true; });
+    await Promise.resolve();
+    expect(invalidateTranscriptEditors).toHaveBeenCalledTimes(1);
+    expect(finished).toBe(false);
+    release(); await pending; expect(finished).toBe(true);
+  });
+
+  it("does not treat a controller timeout as a successful drain", async () => {
+    jest.useFakeTimers();
+    try {
+      (waitForTranscriptEditorsIdle as jest.Mock).mockReturnValue(new Promise<void>(() => {}));
+      const rejected = expect(waitForAccountDeletionBackgroundWork(50))
+        .rejects.toMatchObject({ code: "ACCOUNT_DELETION_BACKGROUND_WORK_ACTIVE" });
+      await jest.advanceTimersByTimeAsync(50); await rejected;
+    } finally { jest.useRealTimers(); }
+  });
+
   it("holds cleanup until the in-flight edit really drains", async () => {
     let release!: () => void;
     const blocked = new Promise<void>((resolve) => { release = resolve; });

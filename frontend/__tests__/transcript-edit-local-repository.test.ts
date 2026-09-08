@@ -1,6 +1,7 @@
 import { openLocalDb } from "@/src/services/sqlite/schema";
 import { runSerializedLocalTransaction } from "@/src/services/sqlite/transaction";
 import {
+  preserveTranscriptEditorContinuityDraft,
   canSubmitTranscriptEditQueue,
   deferTranscriptEditQueue,
   getNextEligibleTranscriptEditQueue,
@@ -47,6 +48,155 @@ const mockedOpenLocalDb = openLocalDb as jest.MockedFunction<
 const mockedTransaction = runSerializedLocalTransaction as jest.MockedFunction<
   typeof runSerializedLocalTransaction
 >;
+
+describe("3D.2B2 live draft continuity", () => {
+  const NOW = "2026-09-08T00:00:00.000Z";
+  const NEW_ID = "66666666-6666-4666-8666-666666666666";
+  const scope = { userId: USER_ID, workspaceId: WORKSPACE_ID, sessionId: SESSION_ID };
+  const base = { id: BASE_VERSION_ID, workspace_id: WORKSPACE_ID, session_id: SESSION_ID,
+    version: 1, version_origin: "provider" as const, version_status: "final" as const,
+    parent_version_id: null, plain_text: "Original", content_checksum_sha256: null,
+    created_by: USER_ID, created_at: NOW, transcription_run_id: null };
+  const command = () => ({ scope, assertActive: jest.fn(), plainText: "Continuation",
+    proof: { kind: "observed_base" as const, base: { ...base } } });
+  const succeeded = (): TranscriptEditQueueRow => ({
+    id: CLIENT_VERSION_ID, user_id: USER_ID, workspace_id: WORKSPACE_ID, session_id: SESSION_ID,
+    expected_current_version_id: BASE_VERSION_ID, plain_text: "Saved A", queue_status: "succeeded",
+    attempt_count: 1, max_attempts: 5, next_retry_at: null, last_error_code: null, last_safe_error: null,
+    created_at: NOW, updated_at: NOW,
+  });
+  const completionCommand = () => ({ ...command(), proof: { kind: "completed_save" as const,
+    base: { ...base }, operationId: CLIENT_VERSION_ID, savedPlainText: "Saved A" } });
+  const fixture = () => {
+    const state = { draft: null as TranscriptEditDraftRow | null, queue: [] as TranscriptEditQueueRow[],
+      base: { ...base, is_current: 0, language_summary: "{}", updated_at: NOW } as Record<string, unknown> | null,
+      current: { ...base, id: NEW_ID, version: 2, is_current: 1, language_summary: "{}", updated_at: NOW },
+      deleted: false, failWrite: false };
+    const writes: { sql: string; params: unknown[] }[] = [];
+    const db = {
+      getFirstAsync: jest.fn(async (sql: string, params: unknown[] = []) => {
+        if (sql.includes("local_sessions")) return { id: SESSION_ID, workspace_id: WORKSPACE_ID,
+          status: "recorded", deleted_at: state.deleted ? NOW : null };
+        if (sql.includes("local_session_deletion_queue")) return null;
+        if (sql.includes("local_transcript_edit_drafts")) return state.draft;
+        if (sql.includes("local_transcript_edit_queue")) return state.queue.find((q) => q.id === params[0]) ?? null;
+        if (sql.includes("local_transcript_versions")) return sql.includes("is_current = 1") ? state.current : state.base;
+        throw new Error("Unexpected query");
+      }),
+      getAllAsync: jest.fn(async (_sql: string, _params?: unknown[]) => state.queue.map((row) => ({ ...row }))),
+      runAsync: jest.fn(async (sql: string, params: unknown[] = []) => {
+        if (state.failWrite) throw new Error("Injected write failure");
+        writes.push({ sql, params });
+        if (sql.includes("INSERT INTO local_transcript_edit_drafts")) {
+          state.draft = { user_id: String(params[0]), workspace_id: String(params[1]), session_id: String(params[2]),
+            base_version_id: String(params[3]), plain_text: String(params[4]), created_at: String(params[5]), updated_at: String(params[6]) };
+        } else if (sql.includes("INSERT INTO local_transcript_edit_queue")) {
+          state.queue.push({ ...succeeded(), id: String(params[0]), plain_text: String(params[5]), queue_status: "pending" });
+        } else throw new Error("Unexpected write");
+        return { changes: 1 };
+      }),
+    };
+    mockedOpenLocalDb.mockResolvedValue(db as never);
+    mockedTransaction.mockImplementation(async (_db, task) => {
+      const before = state.draft && { ...state.draft };
+      try { return await task(); } catch (error) { state.draft = before; throw error; }
+    });
+    return { db, state, writes };
+  };
+  beforeEach(() => jest.clearAllMocks());
+  afterEach(() => { mockedTransaction.mockImplementation(async (_db, task) => task()); });
+
+  it("preserves the observed historical base without writing versions, evidence or an outbox", async () => {
+    const { state, writes } = fixture(); await preserveTranscriptEditorContinuityDraft(command());
+    expect(state.draft).toMatchObject({ base_version_id: BASE_VERSION_ID, plain_text: "Continuation" });
+    expect(writes).toHaveLength(1); expect(writes[0].sql).toContain("local_transcript_edit_drafts");
+    expect(state.queue).toEqual([]);
+  });
+  it("allows a blank newer draft after a confirmed Save, without reviving the saved text", async () => {
+    const { state } = fixture(); state.queue = [succeeded()];
+    await preserveTranscriptEditorContinuityDraft({ ...completionCommand(), plainText: "" });
+    expect(state.draft?.plain_text).toBe(""); expect(state.draft?.base_version_id).toBe(BASE_VERSION_ID);
+    expect(state.queue[0].queue_status).toBe("succeeded");
+  });
+  it("requires a real succeeded operation, not just absence of the draft", async () => {
+    const { writes } = fixture();
+    await expect(preserveTranscriptEditorContinuityDraft(completionCommand())).rejects.toMatchObject({ code: "EDITOR_RECOVERY_REJECTED" });
+    expect(writes).toEqual([]);
+  });
+  it.each(["pending", "failed", "conflict", "cancelled"] as const)("does not recover from a %s operation", async (status) => {
+    const { state, writes } = fixture(); state.queue = [{ ...succeeded(), queue_status: status }];
+    await expect(preserveTranscriptEditorContinuityDraft(completionCommand())).rejects.toBeInstanceOf(TranscriptEditorError);
+    expect(writes).toEqual([]);
+  });
+  it("does not recreate the identical already-saved text", async () => {
+    const { state } = fixture(); state.queue = [succeeded()];
+    await expect(preserveTranscriptEditorContinuityDraft({ ...completionCommand(), plainText: "Saved A" }))
+      .rejects.toMatchObject({ code: "EDITOR_RECOVERY_REJECTED" });
+    expect(state.draft).toBeNull();
+  });
+  it("never uses first-autosave observation to bypass a prior outbound operation", async () => {
+    const { state } = fixture(); state.queue = [succeeded()];
+    await expect(preserveTranscriptEditorContinuityDraft(command())).rejects.toMatchObject({ code: "EDITOR_RECOVERY_REJECTED" });
+  });
+  it("requires the same immutable saved payload and operation ID", async () => {
+    const { state } = fixture(); state.queue = [{ ...succeeded(), plain_text: "Different" }];
+    await expect(preserveTranscriptEditorContinuityDraft(completionCommand())).rejects.toMatchObject({ code: "EDITOR_RECOVERY_REJECTED" });
+  });
+  it("does not overwrite even an identical replacement draft", async () => {
+    const { state, writes } = fixture(); state.draft = { user_id: USER_ID, workspace_id: WORKSPACE_ID, session_id: SESSION_ID,
+      base_version_id: BASE_VERSION_ID, plain_text: "Continuation", created_at: NOW, updated_at: NOW };
+    await expect(preserveTranscriptEditorContinuityDraft(command())).rejects.toMatchObject({ code: "EDITOR_DRAFT_CHANGED" });
+    expect(writes).toEqual([]);
+  });
+  it.each(["plain_text", "version", "parent_version_id", "content_checksum_sha256", "created_by"])("rejects an observation with changed immutable %s", async (field) => {
+    const { state } = fixture(); state.base![field] = field === "version" ? 7 : "changed";
+    await expect(preserveTranscriptEditorContinuityDraft(command())).rejects.toMatchObject({ code: "EDITOR_RECOVERY_REJECTED" });
+  });
+  it("rejects a missing base instead of guessing the latest provider", async () => {
+    const { state } = fixture(); state.base = null;
+    await expect(preserveTranscriptEditorContinuityDraft(command())).rejects.toMatchObject({ code: "EDITOR_RECOVERY_REJECTED" });
+  });
+  it("uses the existing deleted-session guard on recovery", async () => {
+    const { state } = fixture(); state.deleted = true;
+    await expect(preserveTranscriptEditorContinuityDraft(command())).rejects.toMatchObject({ code: "EDITOR_SESSION_UNAVAILABLE" });
+    expect(state.draft).toBeNull();
+  });
+  it("rolls back recovery when ownership is invalidated during a write", async () => {
+    const { state, writes } = fixture();
+    await expect(preserveTranscriptEditorContinuityDraft({ ...command(), assertActive: () => {
+      if (writes.length > 0) throw new TranscriptEditorError("EDITOR_CONTEXT_INACTIVE");
+    } })).rejects.toMatchObject({ code: "EDITOR_CONTEXT_INACTIVE" });
+    expect(state.draft).toBeNull();
+  });
+  it("fails explicitly without SQLite and preserves the original input", async () => {
+    mockedOpenLocalDb.mockResolvedValue(null);
+    await expect(preserveTranscriptEditorContinuityDraft(command())).rejects.toMatchObject({ code: "EDITOR_LOCAL_STORAGE_UNAVAILABLE" });
+  });
+  it("rejects invalid text before opening SQLite", async () => {
+    await expect(preserveTranscriptEditorContinuityDraft({ ...command(), plainText: "a\u0000b" }))
+      .rejects.toMatchObject({ code: "EDITOR_INPUT_INVALID" });
+    expect(mockedOpenLocalDb).not.toHaveBeenCalled();
+  });
+  it("enqueues an older frozen Save without overwriting its already-durable newer draft", async () => {
+    const { state, writes } = fixture(); state.current = { ...state.current, id: BASE_VERSION_ID, version: 1 };
+    state.draft = { user_id: USER_ID, workspace_id: WORKSPACE_ID, session_id: SESSION_ID,
+      base_version_id: BASE_VERSION_ID, plain_text: "New B", created_at: NOW, updated_at: NOW };
+    const result = await enqueueGuardedTranscriptEditSnapshot({ scope, assertActive: jest.fn(),
+      baseVersionId: BASE_VERSION_ID, clientVersionId: CLIENT_VERSION_ID, plainText: "Old A",
+      expectedDraft: { ...state.draft }, preserveNewerDraft: true });
+    expect(result.draft?.plain_text).toBe("New B"); expect(result.operation.plain_text).toBe("Old A");
+    expect(writes).toHaveLength(1); expect(writes[0].sql).toContain("INSERT INTO local_transcript_edit_queue");
+  });
+  it("retains CAS enforcement when newer-draft preservation is requested", async () => {
+    const { state } = fixture(); state.current = { ...state.current, id: BASE_VERSION_ID, version: 1 };
+    state.draft = { user_id: USER_ID, workspace_id: WORKSPACE_ID, session_id: SESSION_ID,
+      base_version_id: BASE_VERSION_ID, plain_text: "New B", created_at: NOW, updated_at: NOW };
+    await expect(enqueueGuardedTranscriptEditSnapshot({ scope, assertActive: jest.fn(),
+      baseVersionId: BASE_VERSION_ID, clientVersionId: CLIENT_VERSION_ID, plainText: "Old A",
+      expectedDraft: null, preserveNewerDraft: true })).rejects.toMatchObject({ code: "EDITOR_DRAFT_CHANGED" });
+    expect(state.queue).toEqual([]);
+  });
+});
 
 describe("3D.2B serialized edit-queue admission", () => {
   const NOW = "2026-09-08T00:00:00.000Z";

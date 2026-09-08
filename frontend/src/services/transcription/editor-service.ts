@@ -6,6 +6,7 @@ import {
   discardGuardedTranscriptEditDraft,
   enqueueGuardedTranscriptEditSnapshot,
   loadTranscriptEditorState,
+  preserveTranscriptEditorContinuityDraft,
   saveGuardedTranscriptEditDraft,
   type TranscriptEditDraftRow,
 } from "@/src/services/sqlite/repository";
@@ -15,7 +16,9 @@ import { useAuthStore } from "@/src/stores/auth-store";
 
 import {
   normalizeTranscriptEditorScope,
+  observeTranscriptEditorBase,
   TranscriptEditorError,
+  type TranscriptEditorContinuityCommand,
   type TranscriptEditorDraftCommand,
   type TranscriptEditorScope,
 } from "./editor-types";
@@ -28,6 +31,7 @@ export interface TranscriptEditorServiceDependencies {
   createId: () => string;
   load: typeof loadTranscriptEditorState;
   saveDraft: typeof saveGuardedTranscriptEditDraft;
+  preserveDraft: typeof preserveTranscriptEditorContinuityDraft;
   enqueue: typeof enqueueGuardedTranscriptEditSnapshot;
   discard: typeof discardGuardedTranscriptEditDraft;
   notifyChanged: () => void;
@@ -42,6 +46,7 @@ const defaults: TranscriptEditorServiceDependencies = {
   createId: () => Crypto.randomUUID(),
   load: loadTranscriptEditorState,
   saveDraft: saveGuardedTranscriptEditDraft,
+  preserveDraft: preserveTranscriptEditorContinuityDraft,
   enqueue: enqueueGuardedTranscriptEditSnapshot,
   discard: discardGuardedTranscriptEditDraft,
   notifyChanged: notifyTranscriptionSyncChanges,
@@ -57,7 +62,7 @@ const captureDraft = (input: TranscriptEditorDraftCommand): TranscriptEditorDraf
   expectedDraft: copyDraft(input.expectedDraft),
 });
 
-/** Local persistence only. Timers, controller state and lifecycle wiring come later. */
+/** Local persistence only; controller/lifecycle own timers and live observations. */
 export const createTranscriptEditorService = (
   scopeInput: Readonly<TranscriptEditorScope>,
   overrides: Partial<TranscriptEditorServiceDependencies> = {},
@@ -110,8 +115,21 @@ export const createTranscriptEditorService = (
         return draft;
       });
     },
-    save: (input: TranscriptEditorDraftCommand & { clientVersionId?: string }) => {
-      const captured = { ...captureDraft(input), clientVersionId: input.clientVersionId };
+    preserveDraft: (input: TranscriptEditorContinuityCommand) => {
+      const proof = input.proof.kind === "completed_save"
+        ? { kind: "completed_save" as const, base: observeTranscriptEditorBase(input.proof.base),
+            operationId: input.proof.operationId, savedPlainText: input.proof.savedPlainText }
+        : { kind: "observed_base" as const, base: observeTranscriptEditorBase(input.proof.base) };
+      const plainText = input.plainText;
+      return perform(async () => {
+        const draft = await dependencies.preserveDraft({ ...context, plainText, proof });
+        notify(false);
+        return draft;
+      });
+    },
+    save: (input: TranscriptEditorDraftCommand & { clientVersionId?: string; preserveNewerDraft?: boolean }) => {
+      const captured = { ...captureDraft(input), clientVersionId: input.clientVersionId,
+        ...(input.preserveNewerDraft === undefined ? {} : { preserveNewerDraft: input.preserveNewerDraft }) };
       return perform(async () => {
         const result = await dependencies.enqueue({
           ...context,

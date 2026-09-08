@@ -4,6 +4,7 @@ import { AppState, Platform } from "react-native";
 
 import { isAccountDeletionLocallyPending } from "@/src/services/account-deletion/state";
 import { useAuthStore } from "@/src/stores/auth-store";
+import { startTranscriptEditorLifecycle } from "@/src/services/transcription/editor-lifecycle";
 
 import { subscribeMetadataSyncChanges } from "./project-sync-events";
 import { requestMetadataSync } from "./project-sync-worker";
@@ -90,6 +91,7 @@ export const startTranscriptEditSyncLifecycle = (): (() => void) => {
  */
 export function ProjectSyncCoordinator() {
   useEffect(() => startTranscriptEditSyncLifecycle(), []);
+  useEffect(() => startTranscriptEditorLifecycle(), []);
   const initialized = useAuthStore((state) => state.initialized);
   const userId = useAuthStore((state) => state.user?.id ?? null);
 

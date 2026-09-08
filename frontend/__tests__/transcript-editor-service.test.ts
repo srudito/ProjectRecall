@@ -1,6 +1,8 @@
 import { createTranscriptEditorService, type TranscriptEditorServiceDependencies } from "@/src/services/transcription/editor-service";
 import {
   MAX_TRANSCRIPT_EDITOR_BYTES,
+  observeTranscriptEditorBase,
+  type TranscriptEditorContinuityCommand,
   normalizeTranscriptEditorScope,
   transcriptEditorUuid,
   TranscriptEditorError,
@@ -15,6 +17,7 @@ import type { TranscriptEditDraftRow, TranscriptEditQueueRow } from "@/src/servi
 
 jest.mock("@/src/services/sqlite/repository", () => ({
   loadTranscriptEditorState: jest.fn(), saveGuardedTranscriptEditDraft: jest.fn(),
+  preserveTranscriptEditorContinuityDraft: jest.fn(),
   enqueueGuardedTranscriptEditSnapshot: jest.fn(), discardGuardedTranscriptEditDraft: jest.fn(),
 }));
 jest.mock("@/src/services/sync/transcript-edit-worker", () => ({ requestTranscriptEditSync: jest.fn() }));
@@ -45,6 +48,7 @@ const dependencies = (overrides: Partial<TranscriptEditorServiceDependencies> = 
   enqueue: jest.fn(async (_input: TranscriptEditorContext & TranscriptEditorSaveCommand): Promise<TranscriptEditorSaveResult> =>
     ({ kind: "queued", operation: { ...queued }, draft: { ...draft } })),
   discard: jest.fn(async (_input: TranscriptEditorContext & { expectedDraft: Readonly<TranscriptEditDraftRow> | null }) => undefined),
+  preserveDraft: jest.fn(async (_input: TranscriptEditorContext & TranscriptEditorContinuityCommand) => ({ ...draft })),
   notifyChanged: jest.fn(), requestSync: jest.fn(), ...overrides,
 });
 
@@ -210,5 +214,48 @@ describe("3D.2 editor text and identity validation", () => {
   });
   it.each(["a\u0000b", "\ud800", "\udc00", "a\ud800x"])("rejects unrepresentable text without substitution (%p)", (text) => {
     expect(() => validateTranscriptEditorText(text, true)).toThrow(TranscriptEditorError);
+  });
+});
+
+describe("3D.2B2 continuity service and frozen retry", () => {
+  const base = observeTranscriptEditorBase({ id: BASE, workspace_id: WORKSPACE, session_id: SESSION,
+    version: 1, version_origin: "provider", version_status: "final", parent_version_id: null,
+    plain_text: "Original", content_checksum_sha256: null, created_by: USER, created_at: NOW,
+    transcription_run_id: null });
+
+  it("copies the live observation and never wakes the remote worker for recovery", async () => {
+    const deps = dependencies(); const service = createTranscriptEditorService(scope, deps);
+    const observed = { ...base }; const input = { plainText: "Local B", proof: { kind: "observed_base" as const, base: observed } };
+    const pending = service.preserveDraft(input); observed.plain_text = "changed"; input.plainText = "different";
+    await pending;
+    expect(deps.preserveDraft).toHaveBeenCalledWith(expect.objectContaining({ plainText: "Local B",
+      proof: { kind: "observed_base", base } }));
+    expect(deps.requestSync).not.toHaveBeenCalled(); expect(deps.notifyChanged).toHaveBeenCalledTimes(1);
+  });
+  it("passes a completed operation identity without letting input override scope or guard", async () => {
+    const deps = dependencies(); const service = createTranscriptEditorService(scope, deps);
+    await service.preserveDraft({ plainText: "Local B", proof: { kind: "completed_save", base,
+      operationId: CLIENT, savedPlainText: "Saved A" } });
+    expect(deps.preserveDraft).toHaveBeenCalledWith({ scope, assertActive: expect.any(Function),
+      plainText: "Local B", proof: { kind: "completed_save", base, operationId: CLIENT, savedPlainText: "Saved A" } });
+  });
+  it("retains explicit recovery errors and hides raw database failures", async () => {
+    const deps = dependencies({ preserveDraft: jest.fn(async () => { throw new Error("private SQL text"); }) });
+    const service = createTranscriptEditorService(scope, deps);
+    await expect(service.preserveDraft({ plainText: "B", proof: { kind: "observed_base", base } }))
+      .rejects.toMatchObject({ code: "EDITOR_LOCAL_STORAGE_FAILED" });
+    expect(deps.notifyChanged).not.toHaveBeenCalled();
+  });
+  it("rejects recovery for an invalidated context", async () => {
+    const deps = dependencies({ isContextActive: () => false });
+    await expect(createTranscriptEditorService(scope, deps).preserveDraft({ plainText: "B", proof: { kind: "observed_base", base } }))
+      .rejects.toMatchObject({ code: "EDITOR_CONTEXT_INACTIVE" });
+    expect(deps.preserveDraft).not.toHaveBeenCalled();
+  });
+  it("captures newer-draft preservation on frozen Save without replacing its UUID", async () => {
+    const deps = dependencies(); const input = { ...command(), clientVersionId: CLIENT, preserveNewerDraft: true };
+    const pending = createTranscriptEditorService(scope, deps).save(input); input.preserveNewerDraft = false; await pending;
+    expect(deps.enqueue).toHaveBeenCalledWith(expect.objectContaining({ clientVersionId: CLIENT, preserveNewerDraft: true }));
+    expect(deps.createId).not.toHaveBeenCalled();
   });
 });

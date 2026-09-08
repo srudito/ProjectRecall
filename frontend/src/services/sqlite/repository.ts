@@ -11,6 +11,7 @@ import {
   transcriptEditorUuid,
   validateTranscriptEditorText,
   TranscriptEditorError,
+  type TranscriptEditorContinuityCommand,
   type TranscriptEditorContext,
   type TranscriptEditorDraftCommand,
   type TranscriptEditorLocalState,
@@ -2455,6 +2456,7 @@ export const enqueueGuardedTranscriptEditSnapshot = async (
   const expected = requireEditorDraftExpectation(scope, input.expectedDraft);
   const baseId = transcriptEditorUuid(input.baseVersionId);
   const id = transcriptEditorUuid(input.clientVersionId);
+  const preserveNewerDraft = input.preserveNewerDraft === true;
   const text = input.plainText;
   if (id === baseId) throw new TranscriptEditorError("EDITOR_INPUT_INVALID");
   validateTranscriptEditorText(text, false);
@@ -2476,7 +2478,11 @@ export const enqueueGuardedTranscriptEditSnapshot = async (
     if (state.draft && !state.baseVersion) throw new TranscriptEditorError("EDITOR_BASE_UNAVAILABLE");
     requireEditorCurrentBase(state, baseId);
     if (state.currentVersion?.plain_text === text) throw new TranscriptEditorError("EDITOR_UNCHANGED");
-    const draft = await writeEditorDraftOnDb(db, scope, baseId, text, state.draft);
+    // All original base, unresolved-operation and CAS guards above still apply.
+    // Only the controller retrying an older frozen action requests preservation.
+    const draft = preserveNewerDraft && state.draft
+      ? state.draft
+      : await writeEditorDraftOnDb(db, scope, baseId, text, state.draft);
     const timestamp = nowIso();
     const operation: TranscriptEditQueueRow = {
       id, user_id: scope.userId, workspace_id: scope.workspaceId, session_id: scope.sessionId,
@@ -2512,6 +2518,56 @@ export const discardGuardedTranscriptEditDraft = async (
       [scope.userId, scope.workspaceId, scope.sessionId, expected.base_version_id,
         expected.plain_text, expected.created_at, expected.updated_at]);
     if (result.changes !== 1) throw new TranscriptEditorError("EDITOR_DRAFT_CHANGED");
+  });
+};
+
+/**
+ * Preserve a LIVE editor's newer buffer, without rebasing or making an outbox.
+ * The controller owns/revokes the observation capability (including on discard).
+ * Database absence alone is never used as evidence of why a draft disappeared.
+ */
+export const preserveTranscriptEditorContinuityDraft = async (
+  input: TranscriptEditorContext & TranscriptEditorContinuityCommand,
+): Promise<TranscriptEditDraftRow> => {
+  const scope = normalizeTranscriptEditorScope(input.scope);
+  const proof = input.proof;
+  if (!proof || (proof.kind !== "observed_base" && proof.kind !== "completed_save") ||
+      !proof.base || proof.base.workspace_id !== scope.workspaceId ||
+      proof.base.session_id !== scope.sessionId || proof.base.version_status !== "final") {
+    throw new TranscriptEditorError("EDITOR_RECOVERY_REJECTED");
+  }
+  const baseId = transcriptEditorUuid(proof.base.id);
+  const text = input.plainText;
+  validateTranscriptEditorText(text, true);
+  // Capture scalars before the first await; caller mutation cannot widen scope.
+  const base = { ...proof.base };
+  const kind = proof.kind;
+  const operationId = proof.kind === "completed_save" ? transcriptEditorUuid(proof.operationId) : null;
+  const savedText = proof.kind === "completed_save" ? proof.savedPlainText : null;
+  return withTranscriptEditorDb({ scope, assertActive: input.assertActive }, async (db) => {
+    const state = await readTranscriptEditorStateOnDb(db, scope);
+    requireEditorDraftUnchanged(state, null);
+    requireNoUnresolvedEditorSave(state);
+    const stored = await readEditorVersionOnDb(db, scope, baseId);
+    const fields = ["id", "workspace_id", "session_id", "version", "version_origin",
+      "version_status", "parent_version_id", "plain_text", "content_checksum_sha256",
+      "created_by", "created_at", "transcription_run_id"] as const;
+    if (!stored || fields.some((field) => stored[field] !== base[field])) {
+      throw new TranscriptEditorError("EDITOR_RECOVERY_REJECTED");
+    }
+    if (kind === "completed_save") {
+      const operation = state.queue.find((row) => row.id === operationId);
+      if (!operation || operation.queue_status !== "succeeded" ||
+          operation.expected_current_version_id !== baseId ||
+          operation.plain_text !== savedText || text === savedText) {
+        throw new TranscriptEditorError("EDITOR_RECOVERY_REJECTED");
+      }
+    } else if (text === base.plain_text || state.queue.some((row) =>
+      row.expected_current_version_id === baseId)) {
+      // First autosave is not a route to revive a previously saved/discarded edit.
+      throw new TranscriptEditorError("EDITOR_RECOVERY_REJECTED");
+    }
+    return writeEditorDraftOnDb(db, scope, baseId, text, null);
   });
 };
 

@@ -10,6 +10,11 @@ import {
   waitForTranscriptEditSyncIdle,
 } from "@/src/services/sync/transcript-edit-worker";
 
+import {
+  invalidateTranscriptEditors,
+  waitForTranscriptEditorsIdle,
+} from "@/src/services/transcription/editor-lifecycle";
+
 const DEFAULT_IDLE_TIMEOUT_MS = 20_000;
 
 const withTimeout = async (
@@ -47,9 +52,11 @@ export const waitForAccountDeletionBackgroundWork = async (
 ): Promise<void> => {
   // Close edit admission and invalidate scheduled callbacks BEFORE taking the
   // idle snapshot. The account-deletion marker prevents lifecycle resumption.
+  invalidateTranscriptEditors();
   pauseTranscriptEditSync();
   await withTimeout(
     Promise.all([
+      waitForTranscriptEditorsIdle(),
       waitForMetadataSyncIdle(),
       waitForRecordingUploadIdle(),
       waitForMediaUploadIdle(),
