@@ -18,7 +18,7 @@ import type { TranscriptHistoryCloudVersion } from "@/src/services/transcription
 import type { SyncedTranscriptSegment } from "@/src/services/transcription/result-types";
 
 import { openLocalHistoryWriteDb } from "./schema";
-import { withLocalTransactionTurn } from "./transaction";
+import { LocalWriteRecoveryError, retainLocalWriteRecovery, withLocalTransactionTurn } from "./transaction";
 
 export interface HistoryCacheStatement {
   executeAsync(params: SQLiteBindValue[]): Promise<{ changes: number }>;
@@ -30,6 +30,7 @@ export interface HistoryCacheDatabase {
   execAsync(sql: string): Promise<void>;
   prepareAsync(sql: string): Promise<HistoryCacheStatement>;
   closeAsync(): Promise<void>;
+  isInTransactionAsync?(): Promise<boolean>;
 }
 export interface HistoryCacheWriterDependencies {
   open: () => Promise<HistoryCacheDatabase | null>;
@@ -39,6 +40,7 @@ interface OwnedWrite {
   db: HistoryCacheDatabase;
   sessionId: string;
   transactionOpen: boolean;
+  dischargeRecovery?: () => void;
   statements: Set<HistoryCacheStatement>;
 }
 interface WritePlan {
@@ -149,8 +151,8 @@ const planWrites = async (db: HistoryCacheDatabase, data: PreparedHistoryCacheDa
 };
 
 /**
- * Dedicated connection + shared cooperative turn. Direct existing writers do
- * not join that turn: activation still requires the two-way contention gate.
+ * Dedicated connection + shared write lane. Repository mutations join the
+ * lane; native contention/immutable-provenance acceptance still gates activation.
  * No RPC, queue mutation, current promotion, notification, or automatic retry.
  */
 export const createHistoryCacheWriter = (overrides: Partial<HistoryCacheWriterDependencies> = {}) => {
@@ -175,10 +177,27 @@ export const createHistoryCacheWriter = (overrides: Partial<HistoryCacheWriterDe
     }
     try {
       await owner.db.closeAsync();
+      owner.transactionOpen = false;
+      owner.dischargeRecovery?.(); owner.dischargeRecovery = undefined;
       retained.delete(owner);
       return true;
     } catch {
+      // Only an unresolved transaction is a database-wide write barrier. A
+      // confirmed COMMIT/ROLLBACK plus failed close still blocks this owner's
+      // drain, but does not needlessly block unrelated main-connection writes.
+      if (owner.transactionOpen && owner.db.isInTransactionAsync) {
+        try { if (await owner.db.isInTransactionAsync() === false) owner.transactionOpen = false; }
+        catch { /* Unknown native state must remain gated. */ }
+      }
       retained.add(owner);
+      if (owner.transactionOpen && !owner.dischargeRecovery) {
+        owner.dischargeRecovery = retainLocalWriteRecovery(async () => {
+          await release(owner);
+          if (owner.transactionOpen) throw new LocalWriteRecoveryError();
+        });
+      } else if (!owner.transactionOpen) {
+        owner.dischargeRecovery?.(); owner.dischargeRecovery = undefined;
+      }
       return false;
     }
   };
@@ -198,8 +217,9 @@ export const createHistoryCacheWriter = (overrides: Partial<HistoryCacheWriterDe
       data.assertActive();
       await db.execAsync("PRAGMA query_only = OFF; PRAGMA read_uncommitted = OFF; PRAGMA secure_delete = ON; PRAGMA busy_timeout = 250;");
       data.assertActive();
-      await db.execAsync("BEGIN IMMEDIATE;");
+      // An unacknowledged BEGIN can still have opened the native transaction.
       owner.transactionOpen = true;
+      await db.execAsync("BEGIN IMMEDIATE;");
       data.assertActive();
       const plan = await planWrites(db, data);
       if (plan === null) result = historyCacheResult("deferred_to_result_sync", "HISTORY_CACHE_RESULT_SYNC_OWNED");
@@ -264,7 +284,13 @@ export const createHistoryCacheWriter = (overrides: Partial<HistoryCacheWriterDe
     const pending = dependencies.withTurn(() => execute(data));
     active.set(pending, data.scope.sessionId);
     try { return await pending; }
-    finally { active.delete(pending); }
+    catch (failure) {
+      if (failure instanceof LocalWriteRecoveryError) return {
+        ...historyCacheResult("retryable", "HISTORY_CACHE_RESOURCES_PENDING"),
+        resources: "pending", resourceError: "HISTORY_CACHE_RESOURCES_PENDING",
+      };
+      throw failure;
+    } finally { active.delete(pending); }
   };
   const waitForIdle = async (sessionId?: string): Promise<void> => {
     const relevant = () => [...active].filter(([, id]) => sessionId === undefined || id === sessionId.toLowerCase()).map(([p]) => p);

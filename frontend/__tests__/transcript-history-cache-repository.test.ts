@@ -6,7 +6,9 @@ import { Platform } from "react-native";
 import { createHistoryCacheWriter, type HistoryCacheDatabase } from "@/src/services/sqlite/history-cache";
 import { openLocalDb, openLocalHistoryWriteDb, __resetOpenLocalDbForTests } from "@/src/services/sqlite/schema";
 import { runMigrations } from "@/src/services/sqlite/migrations";
-import { __resetSerializedLocalTransactionsForTests } from "@/src/services/sqlite/transaction";
+import {
+  __resetSerializedLocalTransactionsForTests, runSerializedLocalMutation, withLocalTransactionTurn,
+} from "@/src/services/sqlite/transaction";
 import { prepareHistoryCacheCommand, historyCacheError } from "@/src/services/transcription/history-cache-types";
 import { HISTORY_BUNDLE_SOURCE, type TranscriptHistoryBundleResult } from "@/src/services/transcription/history-bundle-types";
 import type { TranscriptHistoryCloudVersion } from "@/src/services/transcription/history-cloud-types";
@@ -273,5 +275,90 @@ describe("owned history writer connection factory", () => {
     Object.defineProperty(Platform, "OS", { configurable: true, value: "web" });
     try { expect(await openLocalHistoryWriteDb()).toBeNull(); expect(open).not.toHaveBeenCalled(); }
     finally { Object.defineProperty(Platform, "OS", previous); }
+  });
+});
+
+describe("history native recovery gates all local writers", () => {
+  it("blocks another writer while rollback and close remain unconfirmed, then recovers before SQL", async () => {
+    const f = fixture(); f.control.failInsertAt = 2; f.control.failRollback = true; f.control.failClose = true;
+    expect(await f.persist()).toMatchObject({ kind: "rejected", resources: "pending" });
+    const next = jest.fn(async () => "recording-saved");
+    await expect(runSerializedLocalMutation({}, next)).rejects.toMatchObject({ code: "LOCAL_WRITE_RECOVERY_PENDING" });
+    expect(next).not.toHaveBeenCalled();
+    expect(await f.persist()).toMatchObject({ kind: "retryable", code: "HISTORY_CACHE_RESOURCES_PENDING", resources: "pending" });
+    expect(f.open).toHaveBeenCalledTimes(1);
+    f.control.failRollback = false; f.control.failClose = false;
+    expect(await runSerializedLocalMutation({}, next)).toBe("recording-saved");
+    expect(next).toHaveBeenCalledTimes(1); expect(f.state().versions).toEqual([]);
+    await f.writer.waitForIdle(); expect(f.db.execAsync).not.toHaveBeenCalledWith("COMMIT;");
+  });
+  it("permits unrelated writers after confirmed COMMIT even while close remains pending", async () => {
+    const f = fixture(); f.control.failClose = true;
+    expect(await f.persist()).toMatchObject({ kind: "committed", resources: "pending" });
+    const closeCount = f.db.closeAsync.mock.calls.length;
+    expect(await runSerializedLocalMutation({}, async () => "saved")).toBe("saved");
+    expect(f.db.closeAsync).toHaveBeenCalledTimes(closeCount);
+    await expect(f.writer.waitForIdle()).rejects.toMatchObject({ code: "HISTORY_CACHE_RESOURCES_PENDING" });
+    f.control.failClose = false; await f.writer.waitForIdle();
+    expect(f.db.execAsync.mock.calls.filter(([sql]) => sql === "COMMIT;")).toHaveLength(1);
+  });
+  it("releases the write barrier after confirmed rollback even if resource close still fails", async () => {
+    const f = fixture(); f.control.failInsertAt = 2; f.control.failRollback = true; f.control.failClose = true;
+    await f.persist(); f.control.failRollback = false;
+    expect(await runSerializedLocalMutation({}, async () => "allowed")).toBe("allowed");
+    const rollbackCount = f.db.execAsync.mock.calls.filter(([sql]) => sql === "ROLLBACK;").length;
+    expect(await runSerializedLocalMutation({}, async () => "allowed-again")).toBe("allowed-again");
+    expect(f.db.execAsync.mock.calls.filter(([sql]) => sql === "ROLLBACK;")).toHaveLength(rollbackCount);
+    await expect(f.writer.waitForIdle()).rejects.toMatchObject({ code: "HISTORY_CACHE_RESOURCES_PENDING" });
+    f.control.failClose = false; await f.writer.waitForIdle();
+  });
+  it("treats a lost BEGIN acknowledgment as possibly holding a transaction", async () => {
+    const f = fixture(); const execute = f.db.execAsync.getMockImplementation()!;
+    f.db.execAsync.mockImplementation(async (sql) => { await execute(sql); if (sql === "BEGIN IMMEDIATE;") throw new Error("lost begin ack"); });
+    f.control.failRollback = true; f.control.failClose = true;
+    expect(await f.persist()).toMatchObject({ kind: "rejected", resources: "pending" });
+    const next = jest.fn(async () => "saved");
+    await expect(runSerializedLocalMutation({}, next)).rejects.toMatchObject({ code: "LOCAL_WRITE_RECOVERY_PENDING" });
+    expect(next).not.toHaveBeenCalled(); f.control.failRollback = false; f.control.failClose = false;
+    expect(await runSerializedLocalMutation({}, next)).toBe("saved"); expect(f.state().versions).toEqual([]);
+  });
+  it("keeps ambiguous COMMIT reporting while recovering native state without COMMIT replay", async () => {
+    const f = fixture(); f.control.commitError = "after"; f.control.failRollback = true; f.control.failClose = true;
+    expect(await f.persist()).toMatchObject({ kind: "indeterminate", resources: "pending", code: "HISTORY_CACHE_COMMIT_UNCONFIRMED" });
+    await expect(runSerializedLocalMutation({}, async () => 1)).rejects.toMatchObject({ code: "LOCAL_WRITE_RECOVERY_PENDING" });
+    f.control.failClose = false;
+    expect(await runSerializedLocalMutation({}, async () => 2)).toBe(2);
+    expect(f.state().versions).toHaveLength(2);
+    expect(f.db.execAsync.mock.calls.filter(([sql]) => sql === "COMMIT;")).toHaveLength(1);
+  });
+  it("can establish autocommit through native inspection when rollback and close reject", async () => {
+    const f = fixture(); f.control.commitError = "after"; f.control.failRollback = true; f.control.failClose = true;
+    const inspect = jest.fn(async () => false);
+    Object.assign(f.db, { isInTransactionAsync: inspect });
+    expect(await f.persist()).toMatchObject({ kind: "indeterminate", resources: "pending" });
+    expect(inspect).toHaveBeenCalledTimes(1);
+    expect(await runSerializedLocalMutation({}, async () => "saved")).toBe("saved");
+    f.control.failClose = false; await f.writer.waitForIdle();
+  });
+  it("does not trust failed native inspection as evidence that a lock ended", async () => {
+    const f = fixture(); f.control.failInsertAt = 2; f.control.failRollback = true; f.control.failClose = true;
+    Object.assign(f.db, { isInTransactionAsync: jest.fn(async () => { throw new Error("PRIVATE"); }) });
+    await f.persist(); const next = jest.fn(async () => "saved");
+    await expect(runSerializedLocalMutation({}, next)).rejects.toMatchObject({ code: "LOCAL_WRITE_RECOVERY_PENDING" });
+    expect(next).not.toHaveBeenCalled(); f.control.failClose = false;
+    expect(await runSerializedLocalMutation({}, next)).toBe("saved");
+  });
+  it("recovers inline without deadlocking a previously queued mutation or deletion drain", async () => {
+    const f = fixture(); const entered = deferred(); const release = deferred();
+    f.control.failInsertAt = 2; f.control.failRollback = true; f.control.failClose = true;
+    f.control.onWrite = async () => { entered.resolve(); await release.promise; };
+    const pending = f.persist(); await entered.promise;
+    // Attach failure handling immediately: this writer is already queued when
+    // the previous owner discovers its failed rollback and close.
+    const next = jest.fn(async () => "saved");
+    const rejected = expect(runSerializedLocalMutation({}, next)).rejects.toMatchObject({ code: "LOCAL_WRITE_RECOVERY_PENDING" });
+    release.resolve(); await pending; await rejected; expect(next).not.toHaveBeenCalled();
+    f.control.failRollback = false; f.control.failClose = false;
+    await f.writer.waitForIdle(); expect(await withLocalTransactionTurn(async () => 1)).toBe(1);
   });
 });

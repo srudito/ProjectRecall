@@ -31,6 +31,9 @@ jest.mock("@/src/services/sqlite/schema", () => ({
 }));
 
 jest.mock("@/src/services/sqlite/transaction", () => ({
+  runSerializedLocalMutation: jest.fn(
+    async (_db: unknown, operation: () => Promise<unknown>) => operation(),
+  ),
   runSerializedLocalTransaction: jest.fn(
     async (_db: unknown, operation: () => Promise<unknown>) => operation(),
   ),

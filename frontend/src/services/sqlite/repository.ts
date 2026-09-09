@@ -5,7 +5,7 @@ import * as SQLite from "expo-sqlite";
 import { Platform } from "react-native";
 
 import { openLocalDb } from "./schema";
-import { runSerializedLocalTransaction } from "./transaction";
+import { runSerializedLocalMutation, runSerializedLocalTransaction } from "./transaction";
 import {
   LocalReadSnapshotError, pauseSessionReadSnapshots, withLocalReadSnapshot,
   type LocalSnapshotQueries,
@@ -380,7 +380,9 @@ const upsertSessionOnDb = async (
 export const upsertSession = async (record: SessionRecord): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await upsertSessionOnDb(db, record);
+  return runSerializedLocalMutation(db, async () => {
+    await upsertSessionOnDb(db, record);
+  });
 };
 
 export const listSessions = async (
@@ -422,39 +424,43 @@ export const updateSessionSyncStatus = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
+  return runSerializedLocalMutation(db, async () => {
 
-  const allowedKeys: (keyof SessionSyncStatusUpdate)[] = [
-    "local_sync_status",
-    "cloud_sync_status",
-    "last_sync_error_code",
-    "last_sync_error_message",
-    "last_synced_at",
-  ];
-  const entries = allowedKeys
-    .filter((key) => Object.prototype.hasOwnProperty.call(patch, key))
-    .map((key) => ({ key, value: patch[key] ?? null }));
+    const allowedKeys: (keyof SessionSyncStatusUpdate)[] = [
+      "local_sync_status",
+      "cloud_sync_status",
+      "last_sync_error_code",
+      "last_sync_error_message",
+      "last_synced_at",
+    ];
+    const entries = allowedKeys
+      .filter((key) => Object.prototype.hasOwnProperty.call(patch, key))
+      .map((key) => ({ key, value: patch[key] ?? null }));
 
-  if (entries.length === 0) return;
+    if (entries.length === 0) return;
 
-  const setSql = entries.map(({ key }) => `${key} = ?`).join(", ");
-  const values: (string | null)[] = entries.map(({ value }) => value);
-  await db.runAsync(
-    `UPDATE local_sessions SET ${setSql} WHERE id = ?`,
-    [...values, id],
-  );
+    const setSql = entries.map(({ key }) => `${key} = ?`).join(", ");
+    const values: (string | null)[] = entries.map(({ value }) => value);
+    await db.runAsync(
+      `UPDATE local_sessions SET ${setSql} WHERE id = ?`,
+      [...values, id],
+    );
+  });
 };
 
 export const softDeleteSession = async (id: string): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  const now = nowIso();
-  await db.runAsync(
-    `UPDATE local_sessions
+  return runSerializedLocalMutation(db, async () => {
+    const now = nowIso();
+    await db.runAsync(
+      `UPDATE local_sessions
         SET deleted_at = ?, status = 'deleting', updated_at = ?,
             local_sync_status = 'local_only', cloud_sync_status = 'local_only'
       WHERE id = ?`,
-    [now, now, id],
-  );
+      [now, now, id],
+    );
+  });
 };
 
 // Per-user session organization preferences -------------------------------
@@ -527,7 +533,9 @@ export const upsertSessionUserPreference = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await upsertSessionUserPreferenceOnDb(db, record);
+  return runSerializedLocalMutation(db, async () => {
+    await upsertSessionUserPreferenceOnDb(db, record);
+  });
 };
 
 export const getSessionUserPreference = async (
@@ -593,27 +601,29 @@ export const updateSessionUserPreferenceSyncStatus = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
+  return runSerializedLocalMutation(db, async () => {
 
-  const allowedKeys: (keyof SessionUserPreferenceSyncStatusUpdate)[] = [
-    "local_sync_status",
-    "cloud_sync_status",
-    "last_sync_error_code",
-    "last_sync_error_message",
-    "last_synced_at",
-  ];
-  const entries = allowedKeys
-    .filter((key) => Object.prototype.hasOwnProperty.call(patch, key))
-    .map((key) => ({ key, value: patch[key] ?? null }));
-  if (entries.length === 0) return;
+    const allowedKeys: (keyof SessionUserPreferenceSyncStatusUpdate)[] = [
+      "local_sync_status",
+      "cloud_sync_status",
+      "last_sync_error_code",
+      "last_sync_error_message",
+      "last_synced_at",
+    ];
+    const entries = allowedKeys
+      .filter((key) => Object.prototype.hasOwnProperty.call(patch, key))
+      .map((key) => ({ key, value: patch[key] ?? null }));
+    if (entries.length === 0) return;
 
-  const assignments = entries.map(({ key }) => `${key} = ?`).join(", ");
-  const values = entries.map(({ value }) => value);
-  await db.runAsync(
-    `UPDATE local_session_user_preferences
+    const assignments = entries.map(({ key }) => `${key} = ?`).join(", ");
+    const values = entries.map(({ value }) => value);
+    await db.runAsync(
+      `UPDATE local_session_user_preferences
         SET ${assignments}
       WHERE id = ?`,
-    [...values, id],
-  );
+      [...values, id],
+    );
+  });
 };
 
 export interface ProjectRecord {
@@ -704,8 +714,9 @@ const serializeLangArray = (v: string[] | null | undefined): string | null => {
 export const upsertProject = async (record: ProjectRecord): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await db.runAsync(
-    `INSERT INTO local_projects
+  return runSerializedLocalMutation(db, async () => {
+    await db.runAsync(
+      `INSERT INTO local_projects
       (id, workspace_id, name, description, status,
        default_spoken_language_mode, default_expected_spoken_languages,
        default_summary_output_language, default_translation_target_language,
@@ -728,27 +739,28 @@ export const upsertProject = async (record: ProjectRecord): Promise<void> => {
        last_sync_error_code=excluded.last_sync_error_code,
        last_sync_error_message=excluded.last_sync_error_message,
        last_synced_at=excluded.last_synced_at`,
-    [
-      record.id,
-      record.workspace_id,
-      record.name,
-      record.description,
-      record.status,
-      record.default_spoken_language_mode,
-      serializeLangArray(record.default_expected_spoken_languages),
-      record.default_summary_output_language,
-      record.default_translation_target_language,
-      record.created_by,
-      record.created_at,
-      record.updated_at,
-      record.deleted_at,
-      record.local_sync_status,
-      record.cloud_sync_status,
-      record.last_sync_error_code,
-      record.last_sync_error_message,
-      record.last_synced_at,
-    ],
-  );
+      [
+        record.id,
+        record.workspace_id,
+        record.name,
+        record.description,
+        record.status,
+        record.default_spoken_language_mode,
+        serializeLangArray(record.default_expected_spoken_languages),
+        record.default_summary_output_language,
+        record.default_translation_target_language,
+        record.created_by,
+        record.created_at,
+        record.updated_at,
+        record.deleted_at,
+        record.local_sync_status,
+        record.cloud_sync_status,
+        record.last_sync_error_code,
+        record.last_sync_error_message,
+        record.last_synced_at,
+      ],
+    );
+  });
 };
 
 export const getProject = async (id: string): Promise<ProjectRecord | null> => {
@@ -792,34 +804,36 @@ export const updateProjectSyncStatus = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
+  return runSerializedLocalMutation(db, async () => {
 
-  const allowedKeys: (keyof ProjectSyncStatusUpdate)[] = [
-    "local_sync_status",
-    "cloud_sync_status",
-    "last_sync_error_code",
-    "last_sync_error_message",
-    "last_synced_at",
-  ];
+    const allowedKeys: (keyof ProjectSyncStatusUpdate)[] = [
+      "local_sync_status",
+      "cloud_sync_status",
+      "last_sync_error_code",
+      "last_sync_error_message",
+      "last_synced_at",
+    ];
 
-  const entries = allowedKeys
-    .filter((key) => Object.prototype.hasOwnProperty.call(patch, key))
-    .map((key) => ({
-      key,
-      value: patch[key] ?? null,
-    }));
+    const entries = allowedKeys
+      .filter((key) => Object.prototype.hasOwnProperty.call(patch, key))
+      .map((key) => ({
+        key,
+        value: patch[key] ?? null,
+      }));
 
-  if (entries.length === 0) return;
+    if (entries.length === 0) return;
 
-  const setSql = entries.map(({ key }) => `${key} = ?`).join(", ");
+    const setSql = entries.map(({ key }) => `${key} = ?`).join(", ");
 
-  const values: (string | null)[] = entries.map(({ value }) => value);
+    const values: (string | null)[] = entries.map(({ value }) => value);
 
-  await db.runAsync(
-    `UPDATE local_projects
+    await db.runAsync(
+      `UPDATE local_projects
      SET ${setSql}
      WHERE id = ?`,
-    [...values, id],
-  );
+      [...values, id],
+    );
+  });
 };
 
 export interface LocalContentSyncFields {
@@ -890,7 +904,9 @@ const upsertNoteOnDb = async (
 export const upsertNote = async (note: NoteRecord): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await upsertNoteOnDb(db, note);
+  return runSerializedLocalMutation(db, async () => {
+    await upsertNoteOnDb(db, note);
+  });
 };
 
 // Backward-compatible name retained for older call sites.
@@ -981,7 +997,9 @@ export const upsertBookmark = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await upsertBookmarkOnDb(db, bookmark);
+  return runSerializedLocalMutation(db, async () => {
+    await upsertBookmarkOnDb(db, bookmark);
+  });
 };
 
 // Backward-compatible name retained for older call sites.
@@ -1074,7 +1092,9 @@ export const upsertTimelineEvent = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await upsertTimelineEventOnDb(db, event);
+  return runSerializedLocalMutation(db, async () => {
+    await upsertTimelineEventOnDb(db, event);
+  });
 };
 
 // Backward-compatible name retained for older call sites.
@@ -1120,26 +1140,28 @@ const updateContentSyncStatus = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
+  return runSerializedLocalMutation(db, async () => {
 
-  const allowedKeys: (keyof ContentSyncStatusUpdate)[] = [
-    "local_sync_status",
-    "cloud_sync_status",
-    "last_sync_error_code",
-    "last_sync_error_message",
-    "last_synced_at",
-  ];
-  const entries = allowedKeys
-    .filter((key) => Object.prototype.hasOwnProperty.call(patch, key))
-    .map((key) => ({ key, value: patch[key] ?? null }));
+    const allowedKeys: (keyof ContentSyncStatusUpdate)[] = [
+      "local_sync_status",
+      "cloud_sync_status",
+      "last_sync_error_code",
+      "last_sync_error_message",
+      "last_synced_at",
+    ];
+    const entries = allowedKeys
+      .filter((key) => Object.prototype.hasOwnProperty.call(patch, key))
+      .map((key) => ({ key, value: patch[key] ?? null }));
 
-  if (entries.length === 0) return;
+    if (entries.length === 0) return;
 
-  const setSql = entries.map(({ key }) => `${key} = ?`).join(", ");
-  const values: (string | null)[] = entries.map(({ value }) => value);
-  await db.runAsync(`UPDATE ${table} SET ${setSql} WHERE id = ?`, [
-    ...values,
-    id,
-  ]);
+    const setSql = entries.map(({ key }) => `${key} = ?`).join(", ");
+    const values: (string | null)[] = entries.map(({ value }) => value);
+    await db.runAsync(`UPDATE ${table} SET ${setSql} WHERE id = ?`, [
+      ...values,
+      id,
+    ]);
+  });
 };
 
 export const updateNoteSyncStatus = (
@@ -1241,7 +1263,9 @@ export const upsertRecording = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await upsertRecordingOnDb(db, record);
+  return runSerializedLocalMutation(db, async () => {
+    await upsertRecordingOnDb(db, record);
+  });
 };
 
 export const getRecording = async (
@@ -1298,26 +1322,28 @@ export const updateRecordingUploadStatus = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
+  return runSerializedLocalMutation(db, async () => {
 
-  const allowedKeys: (keyof RecordingUploadStatusUpdate)[] = [
-    "local_file_uri",
-    "private_storage_path",
-    "file_size",
-    "upload_status",
-    "upload_error_code",
-    "upload_error_message",
-  ];
-  const entries = allowedKeys
-    .filter((key) => Object.prototype.hasOwnProperty.call(patch, key))
-    .map((key) => ({ key, value: patch[key] ?? null }));
-  if (entries.length === 0) return;
+    const allowedKeys: (keyof RecordingUploadStatusUpdate)[] = [
+      "local_file_uri",
+      "private_storage_path",
+      "file_size",
+      "upload_status",
+      "upload_error_code",
+      "upload_error_message",
+    ];
+    const entries = allowedKeys
+      .filter((key) => Object.prototype.hasOwnProperty.call(patch, key))
+      .map((key) => ({ key, value: patch[key] ?? null }));
+    if (entries.length === 0) return;
 
-  const setSql = entries.map(({ key }) => `${key} = ?`).join(", ");
-  const values = entries.map(({ value }) => value as string | number | null);
-  await db.runAsync(
-    `UPDATE local_recordings SET ${setSql}, updated_at = ? WHERE id = ?`,
-    [...values, nowIso(), id],
-  );
+    const setSql = entries.map(({ key }) => `${key} = ?`).join(", ");
+    const values = entries.map(({ value }) => value as string | number | null);
+    await db.runAsync(
+      `UPDATE local_recordings SET ${setSql}, updated_at = ? WHERE id = ?`,
+      [...values, nowIso(), id],
+    );
+  });
 };
 
 export interface MediaAssetRecord {
@@ -1430,7 +1456,9 @@ export const upsertMediaAsset = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await upsertMediaAssetOnDb(db, asset);
+  return runSerializedLocalMutation(db, async () => {
+    await upsertMediaAssetOnDb(db, asset);
+  });
 };
 
 // Backward-compatible name retained for existing callers.
@@ -1478,26 +1506,28 @@ export const updateMediaAssetUploadStatus = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
+  return runSerializedLocalMutation(db, async () => {
 
-  const allowedKeys: (keyof MediaAssetUploadStatusUpdate)[] = [
-    "local_file_uri",
-    "private_storage_path",
-    "file_size",
-    "upload_status",
-    "upload_error_code",
-    "upload_error_message",
-  ];
-  const entries = allowedKeys
-    .filter((key) => Object.prototype.hasOwnProperty.call(patch, key))
-    .map((key) => ({ key, value: patch[key] ?? null }));
-  if (entries.length === 0) return;
+    const allowedKeys: (keyof MediaAssetUploadStatusUpdate)[] = [
+      "local_file_uri",
+      "private_storage_path",
+      "file_size",
+      "upload_status",
+      "upload_error_code",
+      "upload_error_message",
+    ];
+    const entries = allowedKeys
+      .filter((key) => Object.prototype.hasOwnProperty.call(patch, key))
+      .map((key) => ({ key, value: patch[key] ?? null }));
+    if (entries.length === 0) return;
 
-  const setSql = entries.map(({ key }) => `${key} = ?`).join(", ");
-  const values = entries.map(({ value }) => value as string | number | null);
-  await db.runAsync(
-    `UPDATE local_media_assets SET ${setSql}, updated_at = ? WHERE id = ?`,
-    [...values, nowIso(), id],
-  );
+    const setSql = entries.map(({ key }) => `${key} = ?`).join(", ");
+    const values = entries.map(({ value }) => value as string | number | null);
+    await db.runAsync(
+      `UPDATE local_media_assets SET ${setSql}, updated_at = ? WHERE id = ?`,
+      [...values, nowIso(), id],
+    );
+  });
 };
 
 export type UploadQueueStatus =
@@ -1528,8 +1558,9 @@ export interface UploadQueueRow {
 export const enqueueUpload = async (row: UploadQueueRow): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await db.runAsync(
-    `INSERT INTO local_upload_queue
+  return runSerializedLocalMutation(db, async () => {
+    await db.runAsync(
+      `INSERT INTO local_upload_queue
       (id, user_id, workspace_id, session_id, source_entity_type, source_entity_id,
        local_file_uri, target_storage_path, queue_status, attempt_count, next_retry_at,
        last_error_code, last_safe_error, idempotency_key, created_at, updated_at)
@@ -1548,25 +1579,26 @@ export const enqueueUpload = async (row: UploadQueueRow): Promise<void> => {
        last_error_code = NULL,
        last_safe_error = NULL,
        updated_at = excluded.updated_at`,
-    [
-      row.id,
-      row.user_id,
-      row.workspace_id,
-      row.session_id,
-      row.source_entity_type,
-      row.source_entity_id,
-      row.local_file_uri,
-      row.target_storage_path,
-      row.queue_status,
-      row.attempt_count,
-      row.next_retry_at,
-      row.last_error_code,
-      row.last_safe_error,
-      row.idempotency_key,
-      row.created_at,
-      row.updated_at,
-    ],
-  );
+      [
+        row.id,
+        row.user_id,
+        row.workspace_id,
+        row.session_id,
+        row.source_entity_type,
+        row.source_entity_id,
+        row.local_file_uri,
+        row.target_storage_path,
+        row.queue_status,
+        row.attempt_count,
+        row.next_retry_at,
+        row.last_error_code,
+        row.last_safe_error,
+        row.idempotency_key,
+        row.created_at,
+        row.updated_at,
+      ],
+    );
+  });
 };
 
 export const listQueueByStatus = async (
@@ -1629,20 +1661,22 @@ export const claimUploadOperation = async (
 ): Promise<UploadQueueRow | null> => {
   const db = await openLocalDb();
   if (!db) return null;
-  const now = nowIso();
-  const result = await db.runAsync(
-    `UPDATE local_upload_queue
+  return runSerializedLocalMutation(db, async () => {
+    const now = nowIso();
+    const result = await db.runAsync(
+      `UPDATE local_upload_queue
         SET queue_status = 'in_progress',
             attempt_count = attempt_count + 1,
             updated_at = ?
       WHERE id = ? AND queue_status = 'pending'`,
-    [now, id],
-  );
-  if (result.changes !== 1) return null;
-  return (await db.getFirstAsync(
-    `SELECT * FROM local_upload_queue WHERE id = ?`,
-    [id],
-  )) as UploadQueueRow | null;
+      [now, id],
+    );
+    if (result.changes !== 1) return null;
+    return (await db.getFirstAsync(
+      `SELECT * FROM local_upload_queue WHERE id = ?`,
+      [id],
+    )) as UploadQueueRow | null;
+  });
 };
 
 export const rescheduleUploadOperation = async (
@@ -1653,16 +1687,18 @@ export const rescheduleUploadOperation = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await db.runAsync(
-    `UPDATE local_upload_queue
+  return runSerializedLocalMutation(db, async () => {
+    await db.runAsync(
+      `UPDATE local_upload_queue
         SET queue_status = 'pending',
             next_retry_at = ?,
             last_error_code = ?,
             last_safe_error = ?,
             updated_at = ?
       WHERE id = ?`,
-    [nextRetryAt, errorCode, safeError, nowIso(), id],
-  );
+      [nextRetryAt, errorCode, safeError, nowIso(), id],
+    );
+  });
 };
 
 export const markUploadOperationFailed = async (
@@ -1672,16 +1708,18 @@ export const markUploadOperationFailed = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await db.runAsync(
-    `UPDATE local_upload_queue
+  return runSerializedLocalMutation(db, async () => {
+    await db.runAsync(
+      `UPDATE local_upload_queue
         SET queue_status = 'failed',
             next_retry_at = NULL,
             last_error_code = ?,
             last_safe_error = ?,
             updated_at = ?
       WHERE id = ?`,
-    [errorCode, safeError, nowIso(), id],
-  );
+      [errorCode, safeError, nowIso(), id],
+    );
+  });
 };
 
 export const deleteCompletedUploadOperation = async (
@@ -1689,7 +1727,9 @@ export const deleteCompletedUploadOperation = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await db.runAsync(`DELETE FROM local_upload_queue WHERE id = ?`, [id]);
+  return runSerializedLocalMutation(db, async () => {
+    await db.runAsync(`DELETE FROM local_upload_queue WHERE id = ?`, [id]);
+  });
 };
 
 export const deleteUploadOperationsForEntity = async (
@@ -1698,11 +1738,13 @@ export const deleteUploadOperationsForEntity = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await db.runAsync(
-    `DELETE FROM local_upload_queue
+  return runSerializedLocalMutation(db, async () => {
+    await db.runAsync(
+      `DELETE FROM local_upload_queue
       WHERE source_entity_type = ? AND source_entity_id = ?`,
-    [sourceEntityType, sourceEntityId],
-  );
+      [sourceEntityType, sourceEntityId],
+    );
+  });
 };
 
 export const resetInProgressUploadOperations = async (
@@ -1711,31 +1753,33 @@ export const resetInProgressUploadOperations = async (
 ): Promise<number> => {
   const db = await openLocalDb();
   if (!db) return 0;
+  return runSerializedLocalMutation(db, async () => {
 
-  if (sourceEntityType) {
-    const result = await db.runAsync(
-      `UPDATE local_upload_queue
+    if (sourceEntityType) {
+      const result = await db.runAsync(
+        `UPDATE local_upload_queue
           SET queue_status = 'pending',
               next_retry_at = NULL,
               updated_at = ?
         WHERE user_id = ?
           AND source_entity_type = ?
           AND queue_status = 'in_progress'`,
-      [nowIso(), userId, sourceEntityType],
-    );
-    return result.changes;
-  }
+        [nowIso(), userId, sourceEntityType],
+      );
+      return result.changes;
+    }
 
-  const result = await db.runAsync(
-    `UPDATE local_upload_queue
+    const result = await db.runAsync(
+      `UPDATE local_upload_queue
         SET queue_status = 'pending',
             next_retry_at = NULL,
             updated_at = ?
       WHERE user_id = ?
         AND queue_status = 'in_progress'`,
-    [nowIso(), userId],
-  );
-  return result.changes;
+      [nowIso(), userId],
+    );
+    return result.changes;
+  });
 };
 
 export const requeueUploadOperationForEntity = async (
@@ -1744,8 +1788,9 @@ export const requeueUploadOperationForEntity = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await db.runAsync(
-    `UPDATE local_upload_queue
+  return runSerializedLocalMutation(db, async () => {
+    await db.runAsync(
+      `UPDATE local_upload_queue
         SET queue_status = 'pending',
             attempt_count = 0,
             next_retry_at = NULL,
@@ -1753,8 +1798,9 @@ export const requeueUploadOperationForEntity = async (
             last_safe_error = NULL,
             updated_at = ?
       WHERE source_entity_type = ? AND source_entity_id = ?`,
-    [nowIso(), sourceEntityType, sourceEntityId],
-  );
+      [nowIso(), sourceEntityType, sourceEntityId],
+    );
+  });
 };
 
 export const countPendingUploads = async (): Promise<number> => {
@@ -1877,34 +1923,36 @@ export const saveTranscriptEditDraft = async (input: {
   };
   const db = await openLocalDb();
   if (!db) return row;
+  return runSerializedLocalMutation(db, async () => {
 
-  await db.runAsync(
-    `INSERT INTO local_transcript_edit_drafts
+    await db.runAsync(
+      `INSERT INTO local_transcript_edit_drafts
       (user_id, workspace_id, session_id, base_version_id, plain_text,
        created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(user_id, session_id) DO UPDATE SET
        plain_text = excluded.plain_text,
        updated_at = excluded.updated_at`,
-    [
-      row.user_id,
-      row.workspace_id,
-      row.session_id,
-      row.base_version_id,
-      row.plain_text,
-      row.created_at,
-      row.updated_at,
-    ],
-  );
+      [
+        row.user_id,
+        row.workspace_id,
+        row.session_id,
+        row.base_version_id,
+        row.plain_text,
+        row.created_at,
+        row.updated_at,
+      ],
+    );
 
-  const saved = (await db.getFirstAsync(
-    `SELECT *
+    const saved = (await db.getFirstAsync(
+      `SELECT *
        FROM local_transcript_edit_drafts
       WHERE user_id = ? AND session_id = ?
       LIMIT 1`,
-    [row.user_id, row.session_id],
-  )) as TranscriptEditDraftRow | null;
-  return saved ?? row;
+      [row.user_id, row.session_id],
+    )) as TranscriptEditDraftRow | null;
+    return saved ?? row;
+  });
 };
 
 export const getTranscriptEditDraft = async (
@@ -1928,11 +1976,13 @@ export const deleteTranscriptEditDraft = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await db.runAsync(
-    `DELETE FROM local_transcript_edit_drafts
+  return runSerializedLocalMutation(db, async () => {
+    await db.runAsync(
+      `DELETE FROM local_transcript_edit_drafts
       WHERE user_id = ? AND session_id = ?`,
-    [userId, sessionId],
-  );
+      [userId, sessionId],
+    );
+  });
 };
 
 const transcriptEditQueueReplayMatches = (
@@ -2714,9 +2764,10 @@ export const upsertTranscriptionRequestIntent = async (
 ): Promise<TranscriptionRequestQueueRow> => {
   const db = await openLocalDb();
   if (!db) return row;
+  return runSerializedLocalMutation(db, async () => {
 
-  await db.runAsync(
-    `INSERT INTO local_transcription_request_queue
+    await db.runAsync(
+      `INSERT INTO local_transcription_request_queue
       (id, user_id, workspace_id, session_id, recording_id,
        spoken_language_mode, expected_spoken_languages, queue_status,
        attempt_count, max_attempts, next_retry_at, server_job_id,
@@ -2758,36 +2809,37 @@ export const upsertTranscriptionRequestIntent = async (
          ELSE NULL
        END,
        updated_at = excluded.updated_at`,
-    [
-      row.id,
-      row.user_id,
-      row.workspace_id,
-      row.session_id,
-      row.recording_id,
-      row.spoken_language_mode,
-      JSON.stringify(row.expected_spoken_languages),
-      row.queue_status,
-      row.attempt_count,
-      row.max_attempts,
-      row.next_retry_at,
-      row.server_job_id,
-      row.last_error_code,
-      row.last_safe_error,
-      row.idempotency_key,
-      row.created_at,
-      row.updated_at,
-    ],
-  );
+      [
+        row.id,
+        row.user_id,
+        row.workspace_id,
+        row.session_id,
+        row.recording_id,
+        row.spoken_language_mode,
+        JSON.stringify(row.expected_spoken_languages),
+        row.queue_status,
+        row.attempt_count,
+        row.max_attempts,
+        row.next_retry_at,
+        row.server_job_id,
+        row.last_error_code,
+        row.last_safe_error,
+        row.idempotency_key,
+        row.created_at,
+        row.updated_at,
+      ],
+    );
 
-  const saved = (await db.getFirstAsync(
-    `SELECT *
+    const saved = (await db.getFirstAsync(
+      `SELECT *
        FROM local_transcription_request_queue
       WHERE user_id = ? AND workspace_id = ? AND idempotency_key = ?
       LIMIT 1`,
-    [row.user_id, row.workspace_id, row.idempotency_key],
-  )) as LocalTranscriptionRequestQueueRow | null;
+      [row.user_id, row.workspace_id, row.idempotency_key],
+    )) as LocalTranscriptionRequestQueueRow | null;
 
-  return saved ? parseTranscriptionRequestQueueRow(saved) : row;
+    return saved ? parseTranscriptionRequestQueueRow(saved) : row;
+  });
 };
 
 export const getTranscriptionRequestByIdempotencyKey = async (
@@ -2831,9 +2883,10 @@ export const claimTranscriptionRequest = async (
 ): Promise<TranscriptionRequestQueueRow | null> => {
   const db = await openLocalDb();
   if (!db) return null;
-  const now = nowIso();
-  const result = await db.runAsync(
-    `UPDATE local_transcription_request_queue
+  return runSerializedLocalMutation(db, async () => {
+    const now = nowIso();
+    const result = await db.runAsync(
+      `UPDATE local_transcription_request_queue
         SET queue_status = 'submitting',
             attempt_count = attempt_count + 1,
             next_retry_at = NULL,
@@ -2841,14 +2894,15 @@ export const claimTranscriptionRequest = async (
             last_safe_error = NULL,
             updated_at = ?
       WHERE id = ? AND queue_status = 'pending'`,
-    [now, id],
-  );
-  if (result.changes !== 1) return null;
-  const row = (await db.getFirstAsync(
-    `SELECT * FROM local_transcription_request_queue WHERE id = ?`,
-    [id],
-  )) as LocalTranscriptionRequestQueueRow | null;
-  return row ? parseTranscriptionRequestQueueRow(row) : null;
+      [now, id],
+    );
+    if (result.changes !== 1) return null;
+    const row = (await db.getFirstAsync(
+      `SELECT * FROM local_transcription_request_queue WHERE id = ?`,
+      [id],
+    )) as LocalTranscriptionRequestQueueRow | null;
+    return row ? parseTranscriptionRequestQueueRow(row) : null;
+  });
 };
 
 export const deferTranscriptionRequest = async (
@@ -2859,8 +2913,9 @@ export const deferTranscriptionRequest = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await db.runAsync(
-    `UPDATE local_transcription_request_queue
+  return runSerializedLocalMutation(db, async () => {
+    await db.runAsync(
+      `UPDATE local_transcription_request_queue
         SET queue_status = 'pending',
             attempt_count = CASE WHEN attempt_count > 0 THEN attempt_count - 1 ELSE 0 END,
             next_retry_at = ?,
@@ -2868,8 +2923,9 @@ export const deferTranscriptionRequest = async (
             last_safe_error = ?,
             updated_at = ?
       WHERE id = ?`,
-    [nextRetryAt, errorCode, safeError, nowIso(), id],
-  );
+      [nextRetryAt, errorCode, safeError, nowIso(), id],
+    );
+  });
 };
 
 export const rescheduleTranscriptionRequest = async (
@@ -2880,16 +2936,18 @@ export const rescheduleTranscriptionRequest = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await db.runAsync(
-    `UPDATE local_transcription_request_queue
+  return runSerializedLocalMutation(db, async () => {
+    await db.runAsync(
+      `UPDATE local_transcription_request_queue
         SET queue_status = 'pending',
             next_retry_at = ?,
             last_error_code = ?,
             last_safe_error = ?,
             updated_at = ?
       WHERE id = ?`,
-    [nextRetryAt, errorCode, safeError, nowIso(), id],
-  );
+      [nextRetryAt, errorCode, safeError, nowIso(), id],
+    );
+  });
 };
 
 export const markTranscriptionRequestSubmitted = async (
@@ -2898,8 +2956,9 @@ export const markTranscriptionRequestSubmitted = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await db.runAsync(
-    `UPDATE local_transcription_request_queue
+  return runSerializedLocalMutation(db, async () => {
+    await db.runAsync(
+      `UPDATE local_transcription_request_queue
         SET queue_status = 'submitted',
             server_job_id = ?,
             attempt_count = 0,
@@ -2908,8 +2967,9 @@ export const markTranscriptionRequestSubmitted = async (
             last_safe_error = NULL,
             updated_at = ?
       WHERE id = ?`,
-    [serverJobId, nowIso(), id],
-  );
+      [serverJobId, nowIso(), id],
+    );
+  });
 };
 
 export const markTranscriptionRequestFailed = async (
@@ -2919,16 +2979,18 @@ export const markTranscriptionRequestFailed = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await db.runAsync(
-    `UPDATE local_transcription_request_queue
+  return runSerializedLocalMutation(db, async () => {
+    await db.runAsync(
+      `UPDATE local_transcription_request_queue
         SET queue_status = 'failed',
             next_retry_at = NULL,
             last_error_code = ?,
             last_safe_error = ?,
             updated_at = ?
       WHERE id = ?`,
-    [errorCode, safeError, nowIso(), id],
-  );
+      [errorCode, safeError, nowIso(), id],
+    );
+  });
 };
 
 export const markTranscriptionRequestCancelled = async (
@@ -2938,16 +3000,18 @@ export const markTranscriptionRequestCancelled = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await db.runAsync(
-    `UPDATE local_transcription_request_queue
+  return runSerializedLocalMutation(db, async () => {
+    await db.runAsync(
+      `UPDATE local_transcription_request_queue
         SET queue_status = 'cancelled',
             next_retry_at = NULL,
             last_error_code = ?,
             last_safe_error = ?,
             updated_at = ?
       WHERE id = ?`,
-    [errorCode, safeError, nowIso(), id],
-  );
+      [errorCode, safeError, nowIso(), id],
+    );
+  });
 };
 
 export const resetSubmittingTranscriptionRequests = async (
@@ -2955,8 +3019,9 @@ export const resetSubmittingTranscriptionRequests = async (
 ): Promise<number> => {
   const db = await openLocalDb();
   if (!db) return 0;
-  const result = await db.runAsync(
-    `UPDATE local_transcription_request_queue
+  return runSerializedLocalMutation(db, async () => {
+    const result = await db.runAsync(
+      `UPDATE local_transcription_request_queue
         SET queue_status = 'pending',
             attempt_count = CASE
               WHEN attempt_count > 0 THEN attempt_count - 1
@@ -2965,9 +3030,10 @@ export const resetSubmittingTranscriptionRequests = async (
             next_retry_at = NULL,
             updated_at = ?
       WHERE user_id = ? AND queue_status = 'submitting'`,
-    [nowIso(), userId],
-  );
-  return result.changes;
+      [nowIso(), userId],
+    );
+    return result.changes;
+  });
 };
 
 
@@ -3337,13 +3403,15 @@ export const rescheduleTranscriptionResultAfterFailure = async (input: {
 }): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await updateResultRequestOnDb(db, {
-    queueId: input.queueId,
-    queueStatus: "submitted",
-    nextRetryAt: input.nextRetryAt,
-    attemptCountSql: "increment",
-    errorCode: input.errorCode,
-    safeError: input.safeError,
+  return runSerializedLocalMutation(db, async () => {
+    await updateResultRequestOnDb(db, {
+      queueId: input.queueId,
+      queueStatus: "submitted",
+      nextRetryAt: input.nextRetryAt,
+      attemptCountSql: "increment",
+      errorCode: input.errorCode,
+      safeError: input.safeError,
+    });
   });
 };
 
@@ -4284,12 +4352,14 @@ export const atomicRequeueMediaAssetUpload = async (input: {
 export const setPreference = async (key: string, value: unknown): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await db.runAsync(
-    `INSERT INTO local_user_preferences(key, value, updated_at)
+  return runSerializedLocalMutation(db, async () => {
+    await db.runAsync(
+      `INSERT INTO local_user_preferences(key, value, updated_at)
      VALUES(?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-    [key, JSON.stringify(value), nowIso()],
-  );
+      [key, JSON.stringify(value), nowIso()],
+    );
+  });
 };
 
 export const getPreference = async <T>(key: string, fallback: T): Promise<T> => {
@@ -4375,9 +4445,10 @@ export interface EnqueueMetadataInput {
 export const enqueueMetadataSync = async (input: EnqueueMetadataInput): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  const now = nowIso();
-  await db.runAsync(
-    `INSERT INTO local_metadata_sync_queue
+  return runSerializedLocalMutation(db, async () => {
+    const now = nowIso();
+    await db.runAsync(
+      `INSERT INTO local_metadata_sync_queue
       (id, user_id, workspace_id, entity_type, entity_id, operation,
        parent_entity_type, parent_entity_id, priority,
        queue_status, attempt_count, next_retry_at,
@@ -4391,21 +4462,22 @@ export const enqueueMetadataSync = async (input: EnqueueMetadataInput): Promise<
        last_error_code = NULL,
        last_safe_error = NULL,
        updated_at = excluded.updated_at`,
-    [
-      input.id,
-      input.user_id,
-      input.workspace_id,
-      input.entity_type,
-      input.entity_id,
-      input.operation,
-      input.parent_entity_type ?? null,
-      input.parent_entity_id ?? null,
-      input.priority ?? 100,
-      input.idempotency_key,
-      now,
-      now,
-    ],
-  );
+      [
+        input.id,
+        input.user_id,
+        input.workspace_id,
+        input.entity_type,
+        input.entity_id,
+        input.operation,
+        input.parent_entity_type ?? null,
+        input.parent_entity_id ?? null,
+        input.priority ?? 100,
+        input.idempotency_key,
+        now,
+        now,
+      ],
+    );
+  });
 };
 
 /**
@@ -4466,16 +4538,18 @@ export const claimMetadataOperation = async (
 export const markMetadataOperationSucceeded = async (id: string): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  const now = nowIso();
-  await db.runAsync(
-    `UPDATE local_metadata_sync_queue
+  return runSerializedLocalMutation(db, async () => {
+    const now = nowIso();
+    await db.runAsync(
+      `UPDATE local_metadata_sync_queue
        SET queue_status = 'succeeded',
            last_error_code = NULL,
            last_safe_error = NULL,
            updated_at = ?
      WHERE id = ?`,
-    [now, id],
-  );
+      [now, id],
+    );
+  });
 };
 
 export const markMetadataOperationFailed = async (
@@ -4485,16 +4559,18 @@ export const markMetadataOperationFailed = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  const now = nowIso();
-  await db.runAsync(
-    `UPDATE local_metadata_sync_queue
+  return runSerializedLocalMutation(db, async () => {
+    const now = nowIso();
+    await db.runAsync(
+      `UPDATE local_metadata_sync_queue
        SET queue_status = 'failed',
            last_error_code = ?,
            last_safe_error = ?,
            updated_at = ?
      WHERE id = ?`,
-    [errorCode, safeErrorMessage, now, id],
-  );
+      [errorCode, safeErrorMessage, now, id],
+    );
+  });
 };
 
 export const rescheduleMetadataOperation = async (
@@ -4505,17 +4581,19 @@ export const rescheduleMetadataOperation = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  const now = nowIso();
-  await db.runAsync(
-    `UPDATE local_metadata_sync_queue
+  return runSerializedLocalMutation(db, async () => {
+    const now = nowIso();
+    await db.runAsync(
+      `UPDATE local_metadata_sync_queue
        SET queue_status = 'pending',
            next_retry_at = ?,
            last_error_code = ?,
            last_safe_error = ?,
            updated_at = ?
      WHERE id = ?`,
-    [nextRetryAt, errorCode, safeErrorMessage, now, id],
-  );
+      [nextRetryAt, errorCode, safeErrorMessage, now, id],
+    );
+  });
 };
 
 /**
@@ -4531,9 +4609,10 @@ export const deferMetadataOperationForDependency = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  const now = nowIso();
-  await db.runAsync(
-    `UPDATE local_metadata_sync_queue
+  return runSerializedLocalMutation(db, async () => {
+    const now = nowIso();
+    await db.runAsync(
+      `UPDATE local_metadata_sync_queue
        SET queue_status = 'pending',
            attempt_count = CASE
              WHEN attempt_count > 0 THEN attempt_count - 1
@@ -4544,14 +4623,17 @@ export const deferMetadataOperationForDependency = async (
            last_safe_error = ?,
            updated_at = ?
      WHERE id = ?`,
-    [nextRetryAt, errorCode, safeErrorMessage, now, id],
-  );
+      [nextRetryAt, errorCode, safeErrorMessage, now, id],
+    );
+  });
 };
 
 export const deleteCompletedMetadataOperation = async (id: string): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await db.runAsync(`DELETE FROM local_metadata_sync_queue WHERE id = ?`, [id]);
+  return runSerializedLocalMutation(db, async () => {
+    await db.runAsync(`DELETE FROM local_metadata_sync_queue WHERE id = ?`, [id]);
+  });
 };
 
 export const listMetadataQueue = async (): Promise<MetadataQueueRow[]> => {
@@ -4580,15 +4662,17 @@ export const countPendingMetadataOperations = async (): Promise<number> => {
 export const resetInProgressMetadataOperations = async (): Promise<number> => {
   const db = await openLocalDb();
   if (!db) return 0;
-  const result = await db.runAsync(
-    `UPDATE local_metadata_sync_queue
+  return runSerializedLocalMutation(db, async () => {
+    const result = await db.runAsync(
+      `UPDATE local_metadata_sync_queue
        SET queue_status = 'pending',
            next_retry_at = NULL,
            updated_at = ?
      WHERE queue_status = 'in_progress'`,
-    [nowIso()],
-  );
-  return result.changes;
+      [nowIso()],
+    );
+    return result.changes;
+  });
 };
 
 export const deleteMetadataOperationsForEntity = async (
@@ -4597,11 +4681,13 @@ export const deleteMetadataOperationsForEntity = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await db.runAsync(
-    `DELETE FROM local_metadata_sync_queue
+  return runSerializedLocalMutation(db, async () => {
+    await db.runAsync(
+      `DELETE FROM local_metadata_sync_queue
      WHERE entity_type = ? AND entity_id = ?`,
-    [entityType, entityId],
-  );
+      [entityType, entityId],
+    );
+  });
 };
 
 export const requeueMetadataOperationForEntity = async (
@@ -4610,16 +4696,18 @@ export const requeueMetadataOperationForEntity = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await db.runAsync(
-    `UPDATE local_metadata_sync_queue
+  return runSerializedLocalMutation(db, async () => {
+    await db.runAsync(
+      `UPDATE local_metadata_sync_queue
        SET queue_status = 'pending',
            next_retry_at = NULL,
            last_error_code = NULL,
            last_safe_error = NULL,
            updated_at = ?
      WHERE entity_type = ? AND entity_id = ?`,
-    [nowIso(), entityType, entityId],
-  );
+      [nowIso(), entityType, entityId],
+    );
+  });
 };
 
 // ==========================================================================
@@ -5326,17 +5414,19 @@ export const resetInProgressSessionDeletions = async (
 ): Promise<number> => {
   const db = await openLocalDb();
   if (!db) return 0;
-  const result = await db.runAsync(
-    `UPDATE local_session_deletion_queue
+  return runSerializedLocalMutation(db, async () => {
+    const result = await db.runAsync(
+      `UPDATE local_session_deletion_queue
         SET queue_status = 'pending',
             next_retry_at = NULL,
             last_error_code = 'DELETE_INTERRUPTED',
             last_safe_error = 'Cleanup was interrupted and will resume.',
             updated_at = ?
       WHERE user_id = ? AND queue_status = 'in_progress'`,
-    [nowIso(), userId],
-  );
-  return result.changes;
+      [nowIso(), userId],
+    );
+    return result.changes;
+  });
 };
 
 export const getNextEligibleSessionDeletion = async (
@@ -5410,55 +5500,57 @@ export const updateSessionDeletionProgress = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
+  return runSerializedLocalMutation(db, async () => {
 
-  const values: (string | number | null)[] = [];
-  const assignments: string[] = [];
-  const add = (column: string, value: string | number | null) => {
-    assignments.push(`${column} = ?`);
-    values.push(value);
-  };
+    const values: (string | number | null)[] = [];
+    const assignments: string[] = [];
+    const add = (column: string, value: string | number | null) => {
+      assignments.push(`${column} = ?`);
+      values.push(value);
+    };
 
-  if (Object.prototype.hasOwnProperty.call(patch, "storage_paths")) {
-    add(
-      "storage_paths",
-      JSON.stringify(uniqueNonEmptyStrings(patch.storage_paths ?? [])),
-    );
-  }
-  if (Object.prototype.hasOwnProperty.call(patch, "local_file_uris")) {
-    add(
-      "local_file_uris",
-      JSON.stringify(uniqueNonEmptyStrings(patch.local_file_uris ?? [])),
-    );
-  }
-  if (Object.prototype.hasOwnProperty.call(patch, "storage_deleted")) {
-    add("storage_deleted", patch.storage_deleted ? 1 : 0);
-  }
-  if (Object.prototype.hasOwnProperty.call(patch, "cloud_metadata_deleted")) {
-    add("cloud_metadata_deleted", patch.cloud_metadata_deleted ? 1 : 0);
-  }
-  if (Object.prototype.hasOwnProperty.call(patch, "local_files_deleted")) {
-    add("local_files_deleted", patch.local_files_deleted ? 1 : 0);
-  }
-  if (Object.prototype.hasOwnProperty.call(patch, "queue_status")) {
-    add("queue_status", patch.queue_status ?? "pending");
-  }
-  if (Object.prototype.hasOwnProperty.call(patch, "next_retry_at")) {
-    add("next_retry_at", patch.next_retry_at ?? null);
-  }
-  if (Object.prototype.hasOwnProperty.call(patch, "last_error_code")) {
-    add("last_error_code", patch.last_error_code ?? null);
-  }
-  if (Object.prototype.hasOwnProperty.call(patch, "last_safe_error")) {
-    add("last_safe_error", patch.last_safe_error ?? null);
-  }
-  if (assignments.length === 0) return;
+    if (Object.prototype.hasOwnProperty.call(patch, "storage_paths")) {
+      add(
+        "storage_paths",
+        JSON.stringify(uniqueNonEmptyStrings(patch.storage_paths ?? [])),
+      );
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, "local_file_uris")) {
+      add(
+        "local_file_uris",
+        JSON.stringify(uniqueNonEmptyStrings(patch.local_file_uris ?? [])),
+      );
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, "storage_deleted")) {
+      add("storage_deleted", patch.storage_deleted ? 1 : 0);
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, "cloud_metadata_deleted")) {
+      add("cloud_metadata_deleted", patch.cloud_metadata_deleted ? 1 : 0);
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, "local_files_deleted")) {
+      add("local_files_deleted", patch.local_files_deleted ? 1 : 0);
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, "queue_status")) {
+      add("queue_status", patch.queue_status ?? "pending");
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, "next_retry_at")) {
+      add("next_retry_at", patch.next_retry_at ?? null);
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, "last_error_code")) {
+      add("last_error_code", patch.last_error_code ?? null);
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, "last_safe_error")) {
+      add("last_safe_error", patch.last_safe_error ?? null);
+    }
+    if (assignments.length === 0) return;
 
-  await db.runAsync(
-    `UPDATE local_session_deletion_queue
+    await db.runAsync(
+      `UPDATE local_session_deletion_queue
         SET ${assignments.join(", ")}, updated_at = ?
       WHERE id = ?`,
-    [...values, nowIso(), id],
-  );
+      [...values, nowIso(), id],
+    );
+  });
 };
 
 export const rescheduleSessionDeletion = async (
@@ -5491,10 +5583,12 @@ export const deleteCompletedSessionDeletion = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
-  await db.runAsync(
-    `DELETE FROM local_session_deletion_queue WHERE id = ?`,
-    [id],
-  );
+  return runSerializedLocalMutation(db, async () => {
+    await db.runAsync(
+      `DELETE FROM local_session_deletion_queue WHERE id = ?`,
+      [id],
+    );
+  });
 };
 
 
@@ -5995,11 +6089,11 @@ export const deleteLocalAccountData = async (input: {
   // transaction commits so deleted private metadata is not retained in WAL.
   // A busy checkpoint is treated as a retryable local-cleanup failure; the
   // persistent deletion marker keeps private routes hidden until retry.
-  const checkpoint = await db.getFirstAsync<{
+  const checkpoint = await runSerializedLocalMutation(db, () => db.getFirstAsync<{
     busy: number;
     log: number;
     checkpointed: number;
-  }>("PRAGMA wal_checkpoint(TRUNCATE)");
+  }>("PRAGMA wal_checkpoint(TRUNCATE)"));
 
   if (!checkpoint || Number(checkpoint.busy) !== 0) {
     throw new Error("The local account cleanup WAL checkpoint did not finish.");
