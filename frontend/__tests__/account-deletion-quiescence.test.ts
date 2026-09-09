@@ -1,3 +1,4 @@
+import { invalidateLocalReadSnapshots, waitForLocalReadSnapshotsIdle } from "@/src/services/sqlite/read-snapshot";
 import { waitForMediaUploadIdle } from "@/src/services/sync/media-upload-worker";
 import { waitForMetadataSyncIdle } from "@/src/services/sync/project-sync-worker";
 import { waitForRecordingUploadIdle } from "@/src/services/sync/recording-upload-worker";
@@ -36,6 +37,11 @@ jest.mock("@/src/services/transcription/editor-lifecycle", () => ({
   waitForTranscriptEditorsIdle: jest.fn(),
 }));
 
+jest.mock("@/src/services/sqlite/read-snapshot", () => ({
+  invalidateLocalReadSnapshots: jest.fn(),
+  waitForLocalReadSnapshotsIdle: jest.fn(),
+}));
+
 const waits: jest.MockedFunction<() => Promise<void>>[] = [
   waitForTranscriptEditorsIdle as jest.MockedFunction<typeof waitForTranscriptEditorsIdle>,
   waitForTranscriptEditSyncIdle as jest.MockedFunction<typeof waitForTranscriptEditSyncIdle>,
@@ -54,6 +60,7 @@ const waits: jest.MockedFunction<() => Promise<void>>[] = [
   waitForTranscriptCurrentVersionSyncIdle as jest.MockedFunction<
     typeof waitForTranscriptCurrentVersionSyncIdle
   >,
+  waitForLocalReadSnapshotsIdle as jest.MockedFunction<typeof waitForLocalReadSnapshotsIdle>,
 ];
 
 describe("account deletion background-work quiescence", () => {
@@ -134,6 +141,37 @@ describe("account deletion background-work quiescence", () => {
       await jest.advanceTimersByTimeAsync(50);
       await rejected;
       expect(pauseTranscriptEditSync).toHaveBeenCalledTimes(1);
+    } finally { jest.useRealTimers(); }
+  });
+});
+
+describe("read snapshot deletion quiescence", () => {
+  beforeEach(() => { jest.clearAllMocks(); for (const wait of waits) wait.mockResolvedValue(); });
+  it("invalidates read delivery before collecting idle promises", async () => {
+    await waitForAccountDeletionBackgroundWork();
+    expect(invalidateLocalReadSnapshots).toHaveBeenCalledTimes(1);
+    expect((invalidateLocalReadSnapshots as jest.Mock).mock.invocationCallOrder[0])
+      .toBeLessThan((waitForLocalReadSnapshotsIdle as jest.Mock).mock.invocationCallOrder[0]);
+  });
+  it("holds cleanup while a cancelled read still owns its native handle", async () => {
+    let release!: () => void;
+    (waitForLocalReadSnapshotsIdle as jest.Mock).mockReturnValue(new Promise<void>((resolve) => { release = resolve; }));
+    let complete = false; const pending = waitForAccountDeletionBackgroundWork().then(() => { complete = true; });
+    await Promise.resolve(); expect(complete).toBe(false); release(); await pending; expect(complete).toBe(true);
+  });
+  it("does not treat an unclosed read as successful cleanup or expose native errors", async () => {
+    (waitForLocalReadSnapshotsIdle as jest.Mock).mockRejectedValue(new Error("PRIVATE CLOSE ERROR"));
+    await expect(waitForAccountDeletionBackgroundWork()).rejects.toMatchObject({
+      code: "ACCOUNT_DELETION_BACKGROUND_WORK_ACTIVE", message: "Local read resources have not been released.",
+    });
+  });
+  it("does not turn a native read drain timeout into idle", async () => {
+    jest.useFakeTimers();
+    try {
+      (waitForLocalReadSnapshotsIdle as jest.Mock).mockReturnValue(new Promise<void>(() => {}));
+      const rejected = expect(waitForAccountDeletionBackgroundWork(50))
+        .rejects.toMatchObject({ code: "ACCOUNT_DELETION_BACKGROUND_WORK_ACTIVE" });
+      await jest.advanceTimersByTimeAsync(50); await rejected;
     } finally { jest.useRealTimers(); }
   });
 });

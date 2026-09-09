@@ -1,8 +1,4 @@
-import {
-  getCurrentTranscriptVersionForSession,
-  getTranscriptVersionByIdForSession,
-  listTranscriptSegmentsForVersion,
-} from "@/src/services/sqlite/repository";
+import { withLocalTranscriptReadSnapshot } from "@/src/services/sqlite/repository";
 import { formatDurationMs } from "@/src/utils/format";
 
 import {
@@ -49,11 +45,6 @@ export interface LocalTranscriptReadDependencies {
     transcriptVersionId: string,
   ) => Promise<SyncedTranscriptSegment[]>;
 }
-
-const defaultDependencies: LocalTranscriptReadDependencies = {
-  getCurrentVersion: getCurrentTranscriptVersionForSession,
-  listSegments: listTranscriptSegmentsForVersion,
-};
 
 const optionalTrimmed = (value: string | null): string | null => {
   const trimmed = value?.trim() ?? "";
@@ -120,14 +111,10 @@ export const buildLocalTranscriptSegmentRows = (
   });
 };
 
-export const loadLocalTranscriptReadModel = async (
+const loadTranscriptFromReads = async (
   sessionId: string,
-  overrides: Partial<LocalTranscriptReadDependencies> = {},
+  dependencies: LocalTranscriptReadDependencies,
 ): Promise<LocalTranscriptReadModel> => {
-  const dependencies: LocalTranscriptReadDependencies = {
-    ...defaultDependencies,
-    ...overrides,
-  };
   const version = await dependencies.getCurrentVersion(sessionId);
   if (!version) return { kind: "empty" };
 
@@ -155,6 +142,23 @@ export const loadLocalTranscriptReadModel = async (
     plainText,
     segmentCount: segmentRows.length,
   };
+};
+
+/** Default native path: current version and segments share ONE read snapshot.
+ * Complete dependency injection remains available for pure tests; partial
+ * overrides use snapshot-bound defaults, never shared-db getters.
+ */
+export const loadLocalTranscriptReadModel = async (
+  sessionId: string,
+  overrides: Partial<LocalTranscriptReadDependencies> = {},
+): Promise<LocalTranscriptReadModel> => {
+  if (overrides.getCurrentVersion && overrides.listSegments) {
+    return loadTranscriptFromReads(sessionId, {
+      getCurrentVersion: overrides.getCurrentVersion, listSegments: overrides.listSegments,
+    });
+  }
+  return await withLocalTranscriptReadSnapshot(sessionId, (reads) =>
+    loadTranscriptFromReads(sessionId, { ...reads, ...overrides })) ?? { kind: "empty" };
 };
 
 /** Provider timestamps never become timestamp mappings for edited Full Text. */
@@ -262,22 +266,11 @@ const loadLocalProviderEvidence = async (
   return { kind: "none" };
 };
 
-/**
- * Opt-in readiness API. The existing reader continues using
- * loadLocalTranscriptReadModel, so no unlabelled provider evidence is displayed
- * as timestamps for an edited current version before the later UI milestone.
- * All reads are local. Missing/invalid ancestry never guesses an older provider.
- */
-export const loadLocalTranscriptReadModelWithEvidence = async (
+const loadTranscriptEvidenceFromReads = async (
   sessionId: string,
-  overrides: Partial<LocalTranscriptEvidenceReadDependencies> = {},
+  dependencies: LocalTranscriptEvidenceReadDependencies,
 ): Promise<LocalTranscriptReadModelWithEvidence> => {
-  const dependencies: LocalTranscriptEvidenceReadDependencies = {
-    ...defaultDependencies,
-    getVersionById: getTranscriptVersionByIdForSession,
-    ...overrides,
-  };
-  const model = await loadLocalTranscriptReadModel(sessionId, dependencies);
+  const model = await loadTranscriptFromReads(sessionId, dependencies);
   if (model.kind === "empty") return model;
   if (
     model.version.version_status !== "final" ||
@@ -291,4 +284,19 @@ export const loadLocalTranscriptReadModelWithEvidence = async (
     rawPlainText: model.version.plain_text,
     evidence: await loadLocalProviderEvidence(model, dependencies),
   };
+};
+
+/** Full Text, exact ancestry and provider evidence share ONE local snapshot. */
+export const loadLocalTranscriptReadModelWithEvidence = async (
+  sessionId: string,
+  overrides: Partial<LocalTranscriptEvidenceReadDependencies> = {},
+): Promise<LocalTranscriptReadModelWithEvidence> => {
+  if (overrides.getCurrentVersion && overrides.listSegments && overrides.getVersionById) {
+    return loadTranscriptEvidenceFromReads(sessionId, {
+      getCurrentVersion: overrides.getCurrentVersion, listSegments: overrides.listSegments,
+      getVersionById: overrides.getVersionById,
+    });
+  }
+  return await withLocalTranscriptReadSnapshot(sessionId, (reads) =>
+    loadTranscriptEvidenceFromReads(sessionId, { ...reads, ...overrides })) ?? { kind: "empty" };
 };

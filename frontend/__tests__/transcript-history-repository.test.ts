@@ -1,10 +1,13 @@
-import { openLocalDb } from "@/src/services/sqlite/schema";
+import { openLocalReadDb } from "@/src/services/sqlite/schema";
 import { __resetSerializedLocalTransactionsForTests, runSerializedLocalTransaction } from "@/src/services/sqlite/transaction";
-import { listLocalTranscriptHistoryPage, loadLocalTranscriptHistoryVersion } from "@/src/services/sqlite/repository";
+import { listLocalTranscriptHistoryPage, loadLocalTranscriptHistoryVersion, withLocalTranscriptReadSnapshot } from "@/src/services/sqlite/repository";
 import { TranscriptHistoryError, type TranscriptHistoryCursor } from "@/src/services/transcription/history-types";
+import { waitForLocalReadSnapshotsIdle } from "@/src/services/sqlite/read-snapshot";
+import { useAuthStore } from "@/src/stores/auth-store";
 
-jest.mock("@/src/services/sqlite/schema", () => ({ openLocalDb: jest.fn() }));
-const openDb = openLocalDb as jest.MockedFunction<typeof openLocalDb>;
+jest.mock("@/src/services/sqlite/schema", () => ({ openLocalReadDb: jest.fn() }));
+const openDb = openLocalReadDb as jest.MockedFunction<typeof openLocalReadDb>;
+jest.mock("@/src/services/account-deletion/state", () => ({ isAccountDeletionLocallyPending: () => false }));
 const USER = "11111111-1111-4111-8111-111111111111";
 const WORKSPACE = "22222222-2222-4222-8222-222222222222";
 const SESSION = "33333333-3333-4333-8333-333333333333";
@@ -24,7 +27,7 @@ const deferred = () => {
   return { promise, resolve };
 };
 
-// SQL-port fixture for admission, validation and serialized ordering, not native SQL proof.
+// SQL-port fixture for admission and validation, not native isolation proof.
 const fixture = (initial = [row(3, { is_current: 1 }), row(2), row(1)]) => {
   const state = {
     rows: initial,
@@ -51,7 +54,12 @@ const fixture = (initial = [row(3, { is_current: 1 }), row(2), row(1)]) => {
       .sort((a, b) => Number(b.version) - Number(a.version)).slice(0, Number(params.at(-1)))
       .map((value) => { const metadata = { ...value }; delete metadata.plain_text; return metadata; })),
     runAsync: jest.fn(async () => { throw new Error("History must never write"); }),
-    execAsync: jest.fn(async () => { throw new Error("History must never execute DDL"); }),
+    execAsync: jest.fn(async (sql: string) => {
+      if (!sql.startsWith("PRAGMA query_only") && !["BEGIN DEFERRED TRANSACTION;", "COMMIT;", "ROLLBACK;"].includes(sql)) {
+        throw new Error("History must never execute DDL or DML");
+      }
+    }),
+    closeAsync: jest.fn(async () => undefined),
   };
   openDb.mockResolvedValue(db as never);
   const context = { scope, assertActive };
@@ -59,7 +67,11 @@ const fixture = (initial = [row(3, { is_current: 1 }), row(2), row(1)]) => {
   const detail = (version = 2) => loadLocalTranscriptHistoryVersion({ ...context, versionId: id(version) });
   return { state, db, context, list, detail };
 };
-beforeEach(() => { jest.clearAllMocks(); __resetSerializedLocalTransactionsForTests(); });
+beforeEach(() => {
+  jest.clearAllMocks(); __resetSerializedLocalTransactionsForTests();
+  useAuthStore.setState({ initialized: true, user: { id: USER } as never });
+});
+afterEach(async () => { await waitForLocalReadSnapshotsIdle(); });
 
 describe("3E.1 read-only local transcript history repository", () => {
   it("pages metadata by descending version and never calls it complete cloud history", async () => {
@@ -127,7 +139,7 @@ describe("3E.1 read-only local transcript history repository", () => {
     const { state, db, detail } = fixture([row(3, { is_current: 1 }), row(2, { plain_text: text })]);
     const before = JSON.stringify(state.rows); const result = await detail();
     expect(result).toMatchObject({ kind: "ready", rawPlainText: text, version: { id: id(2), is_current: false } });
-    expect(JSON.stringify(state.rows)).toBe(before); expect(db.runAsync).not.toHaveBeenCalled(); expect(db.execAsync).not.toHaveBeenCalled();
+    expect(JSON.stringify(state.rows)).toBe(before); expect(db.runAsync).not.toHaveBeenCalled(); expect(db.execAsync.mock.calls.flat().join(" ")).not.toMatch(/\b(?:INSERT|UPDATE|DELETE|CREATE|DROP|ALTER)\b/);
   });
   it("does not replace an empty historical provider text with timestamp or current text", async () => {
     const { detail } = fixture([row(2, { plain_text: "" })]);
@@ -205,19 +217,58 @@ describe("3E.1 read-only local transcript history repository", () => {
     const pending = expect(list()).rejects.toMatchObject({ code: "HISTORY_CONTEXT_INACTIVE" });
     state.active = false; gate.resolve(); await pending; expect(db.getFirstAsync).not.toHaveBeenCalled();
   });
-  it("checks context after waiting behind a serialized transaction", async () => {
-    const { db, state, list } = fixture(); const entered = deferred(); const gate = deferred();
-    const prior = runSerializedLocalTransaction(db, async () => { entered.resolve(); await gate.promise; });
-    await entered.promise; const pending = expect(list()).rejects.toMatchObject({ code: "HISTORY_CONTEXT_INACTIVE" });
-    state.active = false; gate.resolve(); await prior; await pending; expect(db.getFirstAsync).not.toHaveBeenCalled();
+  it("does not wait behind a shared writer transaction or join its connection", async () => {
+    const { list, db } = fixture(); const entered = deferred(); const gate = deferred();
+    const writer = { withTransactionAsync: jest.fn(async (task: () => Promise<void>) => { await task(); }) };
+    const prior = runSerializedLocalTransaction(writer, async () => { entered.resolve(); await gate.promise; });
+    await entered.promise;
+    try { expect((await list()).versions).toHaveLength(3); expect(db.withTransactionAsync).not.toHaveBeenCalled(); }
+    finally { gate.resolve(); await prior; }
   });
   it("checks context after the SQL read and after transaction completion", async () => {
     const { db, state, list } = fixture();
-    db.withTransactionAsync.mockImplementation(async (task) => { await task(); state.active = false; });
+    db.execAsync.mockImplementation(async (sql) => { if (sql === "COMMIT;") state.active = false; });
     await expect(list()).rejects.toMatchObject({ code: "HISTORY_CONTEXT_INACTIVE" }); expect(db.getAllAsync).toHaveBeenCalledTimes(1);
   });
   it("does not change any version or issue a write during page reads", async () => {
     const { db, state, list } = fixture(); const before = JSON.stringify(state.rows); await list();
-    expect(JSON.stringify(state.rows)).toBe(before); expect(db.runAsync).not.toHaveBeenCalled(); expect(db.execAsync).not.toHaveBeenCalled();
+    expect(JSON.stringify(state.rows)).toBe(before); expect(db.runAsync).not.toHaveBeenCalled(); expect(db.execAsync.mock.calls.flat().join(" ")).not.toMatch(/\b(?:INSERT|UPDATE|DELETE|CREATE|DROP|ALTER)\b/);
+  });
+});
+
+describe("3E.2B2A snapshot-bound transcript getters", () => {
+  it("uses one owned handle for current, exact parent and segments", async () => {
+    const f = fixture();
+    const original = f.db.getFirstAsync;
+    f.db.getFirstAsync = jest.fn(async (sql: string, params: unknown[]) => {
+      if (!sql.includes("FROM local_transcript_versions")) return original(sql, params);
+      return row(params.length === 2 ? 3 : 2, { is_current: params.length === 2 ? 1 : 0, language_summary: "{}" });
+    });
+    f.db.getAllAsync.mockResolvedValueOnce([]);
+    await withLocalTranscriptReadSnapshot(SESSION, async (reads) => {
+      expect((await reads.getCurrentVersion(SESSION))?.is_current).toBe(true);
+      expect((await reads.getVersionById({ versionId: id(2), sessionId: SESSION, workspaceId: WORKSPACE }))?.is_current).toBe(false);
+      expect(await reads.listSegments(id(2))).toEqual([]);
+    });
+    expect(openDb).toHaveBeenCalledTimes(1); expect(f.db.closeAsync).toHaveBeenCalledTimes(1);
+    expect(f.db.execAsync.mock.calls.filter(([sql]) => sql.startsWith("BEGIN"))).toHaveLength(1);
+    expect(f.db.getAllAsync).toHaveBeenCalledWith(expect.stringContaining("workspace_id = ? AND session_id = ?"), [id(2), WORKSPACE, SESSION]);
+  });
+  it("rejects another session/workspace at the snapshot-bound getter boundary", async () => {
+    fixture();
+    await expect(withLocalTranscriptReadSnapshot(SESSION, async (reads) => reads.getCurrentVersion(OTHER)))
+      .rejects.toMatchObject({ code: "LOCAL_READ_INPUT_INVALID" });
+    await expect(withLocalTranscriptReadSnapshot(SESSION, async (reads) => reads.getVersionById({ versionId: id(2), sessionId: OTHER, workspaceId: WORKSPACE })))
+      .rejects.toMatchObject({ code: "LOCAL_READ_INPUT_INVALID" });
+  });
+  it("does not expose a deleted session through the current/evidence entrypoint", async () => {
+    const f = fixture(); f.state.deleting = true;
+    await expect(withLocalTranscriptReadSnapshot(SESSION, async () => "private"))
+      .rejects.toMatchObject({ code: "LOCAL_READ_CONTEXT_INACTIVE" });
+  });
+  it("does not issue DML, shared-db transactions or retain the handle after success", async () => {
+    const f = fixture(); await f.list();
+    expect(f.db.withTransactionAsync).not.toHaveBeenCalled(); expect(f.db.runAsync).not.toHaveBeenCalled();
+    expect(f.db.closeAsync).toHaveBeenCalledTimes(1);
   });
 });

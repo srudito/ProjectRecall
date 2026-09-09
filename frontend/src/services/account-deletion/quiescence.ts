@@ -15,6 +15,11 @@ import {
   waitForTranscriptEditorsIdle,
 } from "@/src/services/transcription/editor-lifecycle";
 
+import {
+  invalidateLocalReadSnapshots,
+  waitForLocalReadSnapshotsIdle,
+} from "@/src/services/sqlite/read-snapshot";
+
 const DEFAULT_IDLE_TIMEOUT_MS = 20_000;
 
 const withTimeout = async (
@@ -52,10 +57,17 @@ export const waitForAccountDeletionBackgroundWork = async (
 ): Promise<void> => {
   // Close edit admission and invalidate scheduled callbacks BEFORE taking the
   // idle snapshot. The account-deletion marker prevents lifecycle resumption.
+  invalidateLocalReadSnapshots();
   invalidateTranscriptEditors();
   pauseTranscriptEditSync();
   await withTimeout(
     Promise.all([
+      waitForLocalReadSnapshotsIdle().catch(() => {
+        throw new AppError(
+          ErrorCode.ACCOUNT_DELETION_BACKGROUND_WORK_ACTIVE,
+          "Local read resources have not been released.",
+        );
+      }),
       waitForTranscriptEditorsIdle(),
       waitForMetadataSyncIdle(),
       waitForRecordingUploadIdle(),

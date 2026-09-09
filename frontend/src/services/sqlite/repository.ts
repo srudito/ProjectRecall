@@ -2,9 +2,14 @@
 // Web returns empty arrays / no-ops since we don't ship a WASM DB in the preview.
 
 import * as SQLite from "expo-sqlite";
+import { Platform } from "react-native";
 
 import { openLocalDb } from "./schema";
 import { runSerializedLocalTransaction } from "./transaction";
+import {
+  LocalReadSnapshotError, pauseSessionReadSnapshots, withLocalReadSnapshot,
+  type LocalSnapshotQueries,
+} from "./read-snapshot";
 
 import {
   normalizeTranscriptHistoryError,
@@ -54,18 +59,14 @@ const historySummaryColumns = `id, workspace_id, session_id, version, version_or
 
 const withTranscriptHistoryDb = async <T>(
   input: TranscriptHistoryReadContext,
-  operation: (db: SQLite.SQLiteDatabase, scope: TranscriptHistoryScope) => Promise<T>,
+  operation: (db: LocalSnapshotQueries, scope: TranscriptHistoryScope) => Promise<T>,
 ): Promise<T> => {
   const scope = normalizeTranscriptHistoryScope(input.scope);
   const assertActive = input.assertActive;
   if (typeof assertActive !== "function") throw new TranscriptHistoryError("HISTORY_INPUT_INVALID");
   try {
     assertActive();
-    const db = await openLocalDb();
-    assertActive();
-    if (!db) throw new TranscriptHistoryError("HISTORY_LOCAL_STORAGE_UNAVAILABLE");
-    const result = await runSerializedLocalTransaction(db, async () => {
-      // Includes time waiting behind another repository transaction.
+    const result = await withLocalReadSnapshot({ ...scope, assertActive }, async (db) => {
       assertActive();
       const session = await db.getFirstAsync<{
         id: string; workspace_id: string; status: string; deleted_at: string | null;
@@ -83,11 +84,21 @@ const withTranscriptHistoryDb = async <T>(
       assertActive();
       return value;
     });
-    // Do not release private data if identity/lifetime changed during COMMIT.
     assertActive();
     return result;
-  } catch (error) {
-    throw normalizeTranscriptHistoryError(error);
+  } catch (failure) {
+    // Preserve the caller's precise supersession/auth error when available.
+    try { assertActive(); } catch (contextError) { throw normalizeTranscriptHistoryError(contextError); }
+    if (failure instanceof LocalReadSnapshotError) {
+      switch (failure.code) {
+        case "LOCAL_READ_STORAGE_UNAVAILABLE": throw new TranscriptHistoryError("HISTORY_LOCAL_STORAGE_UNAVAILABLE");
+        case "LOCAL_READ_AUTH_REQUIRED": throw new TranscriptHistoryError("HISTORY_AUTH_REQUIRED");
+        case "LOCAL_READ_CONTEXT_INACTIVE":
+        case "LOCAL_READ_CANCELLED": throw new TranscriptHistoryError("HISTORY_CONTEXT_INACTIVE");
+        case "LOCAL_READ_DELETION_PENDING": throw new TranscriptHistoryError("HISTORY_DELETION_PENDING");
+      }
+    }
+    throw normalizeTranscriptHistoryError(failure);
   }
 };
 
@@ -3869,6 +3880,66 @@ export const getLocalTranscriptionRunForJob = async (
   return row ? parseLocalTranscriptionRun(row) : null;
 };
 
+/** Getters bound to one read snapshot. Never call public shared-db getters here. */
+export interface LocalTranscriptSnapshotReads {
+  getCurrentVersion: (sessionId: string) => Promise<SyncedTranscriptVersion | null>;
+  getVersionById: (input: { versionId: string; workspaceId: string; sessionId: string }) => Promise<SyncedTranscriptVersionRecord | null>;
+  listSegments: (versionId: string) => Promise<SyncedTranscriptSegment[]>;
+}
+
+/** One result = one local snapshot, including session checks and ancestry. */
+export const withLocalTranscriptReadSnapshot = async <T>(
+  sessionId: string,
+  operation: (reads: LocalTranscriptSnapshotReads) => Promise<T>,
+): Promise<T | null> => {
+  if (Platform.OS === "web") return null;
+  return withLocalReadSnapshot({ sessionId }, async (db, scope) => {
+    const session = await db.getFirstAsync<{
+      id: string; workspace_id: string; status: string; deleted_at: string | null;
+    }>("SELECT id, workspace_id, status, deleted_at FROM local_sessions WHERE id = ? LIMIT 1", [scope.sessionId]);
+    const deleting = await db.getFirstAsync<{ id: string }>(
+      "SELECT id FROM local_session_deletion_queue WHERE session_id = ? LIMIT 1", [scope.sessionId]);
+    if (!session || session.id !== scope.sessionId || typeof session.workspace_id !== "string" ||
+        typeof session.status !== "string" || session.deleted_at !== null ||
+        session.status === "deleting" || session.status === "deleted" || deleting) {
+      throw new LocalReadSnapshotError("LOCAL_READ_CONTEXT_INACTIVE");
+    }
+    const workspaceId = session.workspace_id;
+    const readVersion = async (versionId?: string): Promise<SyncedTranscriptVersionRecord | null> => {
+      const row = await db.getFirstAsync<LocalTranscriptVersionRow>(
+        `SELECT * FROM local_transcript_versions
+          WHERE session_id = ? AND workspace_id = ? AND ${versionId === undefined ? "is_current = 1" : "id = ?"} LIMIT 1`,
+        versionId === undefined ? [scope.sessionId, workspaceId] : [scope.sessionId, workspaceId, versionId],
+      );
+      if (!row) return null;
+      if (row.session_id !== scope.sessionId || row.workspace_id !== workspaceId ||
+          (versionId !== undefined && row.id !== versionId) ||
+          (row.is_current !== 0 && row.is_current !== 1) || (versionId === undefined && row.is_current !== 1)) {
+        throw new LocalReadSnapshotError("LOCAL_READ_QUERY_FAILED");
+      }
+      return { ...row, language_summary: parseJsonObject(row.language_summary) ?? {}, is_current: row.is_current === 1 };
+    };
+    return operation({
+      getCurrentVersion: async (id) => {
+        if (id.toLowerCase() !== scope.sessionId) throw new LocalReadSnapshotError("LOCAL_READ_INPUT_INVALID");
+        const version = await readVersion();
+        return version ? { ...version, is_current: true } : null;
+      },
+      getVersionById: async (input) => {
+        if (input.sessionId !== scope.sessionId || input.workspaceId !== workspaceId) {
+          throw new LocalReadSnapshotError("LOCAL_READ_INPUT_INVALID");
+        }
+        return readVersion(input.versionId);
+      },
+      listSegments: async (versionId) => db.getAllAsync<SyncedTranscriptSegment>(
+        `SELECT * FROM local_transcript_segments
+          WHERE transcript_version_id = ? AND workspace_id = ? AND session_id = ? ORDER BY segment_index ASC`,
+        [versionId, workspaceId, scope.sessionId],
+      ),
+    });
+  });
+};
+
 export const getCurrentTranscriptVersionForSession = async (
   sessionId: string,
 ): Promise<SyncedTranscriptVersion | null> => {
@@ -5128,6 +5199,14 @@ export interface PrepareSessionDeletionInput {
 export const atomicPrepareSessionDeletion = async (
   input: PrepareSessionDeletionInput,
 ): Promise<void> => {
+  const releaseReads = pauseSessionReadSnapshots(input.sessionId);
+  try { await prepareSessionDeletionWithReadsPaused(input); }
+  finally { releaseReads(); }
+};
+
+const prepareSessionDeletionWithReadsPaused = async (
+  input: PrepareSessionDeletionInput,
+): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
 
@@ -5451,6 +5530,14 @@ export const listUploadQueueForSession = async (
 
 /** Remove the complete local graph after cloud cleanup has succeeded. */
 export const hardDeleteLocalSessionData = async (
+  sessionId: string,
+): Promise<void> => {
+  const releaseReads = pauseSessionReadSnapshots(sessionId);
+  try { await hardDeleteLocalSessionDataWithReadsPaused(sessionId); }
+  finally { releaseReads(); }
+};
+
+const hardDeleteLocalSessionDataWithReadsPaused = async (
   sessionId: string,
 ): Promise<void> => {
   const db = await openLocalDb();

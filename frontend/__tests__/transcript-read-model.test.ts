@@ -1,3 +1,4 @@
+import * as transcriptRepository from "@/src/services/sqlite/repository";
 import {
   buildLocalTranscriptSegmentRows,
   formatTranscriptSegmentTimeRange,
@@ -415,5 +416,71 @@ describe("3D.1 opt-in local provider evidence read model", () => {
       ? { kind: "available", source: "ancestor", version: { id: id(64) } }
       : { kind: "unavailable", reason: "depth_limit" } });
     expect(deps.getVersionById).toHaveBeenCalledTimes(64);
+  });
+});
+
+describe("3E.2B2A default reader snapshot integration", () => {
+  const sessionId = "11111111-1111-4111-8111-111111111111";
+  const workspaceId = "22222222-2222-4222-8222-222222222222";
+  const providerId = "33333333-3333-4333-8333-333333333333";
+  const editId = "44444444-4444-4444-8444-444444444444";
+  const fixture = () => {
+    const provider: SyncedTranscriptVersionRecord = {
+      id: providerId, workspace_id: workspaceId, session_id: sessionId, version: 1,
+      version_origin: "provider", version_status: "final", parent_version_id: null,
+      transcription_run_id: null, created_by: null, plain_text: "original", language_summary: {},
+      content_checksum_sha256: "a".repeat(64), is_current: false,
+      created_at: "2026-09-09T00:00:00Z", updated_at: "2026-09-09T00:00:00Z",
+    };
+    const edit: SyncedTranscriptVersion = { ...provider, id: editId, version: 2, version_origin: "user_edit",
+      parent_version_id: providerId, is_current: true, plain_text: "  edited\ntext  " };
+    const segment: SyncedTranscriptSegment = {
+      id: "55555555-5555-4555-8555-555555555555", workspace_id: workspaceId, session_id: sessionId,
+      transcript_version_id: providerId, segment_index: 0, start_ms: 0, end_ms: 1000, text: "  original  ",
+      language_code: "en", speaker_label: "A", confidence: null, provider_segment_id: null,
+      created_at: provider.created_at, updated_at: provider.updated_at,
+    };
+    const reads: LocalTranscriptEvidenceReadDependencies = {
+      getCurrentVersion: jest.fn(async () => edit),
+      getVersionById: jest.fn(async () => provider),
+      listSegments: jest.fn(async (id: string) => id === providerId ? [segment] : []),
+    };
+    const snapshot = jest.spyOn(transcriptRepository, "withLocalTranscriptReadSnapshot")
+      .mockImplementation(async (_sessionId, task) => task(reads));
+    return { provider, edit, reads, snapshot };
+  };
+  afterEach(() => { jest.restoreAllMocks(); });
+  it("reads default Full Text from one snapshot without implicitly fetching ancestry", async () => {
+    const f = fixture(); const result = await loadLocalTranscriptReadModel(sessionId);
+    expect(result).toMatchObject({ kind: "ready", plainText: "edited\ntext", segmentCount: 0 });
+    expect(f.snapshot).toHaveBeenCalledTimes(1); expect(f.reads.getVersionById).not.toHaveBeenCalled();
+  });
+  it("keeps current, ancestry and provider segments in the same callback", async () => {
+    const f = fixture(); const result = await loadLocalTranscriptReadModelWithEvidence(sessionId);
+    expect(f.snapshot).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ kind: "ready", rawPlainText: f.edit.plain_text, segmentCount: 0,
+      evidence: { kind: "available", source: "ancestor", version: { id: providerId }, segmentRows: [{ text: "original", startMs: 0, endMs: 1000 }] } });
+    expect(f.reads.listSegments).toHaveBeenNthCalledWith(1, editId);
+    expect(f.reads.listSegments).toHaveBeenNthCalledWith(2, providerId);
+  });
+  it("uses snapshot-bound defaults even when only one dependency is overridden", async () => {
+    const f = fixture(); const getCurrentVersion = jest.fn(async () => f.edit);
+    await loadLocalTranscriptReadModelWithEvidence(sessionId, { getCurrentVersion });
+    expect(f.snapshot).toHaveBeenCalledTimes(1); expect(getCurrentVersion).toHaveBeenCalledTimes(1);
+    expect(f.reads.getCurrentVersion).not.toHaveBeenCalled(); expect(f.reads.getVersionById).toHaveBeenCalledTimes(1);
+  });
+  it("retains complete dependency injection for pure read-model tests", async () => {
+    const f = fixture(); await loadLocalTranscriptReadModelWithEvidence(sessionId, f.reads);
+    expect(f.snapshot).not.toHaveBeenCalled();
+  });
+  it("retains the empty result on the web/no-native snapshot path", async () => {
+    const f = fixture(); f.snapshot.mockResolvedValueOnce(null);
+    expect(await loadLocalTranscriptReadModelWithEvidence(sessionId)).toEqual({ kind: "empty" });
+  });
+  it("does not return a constructed model when the snapshot boundary rejects delivery", async () => {
+    const f = fixture(); f.snapshot.mockImplementation(async (_sessionId, task) => {
+      await task(f.reads); throw new Error("Snapshot context retired during close");
+    });
+    await expect(loadLocalTranscriptReadModelWithEvidence(sessionId)).rejects.toThrow("Snapshot context retired during close");
   });
 });

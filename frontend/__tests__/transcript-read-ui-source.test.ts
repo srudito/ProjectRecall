@@ -39,8 +39,8 @@ describe("Milestone 2B.3C timestamped transcript browser source boundary", () =>
   });
 
   it("builds timestamp rows from validated local SQLite segments", () => {
-    expect(readModel).toContain("getCurrentTranscriptVersionForSession");
-    expect(readModel).toContain("listTranscriptSegmentsForVersion");
+    expect(readModel).toContain("withLocalTranscriptReadSnapshot");
+    expect(readModel).toContain("dependencies.listSegments");
     expect(readModel).toContain("buildLocalTranscriptSegmentRows");
     expect(readModel).toContain("formatTranscriptSegmentTimeRange");
     expect(readModel).toContain("formatDurationMs");
@@ -81,4 +81,24 @@ ${readModel}`;
     expect(ui).not.toContain("maxLength=");
   });
 
+});
+
+describe("3E.2B2A isolated local read boundary", () => {
+  it("keeps the shared transaction helper while default reader paths use isolated snapshots", () => {
+    const schema = read("src/services/sqlite/schema.ts");
+    const repository = read("src/services/sqlite/repository.ts");
+    const readModel = read("src/services/transcription/read-model.ts");
+    expect(schema).toContain("useNewConnection: true");
+    expect(repository).toContain("pauseSessionReadSnapshots(input.sessionId)");
+    expect(repository).toContain("pauseSessionReadSnapshots(sessionId)");
+    expect(repository).toContain("finally { releaseReads(); }");
+    expect(readModel).not.toContain("getCurrentTranscriptVersionForSession");
+    expect(readModel).not.toContain("listTranscriptSegmentsForVersion");
+    const snapshots = read("src/services/sqlite/read-snapshot.ts");
+    expect(snapshots).toContain("PRAGMA query_only = ON");
+    expect(snapshots).not.toContain("withExclusiveTransactionAsync");
+    for (const forbidden of ["getSupabase", "functions.invoke", "fetch(", "notifyTranscription"]) {
+      expect(snapshots).not.toContain(forbidden);
+    }
+  });
 });

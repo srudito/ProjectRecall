@@ -40,6 +40,22 @@ export const openLocalDb = async (): Promise<SQLite.SQLiteDatabase | null> => {
   return dbPromise;
 };
 
+/**
+ * Owned snapshot handle to the SAME initialized database file. The snapshot
+ * manager owns setup/transaction/close, including setup failure and late open.
+ * Never run migrations again or change settings on the shared writer handle.
+ */
+export const openLocalReadDb = async (): Promise<SQLite.SQLiteDatabase | null> => {
+  const main = await openLocalDb();
+  if (!main) return null;
+  const read = await SQLite.openDatabaseAsync(DB_NAME, { useNewConnection: true });
+  if (read === main) {
+    // Do not close the application's writer if a broken adapter aliases it.
+    throw new Error("A separate local read connection is required.");
+  }
+  return read;
+};
+
 // Test-only helper — allows unit tests to reset the memoized promise between
 // runs. Not exported from the barrel.
 export const __resetOpenLocalDbForTests = () => {
