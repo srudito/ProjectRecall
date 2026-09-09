@@ -1,3 +1,4 @@
+import { invalidateTranscriptHistoryCache, waitForTranscriptHistoryCacheIdle } from "@/src/services/transcription/history-cache-service";
 import { invalidateLocalReadSnapshots, waitForLocalReadSnapshotsIdle } from "@/src/services/sqlite/read-snapshot";
 import { waitForMediaUploadIdle } from "@/src/services/sync/media-upload-worker";
 import { waitForMetadataSyncIdle } from "@/src/services/sync/project-sync-worker";
@@ -42,6 +43,11 @@ jest.mock("@/src/services/sqlite/read-snapshot", () => ({
   waitForLocalReadSnapshotsIdle: jest.fn(),
 }));
 
+jest.mock("@/src/services/transcription/history-cache-service", () => ({
+  invalidateTranscriptHistoryCache: jest.fn(),
+  waitForTranscriptHistoryCacheIdle: jest.fn(),
+}));
+
 const waits: jest.MockedFunction<() => Promise<void>>[] = [
   waitForTranscriptEditorsIdle as jest.MockedFunction<typeof waitForTranscriptEditorsIdle>,
   waitForTranscriptEditSyncIdle as jest.MockedFunction<typeof waitForTranscriptEditSyncIdle>,
@@ -61,6 +67,7 @@ const waits: jest.MockedFunction<() => Promise<void>>[] = [
     typeof waitForTranscriptCurrentVersionSyncIdle
   >,
   waitForLocalReadSnapshotsIdle as jest.MockedFunction<typeof waitForLocalReadSnapshotsIdle>,
+  waitForTranscriptHistoryCacheIdle as jest.MockedFunction<() => Promise<void>>,
 ];
 
 describe("account deletion background-work quiescence", () => {
@@ -173,5 +180,27 @@ describe("read snapshot deletion quiescence", () => {
         .rejects.toMatchObject({ code: "ACCOUNT_DELETION_BACKGROUND_WORK_ACTIVE" });
       await jest.advanceTimersByTimeAsync(50); await rejected;
     } finally { jest.useRealTimers(); }
+  });
+});
+
+describe("history writer deletion quiescence", () => {
+  beforeEach(() => { jest.clearAllMocks(); for (const wait of waits) wait.mockResolvedValue(); });
+  it("invalidates history admission before waiting for native writes and close", async () => {
+    await waitForAccountDeletionBackgroundWork();
+    expect(invalidateTranscriptHistoryCache).toHaveBeenCalledTimes(1);
+    expect((invalidateTranscriptHistoryCache as jest.Mock).mock.invocationCallOrder[0])
+      .toBeLessThan((waitForTranscriptHistoryCacheIdle as jest.Mock).mock.invocationCallOrder[0]);
+  });
+  it("does not start cleanup while a retired writer still owns native work", async () => {
+    let release!: () => void;
+    (waitForTranscriptHistoryCacheIdle as jest.Mock).mockReturnValue(new Promise<void>((resolve) => { release = resolve; }));
+    let idle = false; const pending = waitForAccountDeletionBackgroundWork().then(() => { idle = true; });
+    await Promise.resolve(); expect(idle).toBe(false); release(); await pending; expect(idle).toBe(true);
+  });
+  it("fails closed and redacts writer drain failures", async () => {
+    (waitForTranscriptHistoryCacheIdle as jest.Mock).mockRejectedValue(new Error("PRIVATE NATIVE WRITE"));
+    await expect(waitForAccountDeletionBackgroundWork()).rejects.toMatchObject({
+      code: "ACCOUNT_DELETION_BACKGROUND_WORK_ACTIVE", message: "Local history write resources have not been released.",
+    });
   });
 });

@@ -56,6 +56,15 @@ export const openLocalReadDb = async (): Promise<SQLite.SQLiteDatabase | null> =
   return read;
 };
 
+/** Owned write connection; callers own rollback/finalize/close, never the main handle. */
+export const openLocalHistoryWriteDb = async (): Promise<SQLite.SQLiteDatabase | null> => {
+  const main = await openLocalDb();
+  if (!main) return null;
+  const write = await SQLite.openDatabaseAsync(DB_NAME, { useNewConnection: true });
+  if (write === main) throw new Error("A separate local history write connection is required.");
+  return write;
+};
+
 // Test-only helper — allows unit tests to reset the memoized promise between
 // runs. Not exported from the barrel.
 export const __resetOpenLocalDbForTests = () => {

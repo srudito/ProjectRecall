@@ -1,3 +1,7 @@
+import {
+  invalidateTranscriptHistoryCache,
+  waitForTranscriptHistoryCacheIdle,
+} from "@/src/services/transcription/history-cache-service";
 import { AppError, ErrorCode } from "@/src/domain/errors";
 import { waitForMediaUploadIdle } from "@/src/services/sync/media-upload-worker";
 import { waitForMetadataSyncIdle } from "@/src/services/sync/project-sync-worker";
@@ -57,11 +61,18 @@ export const waitForAccountDeletionBackgroundWork = async (
 ): Promise<void> => {
   // Close edit admission and invalidate scheduled callbacks BEFORE taking the
   // idle snapshot. The account-deletion marker prevents lifecycle resumption.
+  invalidateTranscriptHistoryCache();
   invalidateLocalReadSnapshots();
   invalidateTranscriptEditors();
   pauseTranscriptEditSync();
   await withTimeout(
     Promise.all([
+      waitForTranscriptHistoryCacheIdle().catch(() => {
+        throw new AppError(
+          ErrorCode.ACCOUNT_DELETION_BACKGROUND_WORK_ACTIVE,
+          "Local history write resources have not been released.",
+        );
+      }),
       waitForLocalReadSnapshotsIdle().catch(() => {
         throw new AppError(
           ErrorCode.ACCOUNT_DELETION_BACKGROUND_WORK_ACTIVE,

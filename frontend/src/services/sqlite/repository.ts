@@ -10,6 +10,10 @@ import {
   LocalReadSnapshotError, pauseSessionReadSnapshots, withLocalReadSnapshot,
   type LocalSnapshotQueries,
 } from "./read-snapshot";
+import {
+  pauseSessionTranscriptHistoryCache,
+  waitForTranscriptHistoryCacheIdle,
+} from "@/src/services/transcription/history-cache-service";
 
 import {
   normalizeTranscriptHistoryError,
@@ -5199,9 +5203,15 @@ export interface PrepareSessionDeletionInput {
 export const atomicPrepareSessionDeletion = async (
   input: PrepareSessionDeletionInput,
 ): Promise<void> => {
+  const releaseHistory = pauseSessionTranscriptHistoryCache(input.sessionId);
   const releaseReads = pauseSessionReadSnapshots(input.sessionId);
-  try { await prepareSessionDeletionWithReadsPaused(input); }
-  finally { releaseReads(); }
+  try {
+    try {
+      // Drain BEFORE acquiring the transaction turn; never wait behind ourselves.
+      await waitForTranscriptHistoryCacheIdle(input.sessionId);
+      await prepareSessionDeletionWithReadsPaused(input);
+    } finally { releaseReads(); }
+  } finally { releaseHistory(); }
 };
 
 const prepareSessionDeletionWithReadsPaused = async (
@@ -5532,9 +5542,14 @@ export const listUploadQueueForSession = async (
 export const hardDeleteLocalSessionData = async (
   sessionId: string,
 ): Promise<void> => {
+  const releaseHistory = pauseSessionTranscriptHistoryCache(sessionId);
   const releaseReads = pauseSessionReadSnapshots(sessionId);
-  try { await hardDeleteLocalSessionDataWithReadsPaused(sessionId); }
-  finally { releaseReads(); }
+  try {
+    try {
+      await waitForTranscriptHistoryCacheIdle(sessionId);
+      await hardDeleteLocalSessionDataWithReadsPaused(sessionId);
+    } finally { releaseReads(); }
+  } finally { releaseHistory(); }
 };
 
 const hardDeleteLocalSessionDataWithReadsPaused = async (

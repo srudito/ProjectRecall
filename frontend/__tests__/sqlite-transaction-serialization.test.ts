@@ -1,6 +1,7 @@
 import {
   __resetSerializedLocalTransactionsForTests,
   runSerializedLocalTransaction,
+  withLocalTransactionTurn,
   type LocalTransactionDatabase,
 } from "@/src/services/sqlite/transaction";
 
@@ -92,5 +93,25 @@ describe("serialized local SQLite transactions", () => {
     await expect(
       runSerializedLocalTransaction(db, async () => "recovered"),
     ).resolves.toBe("recovered");
+  });
+});
+
+describe("owned history write turns share the existing FIFO", () => {
+  beforeEach(() => { __resetSerializedLocalTransactionsForTests(); });
+  it("orders owned connection work between existing transactions without adding a nested BEGIN", async () => {
+    const entered = deferred(); const release = deferred(); const events: string[] = [];
+    const db = { withTransactionAsync: jest.fn(async (task: () => Promise<void>) => { events.push("begin"); await task(); events.push("end"); }) };
+    const first = runSerializedLocalTransaction(db, async () => { entered.resolve(); await release.promise; });
+    await entered.promise;
+    const owned = withLocalTransactionTurn(async () => { events.push("owned-begin"); events.push("owned-close"); return 7; });
+    const last = runSerializedLocalTransaction(db, async () => { events.push("last"); });
+    await Promise.resolve(); expect(events).toEqual(["begin"]); release.resolve();
+    await first; expect(await owned).toBe(7); await last;
+    expect(events).toEqual(["begin", "end", "owned-begin", "owned-close", "begin", "last", "end"]);
+    expect(db.withTransactionAsync).toHaveBeenCalledTimes(2);
+  });
+  it("releases the cooperative turn after owned rollback/close failure", async () => {
+    await expect(withLocalTransactionTurn(async () => { throw new Error("owned failure"); })).rejects.toThrow("owned failure");
+    expect(await withLocalTransactionTurn(async () => "next")).toBe("next");
   });
 });
