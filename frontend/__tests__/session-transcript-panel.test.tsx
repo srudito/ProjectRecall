@@ -3,20 +3,29 @@ import { SessionTranscriptPanel } from "@/src/components/SessionTranscriptPanel"
 import { loadLocalTranscriptReadModelWithEvidence, type LocalTranscriptReadModelWithEvidence } from "@/src/services/transcription/read-model";
 
 type TestNode = {
-  props: { [key: string]: unknown; onPress: () => void };
+  props: { [key: string]: unknown; onPress: () => void; onClosed: () => void };
   findByProps: (props: object) => TestNode;
   findAllByProps: (props: object) => TestNode[];
 };
 type Tree = { root: TestNode; update: (node: React.ReactNode) => void; unmount: () => void };
 const { create } = jest.requireActual<{ create: (node: React.ReactNode) => Tree }>("react-test-renderer");
-jest.mock("react-native", () => ({ Text: "Text", View: "View", TouchableOpacity: "TouchableOpacity" }));
+jest.mock("react-native", () => ({ Platform: { OS: "android" }, Text: "Text", View: "View", TouchableOpacity: "TouchableOpacity" }));
 jest.mock("@/src/components/Button", () => ({ Button: "Button" }));
 jest.mock("@/src/components/Card", () => ({ Card: "Card" }));
+jest.mock("@/src/components/TranscriptHistoryModal", () => {
+  const ReactActual: typeof import("react") = jest.requireActual("react");
+  return { TranscriptHistoryModal: (props: object) => ReactActual.createElement(
+    "TranscriptHistoryModal", { ...props, testID: "transcript-history-modal-stub" },
+  ) };
+});
 const mockTranslate = (_ns: string, key: string, options?: object) => key + (options ? ` ${JSON.stringify(options)}` : "");
 jest.mock("@/src/i18n/I18nProvider", () => ({ useI18n: () => ({ t: mockTranslate }) }));
 jest.mock("@/src/theme/ThemeProvider", () => ({ useTheme: () => ({
   colors: {}, spacing: { md: 16, sm: 8, xs: 4, xxs: 2 }, radii: { md: 8 }, typography: { body: {}, caption: {} }, layout: { minTouchTarget: 44 },
 }) }));
+jest.mock("@/src/stores/auth-store", () => ({
+  useAuthStore: (select: (state: { user: { id: string } }) => unknown) => select({ user: { id: "user" } }),
+}));
 const mockListeners = new Set<() => void>();
 jest.mock("@/src/services/sync/transcription-sync-events", () => ({ subscribeTranscriptionSyncChanges: (listener: () => void) => {
   mockListeners.add(listener); return () => { mockListeners.delete(listener); };
@@ -92,6 +101,20 @@ describe("3D.3 rendered evidence-aware transcript reader", () => {
   it("offers explicit draft recovery even if the reader is empty", async () => {
     loader.mockResolvedValue({ kind: "empty" }); const edit = jest.fn(); await mount(edit);
     await press("session-transcript-edit"); expect(edit).toHaveBeenCalledTimes(1); expect(loader).toHaveBeenCalledTimes(1);
+  });
+  it("opens read-only history explicitly and blocks the editor while it is open", async () => {
+    loader.mockResolvedValue({ kind: "empty" }); const edit = jest.fn(); await mount(edit);
+    expect(has("transcript-history-modal-stub")).toBe(false);
+
+    await press("session-transcript-history");
+
+    expect(node("transcript-history-modal-stub").props.scope).toEqual({
+      userId: "user", workspaceId: "workspace", sessionId: "session",
+    });
+    expect(node("session-transcript-edit").props.disabled).toBe(true);
+    await act(async () => { node("transcript-history-modal-stub").props.onClosed(); });
+    expect(has("transcript-history-modal-stub")).toBe(false);
+    expect(edit).not.toHaveBeenCalled();
   });
   it("retains cached text on refresh failure", async () => {
     await mount(); loader.mockRejectedValue(new Error("Private database diagnostic")); await event();

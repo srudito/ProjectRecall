@@ -1,17 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Text, TouchableOpacity, View } from "react-native";
+import { Platform, Text, TouchableOpacity, View } from "react-native";
 
 import { useI18n } from "@/src/i18n/I18nProvider";
 import { subscribeTranscriptionSyncChanges } from "@/src/services/sync/transcription-sync-events";
+import type { TranscriptHistoryScope } from "@/src/services/transcription/history-types";
 import {
   loadLocalTranscriptReadModelWithEvidence,
   type LocalTranscriptReadModelWithEvidence,
   type LocalTranscriptSegmentReadRow,
 } from "@/src/services/transcription/read-model";
+import { useAuthStore } from "@/src/stores/auth-store";
 import { useTheme } from "@/src/theme/ThemeProvider";
 
 import { Button } from "./Button";
 import { Card } from "./Card";
+import { TranscriptHistoryModal } from "./TranscriptHistoryModal";
 
 type TranscriptViewMode = "continuous" | "segments";
 
@@ -25,6 +28,7 @@ export function SessionTranscriptPanel({ sessionId, workspaceId, onEdit, editDis
 }) {
   const { t } = useI18n();
   const { colors, spacing, radii, typography, layout } = useTheme();
+  const userId = useAuthStore((state) => state.user?.id ?? null);
   const [model, setModel] = useState<LocalTranscriptReadModelWithEvidence>({ kind: "empty" });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -32,6 +36,8 @@ export function SessionTranscriptPanel({ sessionId, workspaceId, onEdit, editDis
     useState<TranscriptViewMode>("continuous");
   const [visibleSegmentCount, setVisibleSegmentCount] =
     useState(SEGMENT_BATCH_SIZE);
+  const [historyScope, setHistoryScope] =
+    useState<TranscriptHistoryScope | null>(null);
   const loadRequestRef = useRef(0);
   const hasLoadedRef = useRef(false);
 
@@ -79,6 +85,15 @@ export function SessionTranscriptPanel({ sessionId, workspaceId, onEdit, editDis
     };
   }, [load]);
 
+  useEffect(() => {
+    setHistoryScope((current) => current && (
+      !!editDisabled || !userId || !workspaceId ||
+      current.userId !== userId ||
+      current.workspaceId !== workspaceId ||
+      current.sessionId !== sessionId
+    ) ? null : current);
+  }, [editDisabled, sessionId, userId, workspaceId]);
+
   const currentVersionId =
     model.kind === "ready" ? model.version.id : null;
 
@@ -96,6 +111,14 @@ export function SessionTranscriptPanel({ sessionId, workspaceId, onEdit, editDis
   useEffect(() => {
     setVisibleSegmentCount(SEGMENT_BATCH_SIZE);
   }, [currentVersionId, evidenceVersionId]);
+
+  const openHistory = (): void => {
+    if (
+      Platform.OS === "web" || editDisabled || historyScope ||
+      !userId || !workspaceId
+    ) return;
+    setHistoryScope({ userId, workspaceId, sessionId });
+  };
 
   const renderViewModeButton = (
     mode: TranscriptViewMode,
@@ -155,7 +178,11 @@ export function SessionTranscriptPanel({ sessionId, workspaceId, onEdit, editDis
       testID="session-transcript-panel"
     >
       {onEdit ? <Button testID="session-transcript-edit" label={t("session", "editor.open")}
-        variant="secondary" onPress={onEdit} disabled={editDisabled}
+        variant="secondary" onPress={onEdit} disabled={editDisabled || historyScope !== null}
+        style={{ marginBottom: spacing.xs }} /> : null}
+      {Platform.OS !== "web" ? <Button testID="session-transcript-history"
+        label={t("session", "history.open")} variant="secondary" onPress={openHistory}
+        disabled={!!editDisabled || !userId || !workspaceId || historyScope !== null}
         style={{ marginBottom: spacing.sm }} /> : null}
       {loading ? (
         <Text style={[typography.caption, { color: colors.textTertiary }]}>
@@ -373,6 +400,11 @@ export function SessionTranscriptPanel({ sessionId, workspaceId, onEdit, editDis
           )}
         </View>
       )}
+      {historyScope ? <TranscriptHistoryModal
+        key={`${historyScope.userId}:${historyScope.workspaceId}:${historyScope.sessionId}`}
+        scope={historyScope}
+        onClosed={() => setHistoryScope((current) => current === historyScope ? null : current)}
+      /> : null}
     </Card>
   );
 }
