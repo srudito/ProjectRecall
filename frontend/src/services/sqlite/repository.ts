@@ -56,6 +56,7 @@ import {
 import {
   ResultReceiptError,
   RESULT_RECEIPT_NAMESPACE,
+  decodeTranscriptionResultReceipt,
   parseResultReceiptKey,
   planTranscriptionResultReceipt,
   resultReceiptKey,
@@ -3139,43 +3140,259 @@ const parseLocalTranscriptVersion = (
   is_current: true,
 });
 
-const resultIncompleteSql = `
-  NOT EXISTS (
-    SELECT 1
-      FROM local_processing_jobs result_job
-      JOIN local_transcription_runs result_run
-        ON result_run.processing_job_id = result_job.id
-      JOIN local_transcript_versions result_version
-        ON result_version.transcription_run_id = result_run.id
-       AND result_version.version_origin = 'provider'
-       AND result_version.version_status = 'final'
-     WHERE result_job.id = request_row.server_job_id
-       AND result_job.status = 'succeeded'
-       AND result_run.status = 'succeeded'
-  )
-`;
+// C2B.2 receipt-aware result eligibility and one-time legacy repair.
+export type TranscriptionResultRequestWorkItem =
+  | {
+      kind: "sync";
+      request: TranscriptionRequestQueueRow;
+    }
+  | {
+      kind: "reject";
+      request: TranscriptionRequestQueueRow;
+      errorCode:
+        | "TRANSCRIPTION_RESULT_LOCAL_SCOPE_INVALID"
+        | "TRANSCRIPTION_RESULT_RECEIPT_INVALID";
+      safeError: string;
+    };
 
-export const getNextEligibleTranscriptionResultRequest = async (
+const TRANSCRIPTION_RESULT_SCAN_BATCH_SIZE = 64;
+interface TranscriptionResultScanCursor {
+  sortAt: string;
+  createdAt: string;
+  id: string;
+}
+interface PreparedTranscriptionResultScanRow {
+  request: TranscriptionRequestQueueRow;
+  identity: ResultReceiptIdentity;
+  receiptKey: string;
+  cursor: TranscriptionResultScanCursor;
+}
+interface LocalResultReceiptRow {
+  key: string;
+  value: string;
+  updated_at: string;
+}
+
+const rejectTranscriptionResultRequest = (
+  request: TranscriptionRequestQueueRow,
+  errorCode:
+    | "TRANSCRIPTION_RESULT_LOCAL_SCOPE_INVALID"
+    | "TRANSCRIPTION_RESULT_RECEIPT_INVALID",
+  safeError: string,
+): TranscriptionResultRequestWorkItem => ({
+  kind: "reject",
+  request,
+  errorCode,
+  safeError,
+});
+
+const isResultRequestAfter = (
+  candidate: TranscriptionResultScanCursor,
+  previous: TranscriptionResultScanCursor | null,
+): boolean =>
+  previous === null ||
+  candidate.sortAt > previous.sortAt ||
+  (candidate.sortAt === previous.sortAt &&
+    (candidate.createdAt > previous.createdAt ||
+      (candidate.createdAt === previous.createdAt && candidate.id > previous.id)));
+
+const readTranscriptionResultRequestBatch = async (
+  db: SQLite.SQLiteDatabase,
   userId: string,
   now: string,
-): Promise<TranscriptionRequestQueueRow | null> => {
-  const db = await openLocalDb();
-  if (!db) return null;
-  const row = (await db.getFirstAsync(
+  cursor: TranscriptionResultScanCursor | null,
+  dueOnly: boolean,
+): Promise<LocalTranscriptionRequestQueueRow[]> => {
+  const dueSql = dueOnly
+    ? "AND (request_row.next_retry_at IS NULL OR request_row.next_retry_at <= ?)"
+    : "";
+  const cursorSql = cursor
+    ? `AND (
+         COALESCE(request_row.next_retry_at, request_row.created_at) > ?
+         OR (
+           COALESCE(request_row.next_retry_at, request_row.created_at) = ?
+           AND request_row.created_at > ?
+         )
+         OR (
+           COALESCE(request_row.next_retry_at, request_row.created_at) = ?
+           AND request_row.created_at = ?
+           AND request_row.id > ?
+         )
+       )`
+    : "";
+  const params: (string | number)[] = [userId];
+  if (dueOnly) params.push(now);
+  if (cursor) {
+    params.push(
+      cursor.sortAt,
+      cursor.sortAt,
+      cursor.createdAt,
+      cursor.sortAt,
+      cursor.createdAt,
+      cursor.id,
+    );
+  }
+  params.push(TRANSCRIPTION_RESULT_SCAN_BATCH_SIZE);
+  return db.getAllAsync<LocalTranscriptionRequestQueueRow>(
     `SELECT request_row.*
        FROM local_transcription_request_queue request_row
       WHERE request_row.user_id = ?
         AND request_row.queue_status = 'submitted'
         AND request_row.server_job_id IS NOT NULL
-        AND (request_row.next_retry_at IS NULL OR request_row.next_retry_at <= ?)
-        AND ${resultIncompleteSql}
+        ${dueSql}
+        ${cursorSql}
       ORDER BY COALESCE(request_row.next_retry_at, request_row.created_at),
                request_row.created_at,
                request_row.id
-      LIMIT 1`,
-    [userId, now],
-  )) as LocalTranscriptionRequestQueueRow | null;
-  return row ? parseTranscriptionRequestQueueRow(row) : null;
+      LIMIT ?`,
+    params,
+  );
+};
+
+const findNextTranscriptionResultWorkItem = async (
+  db: SQLite.SQLiteDatabase,
+  userId: string,
+  now: string,
+  dueOnly: boolean,
+): Promise<TranscriptionResultRequestWorkItem | null> => {
+  let cursor: TranscriptionResultScanCursor | null = null;
+  for (;;) {
+    const rows = await readTranscriptionResultRequestBatch(
+      db,
+      userId,
+      now,
+      cursor,
+      dueOnly,
+    );
+    if (
+      !Array.isArray(rows) ||
+      rows.length > TRANSCRIPTION_RESULT_SCAN_BATCH_SIZE
+    ) {
+      throw new Error("The local transcription result queue is invalid.");
+    }
+    if (rows.length === 0) return null;
+
+    const prepared: PreparedTranscriptionResultScanRow[] = [];
+    let previous = cursor;
+    for (const raw of rows) {
+      const request = parseTranscriptionRequestQueueRow(raw);
+      const sortAt = request.next_retry_at ?? request.created_at;
+      const nextCursor = {
+        sortAt,
+        createdAt: request.created_at,
+        id: request.id,
+      };
+      if (
+        request.user_id !== userId ||
+        request.queue_status !== "submitted" ||
+        !request.server_job_id ||
+        typeof sortAt !== "string" ||
+        typeof request.created_at !== "string" ||
+        typeof request.id !== "string" ||
+        !Number.isFinite(Date.parse(sortAt)) ||
+        !Number.isFinite(Date.parse(request.created_at)) ||
+        !isResultRequestAfter(nextCursor, previous)
+      ) {
+        return rejectTranscriptionResultRequest(
+          request,
+          "TRANSCRIPTION_RESULT_LOCAL_SCOPE_INVALID",
+          "The local transcript request scope is invalid.",
+        );
+      }
+      const identity: ResultReceiptIdentity = {
+        userId: request.user_id,
+        workspaceId: request.workspace_id,
+        sessionId: request.session_id,
+        recordingId: request.recording_id,
+        jobId: request.server_job_id,
+        requestId: request.id,
+      };
+      let receiptKey: string;
+      try {
+        receiptKey = resultReceiptKey(identity);
+      } catch {
+        return rejectTranscriptionResultRequest(
+          request,
+          "TRANSCRIPTION_RESULT_LOCAL_SCOPE_INVALID",
+          "The local transcript request scope is invalid.",
+        );
+      }
+      prepared.push({ request, identity, receiptKey, cursor: nextCursor });
+      previous = nextCursor;
+    }
+
+    const keys = prepared.map((item) => item.receiptKey);
+    const receiptRows = await db.getAllAsync<{
+      key: unknown;
+      value: unknown;
+      updated_at: unknown;
+    }>(
+      `SELECT key, value, updated_at FROM local_sync_state
+        WHERE key IN (${keys.map(() => "?").join(",")})`,
+      keys,
+    );
+    const fallback = prepared[0].request;
+    if (!Array.isArray(receiptRows) || receiptRows.length > prepared.length) {
+      return rejectTranscriptionResultRequest(
+        fallback,
+        "TRANSCRIPTION_RESULT_RECEIPT_INVALID",
+        "The local transcript completion receipt is invalid.",
+      );
+    }
+    const expectedKeys = new Set(keys);
+    const receipts = new Map<string, LocalResultReceiptRow>();
+    for (const row of receiptRows) {
+      if (
+        typeof row.key !== "string" ||
+        typeof row.value !== "string" ||
+        typeof row.updated_at !== "string" ||
+        !expectedKeys.has(row.key) ||
+        receipts.has(row.key)
+      ) {
+        return rejectTranscriptionResultRequest(
+          fallback,
+          "TRANSCRIPTION_RESULT_RECEIPT_INVALID",
+          "The local transcript completion receipt is invalid.",
+        );
+      }
+      receipts.set(row.key, row as LocalResultReceiptRow);
+    }
+
+    for (const item of prepared) {
+      const receipt = receipts.get(item.receiptKey);
+      if (!receipt) return { kind: "sync", request: item.request };
+      try {
+        decodeTranscriptionResultReceipt(receipt, item.identity);
+      } catch {
+        return rejectTranscriptionResultRequest(
+          item.request,
+          "TRANSCRIPTION_RESULT_RECEIPT_INVALID",
+          "The local transcript completion receipt is invalid.",
+        );
+      }
+    }
+
+    if (rows.length < TRANSCRIPTION_RESULT_SCAN_BATCH_SIZE) return null;
+    cursor = prepared[prepared.length - 1].cursor;
+  }
+};
+
+export const getNextTranscriptionResultWorkItem = async (
+  userId: string,
+  now: string,
+): Promise<TranscriptionResultRequestWorkItem | null> => {
+  const db = await openLocalDb();
+  if (!db) return null;
+  return findNextTranscriptionResultWorkItem(db, userId, now, true);
+};
+
+/** Backward-compatible read for older callers; the worker uses the typed item. */
+export const getNextEligibleTranscriptionResultRequest = async (
+  userId: string,
+  now: string,
+): Promise<TranscriptionRequestQueueRow | null> => {
+  const item = await getNextTranscriptionResultWorkItem(userId, now);
+  return item?.kind === "sync" ? item.request : null;
 };
 
 export const getNextTranscriptionResultWakeAt = async (
@@ -3184,16 +3401,13 @@ export const getNextTranscriptionResultWakeAt = async (
 ): Promise<string | null> => {
   const db = await openLocalDb();
   if (!db) return null;
-  const row = (await db.getFirstAsync(
-    `SELECT MIN(COALESCE(request_row.next_retry_at, ?)) AS wake_at
-       FROM local_transcription_request_queue request_row
-      WHERE request_row.user_id = ?
-        AND request_row.queue_status = 'submitted'
-        AND request_row.server_job_id IS NOT NULL
-        AND ${resultIncompleteSql}`,
-    [now, userId],
-  )) as { wake_at: string | null } | null;
-  return row?.wake_at ?? null;
+  const item = await findNextTranscriptionResultWorkItem(
+    db,
+    userId,
+    now,
+    false,
+  );
+  return item ? item.request.next_retry_at ?? now : null;
 };
 
 const requireResultQueueScopeOnDb = async (

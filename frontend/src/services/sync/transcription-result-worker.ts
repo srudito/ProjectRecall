@@ -3,8 +3,8 @@ import { Platform } from "react-native";
 
 import { isAccountDeletionLocallyPending } from "@/src/services/account-deletion/state";
 import {
-  getNextEligibleTranscriptionResultRequest,
   getNextTranscriptionResultWakeAt,
+  getNextTranscriptionResultWorkItem,
   markTranscriptionRequestCancelled,
   markTranscriptionRequestFailed,
   persistCompletedTranscriptionResult,
@@ -12,6 +12,7 @@ import {
   persistTranscriptionResultProgress,
   rescheduleTranscriptionResultAfterFailure,
   type TranscriptionRequestQueueRow,
+  type TranscriptionResultRequestWorkItem,
 } from "@/src/services/sqlite/repository";
 import { getSupabase } from "@/src/services/supabase/client";
 import {
@@ -50,7 +51,7 @@ export interface TranscriptionResultWorkerDependencies {
   getNextOperation: (
     userId: string,
     now: string,
-  ) => Promise<TranscriptionRequestQueueRow | null>;
+  ) => Promise<TranscriptionResultRequestWorkItem | null>;
   getNextWakeAt: (userId: string, now: string) => Promise<string | null>;
   fetchRemoteResult: (input: {
     serverJobId: string;
@@ -83,7 +84,7 @@ const defaultDependencies: TranscriptionResultWorkerDependencies = {
     if (response.error) return null;
     return response.data.session?.user.id ?? null;
   },
-  getNextOperation: getNextEligibleTranscriptionResultRequest,
+  getNextOperation: getNextTranscriptionResultWorkItem,
   getNextWakeAt: getNextTranscriptionResultWakeAt,
   fetchRemoteResult: fetchRemoteTranscriptionResult,
   persistProgress: persistTranscriptionResultProgress,
@@ -200,9 +201,23 @@ export const createTranscriptionResultWorker = (
     ) {
       if (isAccountDeletionLocallyPending()) break;
       const now = dependencies.now();
-      const row = await dependencies.getNextOperation(userId, now.toISOString());
-      if (!row) break;
+      const operation = await dependencies.getNextOperation(
+        userId,
+        now.toISOString(),
+      );
+      if (!operation) break;
+      const row = operation.request;
       result.processed += 1;
+
+      if (operation.kind === "reject") {
+        await dependencies.markFailed(
+          row.id,
+          operation.errorCode,
+          operation.safeError,
+        );
+        result.failed += 1;
+        continue;
+      }
 
       if (row.user_id !== userId || !row.server_job_id) {
         await dependencies.markFailed(

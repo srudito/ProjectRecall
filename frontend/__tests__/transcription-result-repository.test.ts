@@ -4,7 +4,6 @@ import * as Crypto from "expo-crypto";
 import { openLocalDb } from "@/src/services/sqlite/schema";
 import { runSerializedLocalTransaction } from "@/src/services/sqlite/transaction";
 import {
-  getNextEligibleTranscriptionResultRequest,
   persistCompletedTranscriptionResult,
   persistTranscriptionResultProgress,
 } from "@/src/services/sqlite/repository";
@@ -480,18 +479,6 @@ describe("C2B.1 atomic SQLite result reconciliation", () => {
       retryable: true,
     });
     expect(f.state()).toEqual({ versions: [], segments: [], receipts: [] });
-  });
-
-  it("keeps the legacy result selector independent of current Full Text", async () => {
-    const getFirstAsync = jest.fn(
-      async (_sql: string, _params?: unknown[]) => null,
-    );
-    mockedOpen.mockResolvedValue({ getFirstAsync } as never);
-    await getNextEligibleTranscriptionResultRequest(USER, NOW);
-    const sql = String(getFirstAsync.mock.calls[0]?.[0] ?? "");
-    expect(sql).toContain("result_version.version_origin = 'provider'");
-    expect(sql).toContain("result_version.version_status = 'final'");
-    expect(sql).not.toContain("result_version.is_current = 1");
   });
 
   it("continues to persist nonterminal job/run progress without transcript rows", async () => {

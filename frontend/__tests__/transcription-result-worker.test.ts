@@ -45,6 +45,11 @@ const queueRow = {
   updated_at: NOW.toISOString(),
 };
 
+const syncWorkItem = {
+  kind: "sync" as const,
+  request: queueRow,
+};
+
 const job: SyncedProcessingJob = {
   id: JOB_ID,
   workspace_id: WORKSPACE_ID,
@@ -142,7 +147,7 @@ const dependencies = (): TranscriptionResultWorkerDependencies => ({
   getAuthenticatedUserId: jest.fn(async () => USER_ID),
   getNextOperation: jest
     .fn()
-    .mockResolvedValueOnce(queueRow)
+    .mockResolvedValueOnce(syncWorkItem)
     .mockResolvedValueOnce(null),
   getNextWakeAt: jest.fn(async () => null),
   fetchRemoteResult: jest.fn(async () => ({
@@ -185,6 +190,30 @@ describe("mobile transcription result worker", () => {
     const result = await createTranscriptionResultWorker(deps).run();
     expect(result.state).toBe("offline");
     expect(deps.fetchRemoteResult).not.toHaveBeenCalled();
+  });
+
+  it("rejects an invalid receipt locally without another remote read", async () => {
+    const deps = dependencies();
+    deps.getNextOperation = jest
+      .fn()
+      .mockResolvedValueOnce({
+        kind: "reject" as const,
+        request: queueRow,
+        errorCode: "TRANSCRIPTION_RESULT_RECEIPT_INVALID" as const,
+        safeError: "The local transcript completion receipt is invalid.",
+      })
+      .mockResolvedValueOnce(null);
+
+    const result = await createTranscriptionResultWorker(deps).run();
+
+    expect(result.failed).toBe(1);
+    expect(deps.markFailed).toHaveBeenCalledWith(
+      queueRow.id,
+      "TRANSCRIPTION_RESULT_RECEIPT_INVALID",
+      "The local transcript completion receipt is invalid.",
+    );
+    expect(deps.fetchRemoteResult).not.toHaveBeenCalled();
+    expect(deps.persistCompleted).not.toHaveBeenCalled();
   });
 
   it("atomically persists a completed current transcript", async () => {

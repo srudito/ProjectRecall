@@ -19,6 +19,14 @@ describe("C2B.1 mobile transcript result reconciliation boundary", () => {
     resultStart,
   );
   const resultPersistence = repository.slice(resultStart, resultEnd);
+  const eligibilityStart = repository.indexOf(
+    "// C2B.2 receipt-aware result eligibility",
+  );
+  const eligibilityEnd = repository.indexOf(
+    "const requireResultQueueScopeOnDb",
+    eligibilityStart,
+  );
+  const resultEligibility = repository.slice(eligibilityStart, eligibilityEnd);
   const migration = read("../supabase/migrations/0013_transcription_foundation_v1.sql");
 
   it("uses authenticated RLS reads and never invokes the provider/worker", () => {
@@ -48,6 +56,22 @@ describe("C2B.1 mobile transcript result reconciliation boundary", () => {
     );
     expect(resultPersistence).not.toMatch(
       /INSERT INTO local_transcript_(?:versions|segments)[\s\S]*?ON CONFLICT/,
+    );
+  });
+
+  it("uses bounded receipts for eligibility without treating them as Full Text", () => {
+    expect(resultEligibility).toContain(
+      "TRANSCRIPTION_RESULT_SCAN_BATCH_SIZE = 64",
+    );
+    expect(resultEligibility).toContain("decodeTranscriptionResultReceipt");
+    expect(resultEligibility).toContain("resultReceiptKey");
+    expect(resultEligibility).not.toContain("local_processing_jobs");
+    expect(resultEligibility).not.toContain("local_transcription_runs");
+    expect(resultEligibility).not.toContain("local_transcript_versions");
+    expect(resultEligibility).not.toContain("local_transcript_segments");
+    expect(resultWorker).toContain('operation.kind === "reject"');
+    expect(resultWorker.indexOf('operation.kind === "reject"')).toBeLessThan(
+      resultWorker.indexOf("fetchRemoteResult({"),
     );
   });
 
