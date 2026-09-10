@@ -17,6 +17,9 @@ export const RecordingState = {
   FAILED: "failed",
 } as const;
 
+// This const/type pair intentionally shares one public name across TypeScript's
+// separate value and type namespaces; preserve the established import API.
+// eslint-disable-next-line @typescript-eslint/no-redeclare
 export type RecordingState = (typeof RecordingState)[keyof typeof RecordingState];
 
 export const RecordingEvent = {
@@ -37,6 +40,9 @@ export const RecordingEvent = {
   RESET: "RESET",
 } as const;
 
+// This const/type pair intentionally shares one public name across TypeScript's
+// separate value and type namespaces; preserve the established import API.
+// eslint-disable-next-line @typescript-eslint/no-redeclare
 export type RecordingEvent = (typeof RecordingEvent)[keyof typeof RecordingEvent];
 
 export interface Transition {
