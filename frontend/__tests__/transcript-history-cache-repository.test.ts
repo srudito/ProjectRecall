@@ -170,13 +170,16 @@ describe("guarded history persistence repository", () => {
     expect(row).toMatchObject({ created_by: null, updated_at: LATER, is_current: 1 });
     expect(await f.persist()).toMatchObject({ kind: "unchanged" }); expect(row.created_by).toBeNull();
   });
-  it.each(["id-content", "number", "scope", "segment", "extra-segment", "edit-segment", "global-id"])(
+  it.each(["id-content", "number", "scope", "segment", "segment-time", "extra-segment", "edit-segment", "global-id"])(
     "rejects conflicts before preparing a write: %s", async (kind) => {
       const f = fixture();
       if (kind === "id-content") f.state().versions.push({ ...localVersion(), plain_text: "different" });
       if (kind === "number") f.state().versions.push({ ...localVersion(), id: OTHER });
       if (kind === "scope") f.state().versions.push({ ...localVersion(), workspace_id: OTHER });
       if (kind === "segment") f.state().segments.push({ ...segment(0), text: "different" });
+      if (kind === "segment-time") f.state().segments.push({
+        ...segment(0), updated_at: NOW.replace("123456", "123457"),
+      });
       if (kind === "extra-segment") f.state().segments.push({ ...segment(2) });
       if (kind === "edit-segment") f.state().segments.push({ ...segment(0), transcript_version_id: id(2) });
       if (kind === "global-id") f.state().segments.push({ ...segment(0), transcript_version_id: OTHER });

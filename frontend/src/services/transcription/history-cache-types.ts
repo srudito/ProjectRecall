@@ -1,5 +1,6 @@
 import * as Crypto from "expo-crypto";
 
+import { planTranscriptCacheVersion } from "./cache-merge";
 import {
   assertHistoryBundleParent,
   HISTORY_BUNDLE_SEGMENT_COLUMNS,
@@ -218,12 +219,6 @@ export const consumeHistoryCacheCommand = (command: PreparedHistoryCacheCommand)
 };
 export const revokeHistoryCacheCommand = (command: PreparedHistoryCacheCommand): void => { commands.delete(command); };
 
-const canonical = (value: unknown): string => {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (object(value)) return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
-  return JSON.stringify(value);
-};
-
 /** Existing immutable content must match. Only monotonic null clearing may merge. */
 export const reconcileCachedHistoryVersion = (
   row: unknown, incoming: Readonly<TranscriptHistoryCloudVersion>, scope: Readonly<TranscriptHistoryCloudScope>,
@@ -233,29 +228,15 @@ export const reconcileCachedHistoryVersion = (
     if ((raw.is_current !== 0 && raw.is_current !== 1) || typeof raw.language_summary !== "string") return conflict();
     const local = parseHistoryCloudVersion({ ...raw, is_current: raw.is_current === 1,
       language_summary: JSON.parse(raw.language_summary) }, scope);
-    const immutable = ["id", "workspace_id", "session_id", "version", "version_origin", "version_status",
-      "parent_version_id", "plain_text", "content_checksum_sha256"] as const;
-    if (immutable.some((key) => local[key] !== incoming[key]) ||
-        historyBundleInstant(local.created_at) !== historyBundleInstant(incoming.created_at) ||
-        canonical(local.language_summary) !== canonical(incoming.language_summary)) return conflict();
-    for (const key of ["created_by", "transcription_run_id"] as const) {
-      if (local[key] !== null && incoming[key] !== null && local[key] !== incoming[key]) return conflict();
-    }
-    const createdBy = local.created_by === null ? null : incoming.created_by;
-    const runId = local.transcription_run_id === null ? null : incoming.transcription_run_id;
-    const changed = createdBy !== local.created_by || runId !== local.transcription_run_id;
-    const updatedAt = historyBundleInstant(incoming.updated_at) > historyBundleInstant(local.updated_at)
-      ? incoming.updated_at : local.updated_at;
-    return { createdBy, runId, updatedAt: changed ? updatedAt : local.updated_at, changed };
-  } catch { return conflict(); }
-};
-export const assertCachedHistorySegment = (row: unknown, incoming: Readonly<SyncedTranscriptSegment>): void => {
-  try {
-    const local = captureSegment(row);
-    for (const key of HISTORY_CACHE_SEGMENT_COLUMNS) {
-      if (key === "created_at" || key === "updated_at") {
-        if (historyBundleInstant(local[key]) !== historyBundleInstant(incoming[key])) return conflict();
-      } else if (local[key] !== incoming[key]) return conflict();
-    }
+    const plan = planTranscriptCacheVersion(local, incoming, {
+      workspaceId: scope.workspaceId, sessionId: scope.sessionId,
+    });
+    if (plan.kind === "insert") return conflict();
+    return {
+      createdBy: plan.version.created_by,
+      runId: plan.version.transcription_run_id,
+      updatedAt: plan.version.updated_at,
+      changed: plan.kind === "clear_provenance",
+    };
   } catch { return conflict(); }
 };

@@ -1,7 +1,6 @@
 import type { SQLiteBindValue } from "expo-sqlite";
 
 import {
-  assertCachedHistorySegment,
   consumeHistoryCacheCommand,
   HISTORY_CACHE_SEGMENT_COLUMNS,
   HISTORY_CACHE_VERSION_COLUMNS,
@@ -14,6 +13,10 @@ import {
   type PreparedHistoryCacheCommand,
   type PreparedHistoryCacheData,
 } from "@/src/services/transcription/history-cache-types";
+import {
+  planTranscriptCacheSegments,
+  TranscriptCacheMergeError,
+} from "@/src/services/transcription/cache-merge";
 import type { TranscriptHistoryCloudVersion } from "@/src/services/transcription/history-cloud-types";
 import type { SyncedTranscriptSegment } from "@/src/services/transcription/result-types";
 
@@ -107,20 +110,20 @@ const planWrites = async (db: HistoryCacheDatabase, data: PreparedHistoryCacheDa
     const localSegments = await all<Record<string, unknown>>(
       `SELECT ${segmentColumns} FROM local_transcript_segments
         WHERE transcript_version_id = ? ORDER BY segment_index LIMIT ?`, [version.id, MAX_HISTORY_CACHE_SEGMENTS + 1]);
-    if (version.id !== provider.versionId) {
-      if (localSegments.length !== 0) return conflict();
-      continue;
+    const providerSegments = version.id === provider.versionId ? data.segments : [];
+    try {
+      const segmentPlan = planTranscriptCacheSegments(
+        version,
+        localSegments,
+        providerSegments,
+        { kind: "complete", expectedSegmentCount: providerSegments.length },
+        { workspaceId: scope.workspaceId, sessionId: scope.sessionId },
+      );
+      if (version.id === provider.versionId) plan.segments = [...segmentPlan.segmentsToInsert];
+    } catch (failure) {
+      if (failure instanceof TranscriptCacheMergeError) return conflict();
+      throw failure;
     }
-    if (localSegments.length > data.segments.length) return conflict();
-    const seen = new Set<number>();
-    for (const row of localSegments) {
-      const index = row.segment_index;
-      if (!Number.isSafeInteger(index) || (index as number) < 0 || (index as number) >= data.segments.length ||
-          seen.has(index as number)) return conflict();
-      assertCachedHistorySegment(row, data.segments[index as number]);
-      seen.add(index as number);
-    }
-    plan.segments = data.segments.filter((segment) => !seen.has(segment.segment_index));
   }
   // Check global segment IDs in bounded batches, including orphan/cross-version collisions.
   for (let offset = 0; offset < plan.segments.length; offset += 200) {

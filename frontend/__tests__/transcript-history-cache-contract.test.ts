@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import * as Crypto from "expo-crypto";
 
 import {
   consumeHistoryCacheCommand, prepareHistoryCacheCommand, revokeHistoryCacheCommand,
-  reconcileCachedHistoryVersion, assertCachedHistorySegment, historyCacheError,
+  reconcileCachedHistoryVersion, historyCacheError,
   MAX_HISTORY_CACHE_SEGMENTS, MAX_HISTORY_CACHE_BYTES,
 } from "@/src/services/transcription/history-cache-types";
 import { HISTORY_BUNDLE_SOURCE, type TranscriptHistoryBundleResult } from "@/src/services/transcription/history-bundle-types";
@@ -177,10 +179,18 @@ describe("immutable local equality and monotonic provenance", () => {
   });
   it("compares timestamp microseconds rather than Date.parse milliseconds", () => {
     expect(() => reconcileCachedHistoryVersion(localVersion(), { ...version(1), created_at: NOW.replace("123456", "123457") }, scope)).toThrow();
-    expect(() => assertCachedHistorySegment({ ...segment(0), updated_at: NOW.replace("123456", "123457") }, segment(0))).toThrow();
   });
-  it.each(["text", "start_ms", "end_ms", "id", "transcript_version_id", "confidence", "provider_segment_id"])(
-    "rejects changed segment %s rather than deleting evidence", (field) => {
-      expect(() => assertCachedHistorySegment({ ...segment(0), [field]: "changed" }, segment(0))).toThrow();
-    });
+
+  it("delegates immutable versions and append-only segments to the shared C2A merge contract", () => {
+    const typesSource = readFileSync(
+      resolve(process.cwd(), "src/services/transcription/history-cache-types.ts"), "utf8",
+    );
+    const writerSource = readFileSync(
+      resolve(process.cwd(), "src/services/sqlite/history-cache.ts"), "utf8",
+    );
+    expect(typesSource).toContain('import { planTranscriptCacheVersion } from "./cache-merge";');
+    expect(typesSource).not.toContain("const canonical =");
+    expect(writerSource).toContain("planTranscriptCacheSegments(");
+    expect(writerSource).not.toContain("assertCachedHistorySegment");
+  });
 });
