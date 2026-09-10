@@ -5,6 +5,9 @@ import {
   type TranscriptionResultWorkerDependencies,
 } from "@/src/services/sync/transcription-result-worker";
 import { TranscriptionResultClientError } from "@/src/services/transcription/result-client";
+import {
+  TranscriptionResultReconciliationError,
+} from "@/src/services/transcription/result-reconciliation";
 import type {
   SyncedProcessingJob,
   SyncedTranscriptSegment,
@@ -148,6 +151,7 @@ const dependencies = (): TranscriptionResultWorkerDependencies => ({
     run,
     version,
     segments: [segment],
+    expectedSegmentCount: 1,
   })),
   persistProgress: jest.fn(async () => undefined),
   persistCompleted: jest.fn(async () => undefined),
@@ -188,11 +192,14 @@ describe("mobile transcription result worker", () => {
     const result = await createTranscriptionResultWorker(deps).run();
     expect(result.synchronized).toBe(1);
     expect(deps.persistCompleted).toHaveBeenCalledWith({
+      userId: USER_ID,
       queueId: queueRow.id,
       job,
       run,
       version,
       segments: [segment],
+      expectedSegmentCount: 1,
+      reconciledAt: NOW.toISOString(),
     });
     expect(deps.notifyChanged).toHaveBeenCalledTimes(1);
   });
@@ -228,6 +235,7 @@ describe("mobile transcription result worker", () => {
       run,
       version,
       segments: [segment],
+      expectedSegmentCount: 1,
     }));
     const result = await createTranscriptionResultWorker(deps).run();
     expect(result.failed).toBe(1);
@@ -267,6 +275,57 @@ describe("mobile transcription result worker", () => {
       queueRow.id,
       "TRANSCRIPTION_RESULT_NOT_FOUND",
       "not found",
+    );
+  });
+
+  it("fails a permanent local evidence conflict without an endless retry", async () => {
+    const deps = dependencies();
+    deps.persistCompleted = jest.fn(async () => {
+      throw new TranscriptionResultReconciliationError(
+        "RESULT_RECONCILIATION_CONFLICT",
+      );
+    });
+    const result = await createTranscriptionResultWorker(deps).run();
+    expect(result.failed).toBe(1);
+    expect(deps.markFailed).toHaveBeenCalledWith(
+      queueRow.id,
+      "RESULT_RECONCILIATION_CONFLICT",
+      "The completed transcript conflicts with existing local evidence.",
+    );
+    expect(deps.rescheduleFailure).not.toHaveBeenCalled();
+  });
+
+  it("retries temporary local write recovery without discarding the request", async () => {
+    const deps = dependencies();
+    deps.persistCompleted = jest.fn(async () => {
+      throw new TranscriptionResultReconciliationError(
+        "RESULT_RECONCILIATION_WRITE_RETRYABLE",
+      );
+    });
+    const result = await createTranscriptionResultWorker(deps).run();
+    expect(result.retried).toBe(1);
+    expect(deps.rescheduleFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        queueId: queueRow.id,
+        errorCode: "RESULT_RECONCILIATION_WRITE_RETRYABLE",
+      }),
+    );
+    expect(deps.markFailed).not.toHaveBeenCalled();
+  });
+
+  it("cancels a result whose local session was removed during the read", async () => {
+    const deps = dependencies();
+    deps.persistCompleted = jest.fn(async () => {
+      throw new TranscriptionResultReconciliationError(
+        "RESULT_RECONCILIATION_SESSION_UNAVAILABLE",
+      );
+    });
+    const result = await createTranscriptionResultWorker(deps).run();
+    expect(result.cancelled).toBe(1);
+    expect(deps.markCancelled).toHaveBeenCalledWith(
+      queueRow.id,
+      "RESULT_RECONCILIATION_SESSION_UNAVAILABLE",
+      "The local session is no longer available for this transcript.",
     );
   });
 

@@ -3,11 +3,22 @@ import { resolve } from "node:path";
 
 const read = (path: string) => readFileSync(resolve(process.cwd(), path), "utf8");
 
-describe("Milestone 2B.3A mobile transcript result source boundary", () => {
+describe("C2B.1 mobile transcript result reconciliation boundary", () => {
   const coordinator = read("src/services/sync/ProjectSyncCoordinator.tsx");
   const resultWorker = read("src/services/sync/transcription-result-worker.ts");
   const resultClient = read("src/services/transcription/result-client.ts");
+  const reconciliation = read(
+    "src/services/transcription/result-reconciliation.ts",
+  );
   const repository = read("src/services/sqlite/repository.ts");
+  const resultStart = repository.indexOf(
+    "// C2B.1 immutable result evidence",
+  );
+  const resultEnd = repository.indexOf(
+    "const upsertGenericTranscriptVersionOnDb",
+    resultStart,
+  );
+  const resultPersistence = repository.slice(resultStart, resultEnd);
   const migration = read("../supabase/migrations/0013_transcription_foundation_v1.sql");
 
   it("uses authenticated RLS reads and never invokes the provider/worker", () => {
@@ -21,12 +32,23 @@ describe("Milestone 2B.3A mobile transcript result source boundary", () => {
     expect(resultClient).not.toContain("api.assemblyai.com");
   });
 
-  it("paginates segment reads and atomically replaces one version's segments", () => {
+  it("requires independent complete coverage and append-only local evidence", () => {
     expect(resultClient).toContain("SEGMENT_PAGE_SIZE = 500");
     expect(resultClient).toContain(".range(offset, offset + SEGMENT_PAGE_SIZE - 1)");
-    expect(repository).toContain("runSerializedLocalTransaction");
-    expect(repository).toContain("DELETE FROM local_transcript_segments WHERE transcript_version_id = ?");
-    expect(repository).toContain("SET is_current = 0");
+    expect(resultClient).toContain("word_count:provider_metadata->wordCount");
+    expect(resultClient).toContain("expectedSegmentCount");
+    expect(reconciliation).toContain("digestStringAsync");
+    expect(reconciliation).toContain("planTranscriptCacheSegments");
+    expect(reconciliation).toContain("expectedSegmentCount");
+    expect(resultPersistence).toContain("runSerializedLocalTransaction");
+    expect(resultPersistence).toContain("planTranscriptionResultReceipt");
+    expect(resultPersistence).toContain("INSERT INTO local_sync_state");
+    expect(resultPersistence).not.toContain(
+      "DELETE FROM local_transcript_segments",
+    );
+    expect(resultPersistence).not.toMatch(
+      /INSERT INTO local_transcript_(?:versions|segments)[\s\S]*?ON CONFLICT/,
+    );
   });
 
   it("wires result sync to lifecycle/network and request submission", () => {

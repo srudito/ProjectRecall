@@ -203,6 +203,10 @@ describe("transcription result client validation", () => {
       ),
     ).resolves.toMatchObject({ kind: "pending", reason: "result" });
 
+    const runQuery = from.mock.results[1]?.value as { select: jest.Mock };
+    expect(runQuery.select).toHaveBeenCalledWith(
+      expect.stringContaining("word_count:provider_metadata->wordCount"),
+    );
     const versionQuery = from.mock.results[2]?.value as {
       eq: jest.Mock;
       order: jest.Mock;
@@ -275,6 +279,7 @@ describe("transcription result client validation", () => {
       last_safe_error: null,
       created_at: now,
       updated_at: now,
+      word_count: 1,
     };
     const archivedProvider = {
       id: UUIDS[1],
@@ -328,8 +333,29 @@ describe("transcription result client validation", () => {
       kind: "succeeded",
       version: { id: archivedProvider.id, is_current: false },
       segments: [{ id: providerSegment.id }],
+      expectedSegmentCount: 1,
     });
     expect(from).toHaveBeenCalledWith("transcript_segments");
+
+    const mismatchFrom = jest.fn();
+    const mismatchClient = authenticatedClient(
+      {
+        processing_jobs: [{ data: job, error: null }],
+        transcription_runs: [{ data: { ...run, word_count: 2 }, error: null }],
+        transcript_versions: [{ data: archivedProvider, error: null }],
+        transcript_segments: [{ data: [providerSegment], error: null }],
+      },
+      mismatchFrom,
+    );
+    await expect(
+      fetchRemoteTranscriptionResult(
+        { serverJobId: job.id, expectedUserId: UUIDS[0] },
+        mismatchClient,
+      ),
+    ).rejects.toMatchObject({
+      code: "TRANSCRIPTION_RESULT_INVALID",
+      retryable: false,
+    });
   });
 
   it("rejects malformed transcript rows", () => {

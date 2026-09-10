@@ -185,4 +185,5 @@ export type TranscriptionResultSnapshot =
       run: SyncedTranscriptionRun;
       version: SyncedTranscriptVersionRecord;
       segments: SyncedTranscriptSegment[];
+      expectedSegmentCount: number;
     };

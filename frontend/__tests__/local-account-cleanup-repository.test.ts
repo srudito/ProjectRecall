@@ -8,6 +8,7 @@ import {
   deleteLocalAccountData,
   hardDeleteLocalSessionData,
 } from "@/src/services/sqlite/repository";
+import { resultReceiptKey } from "@/src/services/transcription/result-receipt";
 
 jest.mock("@/src/services/sqlite/schema", () => ({
   openLocalDb: jest.fn(),
@@ -28,6 +29,24 @@ const SECOND_OWNED_WORKSPACE_ID =
   "33333333-3333-4333-8333-333333333333";
 const SESSION_ID = "44444444-4444-4444-8444-444444444444";
 const MEDIA_ID = "55555555-5555-4555-8555-555555555555";
+const OTHER_USER_ID = "66666666-6666-4666-8666-666666666666";
+const OTHER_WORKSPACE_ID = "77777777-7777-4777-8777-777777777777";
+const OTHER_SESSION_ID = "88888888-8888-4888-8888-888888888888";
+const RECEIPT_RECORDING_ID = "99999999-9999-4999-8999-999999999999";
+const RECEIPT_JOB_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const receiptKey = (
+  userId: string,
+  workspaceId: string,
+  sessionId: string,
+  requestId: string,
+): string => resultReceiptKey({
+  userId,
+  workspaceId,
+  sessionId,
+  recordingId: RECEIPT_RECORDING_ID,
+  jobId: RECEIPT_JOB_ID,
+  requestId,
+});
 
 const mockedOpenLocalDb = openLocalDb as jest.MockedFunction<
   typeof openLocalDb
@@ -110,16 +129,51 @@ describe("SQLite account cleanup scope", () => {
   });
 
   it("deletes only rows owned by the user, owned workspaces, or owned sessions", async () => {
+    const matchingUserReceipt = receiptKey(
+      USER_ID,
+      OTHER_WORKSPACE_ID,
+      OTHER_SESSION_ID,
+      "matching-user",
+    );
+    const matchingWorkspaceReceipt = receiptKey(
+      OTHER_USER_ID,
+      OWNED_WORKSPACE_ID,
+      OTHER_SESSION_ID,
+      "matching-workspace",
+    );
+    const matchingSessionReceipt = receiptKey(
+      OTHER_USER_ID,
+      OTHER_WORKSPACE_ID,
+      SESSION_ID,
+      "matching-session",
+    );
+    const unrelatedReceipt = receiptKey(
+      OTHER_USER_ID,
+      OTHER_WORKSPACE_ID,
+      OTHER_SESSION_ID,
+      "unrelated",
+    );
     const runAsync = jest.fn(
       async (_sql: string, _params?: readonly unknown[]): Promise<void> =>
         undefined,
     );
+    const getAllAsync = jest.fn(async (sql: string) => {
+      if (!sql.includes("FROM local_sync_state")) {
+        throw new Error(`Unexpected SQL: ${sql}`);
+      }
+      return [
+        { key: matchingUserReceipt },
+        { key: matchingWorkspaceReceipt },
+        { key: matchingSessionReceipt },
+        { key: unrelatedReceipt },
+      ];
+    });
     const getFirstAsync = jest.fn(async () => ({
       busy: 0,
       log: 0,
       checkpointed: 0,
     }));
-    const db = { runAsync, getFirstAsync };
+    const db = { runAsync, getAllAsync, getFirstAsync };
     mockedOpenLocalDb.mockResolvedValue(db as never);
 
     await deleteLocalAccountData({
@@ -177,7 +231,20 @@ describe("SQLite account cleanup scope", () => {
     );
 
     expect(sql).not.toContain("DELETE FROM local_user_preferences");
-    expect(sql).not.toContain("DELETE FROM local_sync_state");
+    const receiptDeletes = runAsync.mock.calls
+      .filter(([statement]) =>
+        statement === "DELETE FROM local_sync_state WHERE key = ?",
+      )
+      .map(([, params]) => params);
+    expect(receiptDeletes).toEqual([
+      [matchingUserReceipt],
+      [matchingWorkspaceReceipt],
+      [matchingSessionReceipt],
+    ]);
+    expect(receiptDeletes).not.toContainEqual([unrelatedReceipt]);
+    expect(sql).not.toMatch(
+      /DELETE FROM local_sync_state\s*(?:;|$)/i,
+    );
 
     const deletesWholeLocalMetaTable = runAsync.mock.calls.some(
       ([statement]) =>
@@ -187,11 +254,27 @@ describe("SQLite account cleanup scope", () => {
   });
 
   it("removes local transcription rows before hard-deleting a session", async () => {
+    const matchingReceipt = receiptKey(
+      USER_ID,
+      OWNED_WORKSPACE_ID,
+      SESSION_ID,
+      "matching-session",
+    );
+    const unrelatedReceipt = receiptKey(
+      USER_ID,
+      OWNED_WORKSPACE_ID,
+      OTHER_SESSION_ID,
+      "other-session",
+    );
     const runAsync = jest.fn(
       async (_sql: string, _params?: readonly unknown[]): Promise<void> =>
         undefined,
     );
-    const db = { runAsync };
+    const getAllAsync = jest.fn(async () => [
+      { key: matchingReceipt },
+      { key: unrelatedReceipt },
+    ]);
+    const db = { runAsync, getAllAsync };
     mockedOpenLocalDb.mockResolvedValue(db as never);
 
     await hardDeleteLocalSessionData(SESSION_ID);
@@ -200,6 +283,13 @@ describe("SQLite account cleanup scope", () => {
       String(statement),
     );
     const joinedSql = sqlStatements.join("\n");
+    const receiptDeletes = runAsync.mock.calls
+      .filter(([statement]) =>
+        statement === "DELETE FROM local_sync_state WHERE key = ?",
+      )
+      .map(([, params]) => params);
+    expect(receiptDeletes).toEqual([[matchingReceipt]]);
+    expect(receiptDeletes).not.toContainEqual([unrelatedReceipt]);
 
     for (const tableName of [
       "local_transcript_segments",
@@ -246,6 +336,7 @@ describe("SQLite account cleanup scope", () => {
     }));
     mockedOpenLocalDb.mockResolvedValue({
       runAsync,
+      getAllAsync: jest.fn(async () => []),
       getFirstAsync,
     } as never);
 

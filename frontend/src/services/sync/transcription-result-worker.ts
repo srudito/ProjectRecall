@@ -19,6 +19,9 @@ import {
   normalizeTranscriptionResultClientError,
   type TranscriptionResultClientError,
 } from "@/src/services/transcription/result-client";
+import {
+  TranscriptionResultReconciliationError,
+} from "@/src/services/transcription/result-reconciliation";
 import type { TranscriptionResultSnapshot } from "@/src/services/transcription/result-types";
 import { nextBackoffMs } from "@/src/services/upload-queue/backoff";
 import { useAuthStore } from "@/src/stores/auth-store";
@@ -279,15 +282,21 @@ export const createTranscriptionResultWorker = (
         }
 
         await dependencies.persistCompleted({
+          userId,
           queueId: row.id,
           job: snapshot.job,
           run: snapshot.run,
           version: snapshot.version,
           segments: snapshot.segments,
+          expectedSegmentCount: snapshot.expectedSegmentCount,
+          reconciledAt: dependencies.now().toISOString(),
         });
         result.synchronized += 1;
       } catch (error) {
-        const normalized = dependencies.normalizeError(error);
+        const normalized =
+          error instanceof TranscriptionResultReconciliationError
+            ? error
+            : dependencies.normalizeError(error);
         if (
           normalized.code === "TRANSCRIPTION_RESULT_AUTHENTICATION_REQUIRED"
         ) {
@@ -302,7 +311,10 @@ export const createTranscriptionResultWorker = (
           break;
         }
 
-        if (normalized.code === "TRANSCRIPTION_RESULT_NOT_FOUND") {
+        if (
+          normalized.code === "TRANSCRIPTION_RESULT_NOT_FOUND" ||
+          normalized.code === "RESULT_RECONCILIATION_SESSION_UNAVAILABLE"
+        ) {
           await dependencies.markCancelled(
             row.id,
             normalized.code,

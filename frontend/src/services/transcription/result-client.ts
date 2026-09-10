@@ -61,11 +61,14 @@ const runStatuses: readonly TranscriptionRunStatus[] = [
   "cancelled",
 ];
 
-const invalid = (cause?: unknown): TranscriptionResultClientError =>
+const invalid = (
+  cause?: unknown,
+  retryable = true,
+): TranscriptionResultClientError =>
   new TranscriptionResultClientError(
     "TRANSCRIPTION_RESULT_INVALID",
     "The transcription service returned an invalid result.",
-    { retryable: true, cause },
+    { retryable, cause },
   );
 
 const queryFailed = (cause: unknown): TranscriptionResultClientError =>
@@ -95,6 +98,17 @@ const optionalText = (value: unknown): string | null =>
 
 const integer = (value: unknown, minimum = 0): number => {
   if (!Number.isSafeInteger(value) || (value as number) < minimum) throw invalid();
+  return value as number;
+};
+
+const completedSegmentCount = (value: unknown): number => {
+  if (
+    !Number.isSafeInteger(value) ||
+    (value as number) < 1 ||
+    (value as number) > MAX_SEGMENTS
+  ) {
+    throw invalid(undefined, false);
+  }
   return value as number;
 };
 
@@ -309,7 +323,7 @@ const readSegments = async (
   version: SyncedTranscriptVersionRecord,
 ): Promise<SyncedTranscriptSegment[]> => {
   const segments: SyncedTranscriptSegment[] = [];
-  for (let offset = 0; offset < MAX_SEGMENTS; offset += SEGMENT_PAGE_SIZE) {
+  for (let offset = 0; offset <= MAX_SEGMENTS; offset += SEGMENT_PAGE_SIZE) {
     const response = await client
       .from("transcript_segments")
       .select(
@@ -320,6 +334,9 @@ const readSegments = async (
       .range(offset, offset + SEGMENT_PAGE_SIZE - 1);
     if (response.error) throw queryFailed(response.error);
     const page = (response.data ?? []).map(parseSyncedTranscriptSegment);
+    if (segments.length + page.length > MAX_SEGMENTS) {
+      throw invalid(new Error("TRANSCRIPTION_SEGMENT_LIMIT_EXCEEDED"), false);
+    }
     for (const segment of page) {
       if (
         segment.workspace_id !== version.workspace_id ||
@@ -334,7 +351,7 @@ const readSegments = async (
     }
     if (page.length < SEGMENT_PAGE_SIZE) return segments;
   }
-  throw invalid(new Error("TRANSCRIPTION_SEGMENT_LIMIT_EXCEEDED"));
+  throw invalid(new Error("TRANSCRIPTION_SEGMENT_LIMIT_EXCEEDED"), false);
 };
 
 export const fetchRemoteTranscriptionResult = async (
@@ -372,16 +389,15 @@ export const fetchRemoteTranscriptionResult = async (
   const runResponse = await client
     .from("transcription_runs")
     .select(
-      "id,processing_job_id,workspace_id,session_id,recording_id,created_by,run_attempt,provider_key,provider_model,request_mode,requested_languages,status,provider_job_id,detected_languages,primary_detected_language,language_detection_status,provider_cleanup_status,started_at,completed_at,last_error_code,last_safe_error,created_at,updated_at",
+      "id,processing_job_id,workspace_id,session_id,recording_id,created_by,run_attempt,provider_key,provider_model,request_mode,requested_languages,status,provider_job_id,detected_languages,primary_detected_language,language_detection_status,provider_cleanup_status,started_at,completed_at,last_error_code,last_safe_error,created_at,updated_at,word_count:provider_metadata->wordCount",
     )
     .eq("processing_job_id", job.id)
     .order("run_attempt", { ascending: false })
     .limit(1)
     .maybeSingle();
   if (runResponse.error) throw queryFailed(runResponse.error);
-  const run = runResponse.data
-    ? parseSyncedTranscriptionRun(runResponse.data)
-    : null;
+  const runRow = runResponse.data ? asRecord(runResponse.data) : null;
+  const run = runRow ? parseSyncedTranscriptionRun(runRow) : null;
   if (
     run &&
     (run.processing_job_id !== job.id ||
@@ -435,11 +451,27 @@ export const fetchRemoteTranscriptionResult = async (
     version.session_id !== job.session_id ||
     version.transcription_run_id !== run.id ||
     version.version_origin !== "provider" ||
-    version.version_status !== "final"
+    version.version_status !== "final" ||
+    version.content_checksum_sha256 === null ||
+    !version.plain_text.trim()
   ) {
-    throw invalid();
+    throw invalid(undefined, false);
   }
 
+  const expectedSegmentCount = completedSegmentCount(runRow?.word_count);
   const segments = await readSegments(client, version);
-  return { kind: "succeeded", job, run, version, segments };
+  if (
+    segments.length !== expectedSegmentCount ||
+    segments.some((segment, index) => segment.segment_index !== index)
+  ) {
+    throw invalid(undefined, false);
+  }
+  return {
+    kind: "succeeded",
+    job,
+    run,
+    version,
+    segments,
+    expectedSegmentCount,
+  };
 };

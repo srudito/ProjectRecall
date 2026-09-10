@@ -5,7 +5,11 @@ import * as SQLite from "expo-sqlite";
 import { Platform } from "react-native";
 
 import { openLocalDb } from "./schema";
-import { runSerializedLocalMutation, runSerializedLocalTransaction } from "./transaction";
+import {
+  LocalWriteRecoveryError,
+  runSerializedLocalMutation,
+  runSerializedLocalTransaction,
+} from "./transaction";
 import {
   LocalReadSnapshotError, pauseSessionReadSnapshots, withLocalReadSnapshot,
   type LocalSnapshotQueries,
@@ -43,6 +47,30 @@ import {
   type TranscriptEditorSaveResult,
   type TranscriptEditorScope,
 } from "@/src/services/transcription/editor-types";
+
+import {
+  TranscriptCacheMergeError,
+  planTranscriptCacheSegments,
+  planTranscriptCacheVersion,
+} from "@/src/services/transcription/cache-merge";
+import {
+  ResultReceiptError,
+  RESULT_RECEIPT_NAMESPACE,
+  parseResultReceiptKey,
+  planTranscriptionResultReceipt,
+  resultReceiptKey,
+  type ResultReceiptIdentity,
+} from "@/src/services/transcription/result-receipt";
+import {
+  TranscriptionResultReconciliationError,
+  consumeTranscriptionResultReconciliationCommand,
+  normalizeResultReconciliationError,
+  prepareTranscriptionResultReconciliationCommand,
+  resultReconciliationError,
+  revokeTranscriptionResultReconciliationCommand,
+  type PreparedTranscriptionResultReconciliationData,
+  type TranscriptionResultReconciliationInput,
+} from "@/src/services/transcription/result-reconciliation";
 
 import {
   isTranscriptLineageParent,
@@ -3446,208 +3474,454 @@ export const persistTerminalTranscriptionResult = async (input: {
   });
 };
 
-export const persistCompletedTranscriptionResult = async (input: {
-  queueId: string;
-  job: SyncedProcessingJob;
-  run: SyncedTranscriptionRun;
-  version: SyncedTranscriptVersionRecord;
-  segments: SyncedTranscriptSegment[];
-}): Promise<void> => {
+// C2B.1 immutable result evidence and reconciliation receipt persistence.
+const RESULT_VERSION_COLUMNS = [
+  "id", "workspace_id", "session_id", "transcription_run_id", "created_by", "version",
+  "version_origin", "version_status", "parent_version_id", "plain_text", "language_summary",
+  "content_checksum_sha256", "is_current", "created_at", "updated_at",
+] as const;
+const RESULT_SEGMENT_COLUMNS = [
+  "id", "workspace_id", "session_id", "transcript_version_id", "segment_index", "start_ms", "end_ms",
+  "text", "language_code", "speaker_label", "confidence", "provider_segment_id", "created_at", "updated_at",
+] as const;
+const resultVersionColumns = RESULT_VERSION_COLUMNS.join(", ");
+const resultSegmentColumns = RESULT_SEGMENT_COLUMNS.join(", ");
+
+const resultConflict = (): never => {
+  throw resultReconciliationError("RESULT_RECONCILIATION_CONFLICT");
+};
+
+const isResultWriteBusy = (failure: unknown): boolean => {
+  if (!failure || typeof failure !== "object") return false;
+  const row = failure as { code?: unknown; message?: unknown };
+  return (
+    row.code === 5 ||
+    row.code === 6 ||
+    row.code === "SQLITE_BUSY" ||
+    row.code === "SQLITE_LOCKED" ||
+    (typeof row.message === "string" &&
+      /database is (locked|busy)|SQLITE_(BUSY|LOCKED)/i.test(
+        row.message.slice(0, 2048),
+      ))
+  );
+};
+
+const isResultWriteConstraint = (failure: unknown): boolean => {
+  if (!failure || typeof failure !== "object") return false;
+  const row = failure as { code?: unknown; message?: unknown };
+  return (
+    row.code === 19 ||
+    row.code === "SQLITE_CONSTRAINT" ||
+    (typeof row.message === "string" &&
+      /constraint failed|SQLITE_CONSTRAINT/i.test(row.message.slice(0, 2048)))
+  );
+};
+
+const localResultVersion = (
+  row: Record<string, unknown>,
+): SyncedTranscriptVersionRecord => {
   if (
-    input.run.processing_job_id !== input.job.id ||
-    input.version.transcription_run_id !== input.run.id ||
-    input.version.version_origin !== "provider" ||
-    input.version.version_status !== "final" ||
-    input.version.workspace_id !== input.job.workspace_id ||
-    input.version.session_id !== input.job.session_id ||
-    input.segments.some(
-      (segment) =>
-        segment.workspace_id !== input.job.workspace_id ||
-        segment.session_id !== input.job.session_id ||
-        segment.transcript_version_id !== input.version.id,
-    )
+    typeof row.language_summary !== "string" ||
+    (row.is_current !== 0 && row.is_current !== 1)
   ) {
-    throw new Error("The transcript result scope is invalid.");
+    return resultConflict();
+  }
+  try {
+    const languageSummary: unknown = JSON.parse(row.language_summary);
+    if (
+      !languageSummary ||
+      typeof languageSummary !== "object" ||
+      Array.isArray(languageSummary)
+    ) {
+      return resultConflict();
+    }
+    return {
+      id: row.id as string,
+      workspace_id: row.workspace_id as string,
+      session_id: row.session_id as string,
+      transcription_run_id: row.transcription_run_id as string | null,
+      created_by: row.created_by as string | null,
+      version: row.version as number,
+      version_origin:
+        row.version_origin as SyncedTranscriptVersionRecord["version_origin"],
+      version_status:
+        row.version_status as SyncedTranscriptVersionRecord["version_status"],
+      parent_version_id: row.parent_version_id as string | null,
+      plain_text: row.plain_text as string,
+      language_summary: languageSummary as Record<string, unknown>,
+      content_checksum_sha256: row.content_checksum_sha256 as string | null,
+      is_current: row.is_current === 1,
+      created_at: row.created_at as string,
+      updated_at: row.updated_at as string,
+    };
+  } catch {
+    return resultConflict();
+  }
+};
+
+const planCompletedResultWrites = async (
+  db: SQLite.SQLiteDatabase,
+  data: PreparedTranscriptionResultReconciliationData,
+) => {
+  const session = await db.getFirstAsync<{
+    id: string;
+    workspace_id: string;
+    status: string;
+    deleted_at: string | null;
+  }>(
+    `SELECT id, workspace_id, status, deleted_at FROM local_sessions
+      WHERE id = ? AND workspace_id = ? LIMIT 1`,
+    [data.version.session_id, data.version.workspace_id],
+  );
+  const deletion = await db.getFirstAsync<{ id: string }>(
+    "SELECT id FROM local_session_deletion_queue WHERE session_id = ? LIMIT 1",
+    [data.version.session_id],
+  );
+  if (
+    !session ||
+    session.id !== data.version.session_id ||
+    session.workspace_id !== data.version.workspace_id ||
+    typeof session.status !== "string" ||
+    session.deleted_at !== null ||
+    session.status === "deleting" ||
+    session.status === "deleted" ||
+    deletion
+  ) {
+    throw resultReconciliationError("RESULT_RECONCILIATION_SESSION_UNAVAILABLE");
   }
 
-  const db = await openLocalDb();
-  if (!db) return;
-  await runSerializedLocalTransaction(db, async () => {
-    await requireResultQueueScopeOnDb(db, {
-      queueId: input.queueId,
-      serverJobId: input.job.id,
-      workspaceId: input.job.workspace_id,
-      sessionId: input.job.session_id,
-      recordingId: input.job.recording_id,
-    });
-    await upsertSyncedProcessingJobOnDb(db, input.job);
-    await upsertSyncedTranscriptionRunOnDb(db, input.run);
+  const request = await db.getFirstAsync<{
+    id: string;
+    user_id: string;
+    workspace_id: string;
+    session_id: string;
+    recording_id: string;
+    server_job_id: string | null;
+    queue_status: string;
+  }>(
+    `SELECT id, user_id, workspace_id, session_id, recording_id, server_job_id, queue_status
+       FROM local_transcription_request_queue WHERE id = ? LIMIT 1`,
+    [data.queueId],
+  );
+  if (
+    !request ||
+    request.id !== data.queueId ||
+    request.user_id !== data.userId ||
+    request.workspace_id !== data.version.workspace_id ||
+    request.session_id !== data.version.session_id ||
+    request.recording_id !== data.job.recording_id ||
+    request.server_job_id !== data.job.id ||
+    request.queue_status !== "submitted"
+  ) {
+    throw resultReconciliationError("RESULT_RECONCILIATION_SCOPE_MISMATCH");
+  }
 
-    const localCurrent = (await db.getFirstAsync(
-      `SELECT id, version
-         FROM local_transcript_versions
-        WHERE session_id = ? AND is_current = 1
-        LIMIT 1`,
-      [input.version.session_id],
-    )) as { id: string; version: number } | null;
+  const versionRows = await db.getAllAsync<Record<string, unknown>>(
+    `SELECT ${resultVersionColumns} FROM local_transcript_versions
+      WHERE id = ? OR (session_id = ? AND version = ?) LIMIT 2`,
+    [data.version.id, data.version.session_id, data.version.version],
+  );
+  if (!Array.isArray(versionRows) || versionRows.length > 1) {
+    return resultConflict();
+  }
+  if (versionRows.length === 1 && versionRows[0].id !== data.version.id) {
+    return resultConflict();
+  }
+  const existingVersion =
+    versionRows.length === 1 ? localResultVersion(versionRows[0]) : null;
 
-    // A provider result may already be non-current remotely because a newer
-    // provider result or user edit has become current. Persist its immutable
-    // transcript/evidence without changing whichever local version is current.
-    if (!input.version.is_current) {
-      await upsertGenericTranscriptVersionOnDb(
-        db,
-        input.version,
-        localCurrent?.id === input.version.id,
-      );
-      await replaceGenericTranscriptSegmentsOnDb(
-        db,
-        input.version,
-        input.segments,
-      );
-      await updateResultRequestOnDb(db, {
-        queueId: input.queueId,
-        queueStatus: "submitted",
-        nextRetryAt: null,
-        attemptCountSql: "reset",
-        errorCode: null,
-        safeError: null,
-      });
-      return;
-    }
+  const existingSegments = await db.getAllAsync<Record<string, unknown>>(
+    `SELECT ${resultSegmentColumns} FROM local_transcript_segments
+      WHERE transcript_version_id = ? ORDER BY segment_index LIMIT ?`,
+    [data.version.id, data.expectedSegmentCount + 1],
+  );
+  if (!Array.isArray(existingSegments)) return resultConflict();
 
-    // Result polling can overlap a generic current-version pull. Never allow
-    // an older provider result snapshot to demote a newer immutable edit that
-    // is already cached locally.
-    if (localCurrent && localCurrent.version > input.version.version) {
-      // Keep the provider result as immutable non-current history so the
-      // durable completion marker remains satisfied without demoting the
-      // newer local current version.
-      await upsertGenericTranscriptVersionOnDb(db, input.version, false);
-      await replaceGenericTranscriptSegmentsOnDb(
-        db,
-        input.version,
-        input.segments,
-      );
-      await updateResultRequestOnDb(db, {
-        queueId: input.queueId,
-        queueStatus: "submitted",
-        nextRetryAt: null,
-        attemptCountSql: "reset",
-        errorCode: null,
-        safeError: null,
-      });
-      return;
-    }
-    if (
-      localCurrent &&
-      localCurrent.version === input.version.version &&
-      localCurrent.id !== input.version.id
-    ) {
-      throw new Error(
-        "The completed transcript result conflicts with local version history.",
-      );
-    }
-
-    await db.runAsync(
-      `UPDATE local_transcript_versions
-          SET is_current = 0
-        WHERE session_id = ? AND id <> ?`,
-      [input.version.session_id, input.version.id],
+  let versionPlan: ReturnType<typeof planTranscriptCacheVersion>;
+  let segmentPlan: ReturnType<typeof planTranscriptCacheSegments>;
+  try {
+    const scope = {
+      workspaceId: data.version.workspace_id,
+      sessionId: data.version.session_id,
+    };
+    versionPlan = planTranscriptCacheVersion(existingVersion, data.version, scope);
+    segmentPlan = planTranscriptCacheSegments(
+      versionPlan.version,
+      existingSegments,
+      data.segments,
+      { kind: "complete", expectedSegmentCount: data.expectedSegmentCount },
+      scope,
     );
-    await db.runAsync(
-      `INSERT INTO local_transcript_versions
-        (id, workspace_id, session_id, transcription_run_id, created_by,
-         version, version_origin, version_status, parent_version_id, plain_text,
-         language_summary, content_checksum_sha256, is_current,
-         created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         workspace_id=excluded.workspace_id,
-         session_id=excluded.session_id,
-         transcription_run_id=excluded.transcription_run_id,
-         created_by=excluded.created_by,
-         version=excluded.version,
-         version_origin=excluded.version_origin,
-         version_status=excluded.version_status,
-         parent_version_id=excluded.parent_version_id,
-         plain_text=excluded.plain_text,
-         language_summary=excluded.language_summary,
-         content_checksum_sha256=excluded.content_checksum_sha256,
-         is_current=1,
-         created_at=excluded.created_at,
-         updated_at=excluded.updated_at`,
+  } catch (failure) {
+    if (failure instanceof TranscriptCacheMergeError) return resultConflict();
+    throw failure;
+  }
+
+  for (
+    let offset = 0;
+    offset < segmentPlan.segmentsToInsert.length;
+    offset += 200
+  ) {
+    const batch = segmentPlan.segmentsToInsert.slice(offset, offset + 200);
+    const collisions = await db.getAllAsync<{ id: string }>(
+      `SELECT id FROM local_transcript_segments
+        WHERE id IN (${batch.map(() => "?").join(",")})`,
+      batch.map((segment) => segment.id),
+    );
+    if (!Array.isArray(collisions) || collisions.length > 0) {
+      return resultConflict();
+    }
+  }
+
+  const currentRows = await db.getAllAsync<{
+    id: string;
+    workspace_id: string;
+    version: number;
+  }>(
+    `SELECT id, workspace_id, version FROM local_transcript_versions
+      WHERE session_id = ? AND is_current = 1 LIMIT 2`,
+    [data.version.session_id],
+  );
+  if (!Array.isArray(currentRows) || currentRows.length > 1) {
+    return resultConflict();
+  }
+  const current = currentRows[0] ?? null;
+  if (
+    current &&
+    (current.workspace_id !== data.version.workspace_id ||
+      !Number.isSafeInteger(current.version) ||
+      current.version < 1)
+  ) {
+    return resultConflict();
+  }
+  if (
+    existingVersion &&
+    existingVersion.is_current !== (current?.id === existingVersion.id)
+  ) {
+    return resultConflict();
+  }
+  if (
+    current &&
+    current.version === data.version.version &&
+    current.id !== data.version.id
+  ) {
+    return resultConflict();
+  }
+  // The merge planner never owns current switching. Promote only after the
+  // immutable plan is accepted, and never over a newer local version.
+  const promote =
+    data.remoteCurrent && (!current || current.version < data.version.version);
+
+  const receiptKey = resultReceiptKey({
+    userId: data.receipt.userId,
+    workspaceId: data.receipt.workspaceId,
+    sessionId: data.receipt.sessionId,
+    recordingId: data.receipt.recordingId,
+    jobId: data.receipt.jobId,
+    requestId: data.receipt.requestId,
+  });
+  const existingReceipt = await db.getFirstAsync<{
+    key: string;
+    value: string;
+    updated_at: string;
+  }>(
+    `SELECT key, value, updated_at FROM local_sync_state
+      WHERE key = ? LIMIT 1`,
+    [receiptKey],
+  );
+  let receiptPlan: ReturnType<typeof planTranscriptionResultReceipt>;
+  try {
+    receiptPlan = planTranscriptionResultReceipt(existingReceipt, data.receipt);
+  } catch (failure) {
+    if (failure instanceof ResultReceiptError) return resultConflict();
+    throw failure;
+  }
+
+  return { versionPlan, segmentPlan, current, promote, receiptPlan };
+};
+
+const requireResultWrite = (changes: number): void => {
+  if (changes !== 1) resultConflict();
+};
+
+const persistPreparedCompletedResult = async (
+  db: SQLite.SQLiteDatabase,
+  data: PreparedTranscriptionResultReconciliationData,
+): Promise<void> => {
+  const plan = await planCompletedResultWrites(db, data);
+
+  await upsertSyncedProcessingJobOnDb(db, data.job);
+  await upsertSyncedTranscriptionRunOnDb(db, data.run);
+
+  if (plan.versionPlan.kind === "insert") {
+    const version = plan.versionPlan.version;
+    const inserted = await db.runAsync(
+      `INSERT INTO local_transcript_versions (${resultVersionColumns})
+       VALUES (${RESULT_VERSION_COLUMNS.map(() => "?").join(",")})`,
+      RESULT_VERSION_COLUMNS.map((key) =>
+        key === "language_summary"
+          ? JSON.stringify(version.language_summary)
+          : key === "is_current"
+            ? 0
+            : version[key],
+      ),
+    );
+    requireResultWrite(inserted.changes);
+  } else if (plan.versionPlan.kind === "clear_provenance") {
+    const updated = await db.runAsync(
+      `UPDATE local_transcript_versions
+          SET created_by = ?, transcription_run_id = ?, updated_at = ?
+        WHERE id = ? AND workspace_id = ? AND session_id = ?`,
       [
-        input.version.id,
-        input.version.workspace_id,
-        input.version.session_id,
-        input.version.transcription_run_id,
-        input.version.created_by,
-        input.version.version,
-        input.version.version_origin,
-        input.version.version_status,
-        input.version.parent_version_id,
-        input.version.plain_text,
-        JSON.stringify(input.version.language_summary),
-        input.version.content_checksum_sha256,
-        input.version.created_at,
-        input.version.updated_at,
+        plan.versionPlan.version.created_by,
+        plan.versionPlan.version.transcription_run_id,
+        plan.versionPlan.version.updated_at,
+        data.version.id,
+        data.version.workspace_id,
+        data.version.session_id,
       ],
     );
+    requireResultWrite(updated.changes);
+  }
 
-    await db.runAsync(
-      "DELETE FROM local_transcript_segments WHERE transcript_version_id = ?",
-      [input.version.id],
+  for (const segment of plan.segmentPlan.segmentsToInsert) {
+    const inserted = await db.runAsync(
+      `INSERT INTO local_transcript_segments (${resultSegmentColumns})
+       VALUES (${RESULT_SEGMENT_COLUMNS.map(() => "?").join(",")})`,
+      RESULT_SEGMENT_COLUMNS.map((key) => segment[key]),
     );
-    for (const segment of input.segments) {
+    requireResultWrite(inserted.changes);
+  }
+
+  if (plan.promote) {
+    if (plan.current) {
+      const demoted = await db.runAsync(
+        `UPDATE local_transcript_versions SET is_current = 0
+          WHERE id = ? AND workspace_id = ? AND session_id = ? AND is_current = 1`,
+        [plan.current.id, data.version.workspace_id, data.version.session_id],
+      );
+      requireResultWrite(demoted.changes);
+    }
+    const promoted = await db.runAsync(
+      `UPDATE local_transcript_versions SET is_current = 1
+        WHERE id = ? AND workspace_id = ? AND session_id = ? AND is_current = 0`,
+      [data.version.id, data.version.workspace_id, data.version.session_id],
+    );
+    requireResultWrite(promoted.changes);
+  }
+
+  const request = await db.runAsync(
+    `UPDATE local_transcription_request_queue
+        SET attempt_count = 0,
+            next_retry_at = NULL,
+            last_error_code = NULL,
+            last_safe_error = NULL,
+            updated_at = ?
+      WHERE id = ? AND user_id = ? AND workspace_id = ? AND session_id = ?
+        AND recording_id = ? AND server_job_id = ? AND queue_status = 'submitted'`,
+    [
+      data.reconciledAt,
+      data.queueId,
+      data.userId,
+      data.version.workspace_id,
+      data.version.session_id,
+      data.job.recording_id,
+      data.job.id,
+    ],
+  );
+  requireResultWrite(request.changes);
+
+  if (plan.receiptPlan.kind === "insert") {
+    const receipt = await db.runAsync(
+      "INSERT INTO local_sync_state(key, value, updated_at) VALUES(?, ?, ?)",
+      [
+        plan.receiptPlan.row.key,
+        plan.receiptPlan.row.value,
+        plan.receiptPlan.row.updated_at,
+      ],
+    );
+    requireResultWrite(receipt.changes);
+  }
+};
+
+export const persistCompletedTranscriptionResult = async (
+  input: TranscriptionResultReconciliationInput,
+): Promise<void> => {
+  const command = await prepareTranscriptionResultReconciliationCommand(input);
+  try {
+    const data = consumeTranscriptionResultReconciliationCommand(command);
+    let db: SQLite.SQLiteDatabase | null;
+    try {
+      db = await openLocalDb();
+    } catch {
+      throw resultReconciliationError("RESULT_RECONCILIATION_STORAGE_UNAVAILABLE");
+    }
+    if (!db) {
+      throw resultReconciliationError("RESULT_RECONCILIATION_STORAGE_UNAVAILABLE");
+    }
+    try {
+      await runSerializedLocalTransaction(db, () =>
+        persistPreparedCompletedResult(db, data),
+      );
+    } catch (failure) {
+      if (failure instanceof TranscriptionResultReconciliationError) {
+        throw failure;
+      }
+      if (
+        failure instanceof LocalWriteRecoveryError ||
+        isResultWriteBusy(failure)
+      ) {
+        throw resultReconciliationError("RESULT_RECONCILIATION_WRITE_RETRYABLE");
+      }
+      if (isResultWriteConstraint(failure)) return resultConflict();
+      throw normalizeResultReconciliationError(failure);
+    }
+  } finally {
+    revokeTranscriptionResultReconciliationCommand(command);
+  }
+};
+
+/** Delete only attributable result receipts; unrelated sync state is preserved. */
+const RESULT_RECEIPT_CLEANUP_BATCH = 256;
+const deleteResultReceiptsOnDb = async (
+  db: SQLite.SQLiteDatabase,
+  shouldDelete: (identity: Readonly<ResultReceiptIdentity>) => boolean,
+): Promise<void> => {
+  let after = "";
+  for (;;) {
+    const rows = await db.getAllAsync<{ key: unknown }>(
+      `SELECT key FROM local_sync_state
+        WHERE substr(key, 1, ?) = ? AND key > ?
+        ORDER BY key LIMIT ?`,
+      [
+        RESULT_RECEIPT_NAMESPACE.length,
+        RESULT_RECEIPT_NAMESPACE,
+        after,
+        RESULT_RECEIPT_CLEANUP_BATCH,
+      ],
+    );
+    if (!Array.isArray(rows) || rows.length > RESULT_RECEIPT_CLEANUP_BATCH) {
+      return resultConflict();
+    }
+    for (const row of rows) {
+      if (typeof row.key !== "string" || row.key <= after) {
+        return resultConflict();
+      }
+      after = row.key;
+      let identity: Readonly<ResultReceiptIdentity>;
+      try {
+        identity = parseResultReceiptKey(row.key);
+      } catch {
+        continue;
+      }
+      if (!shouldDelete(identity)) continue;
       await db.runAsync(
-        `INSERT INTO local_transcript_segments
-          (id, workspace_id, session_id, transcript_version_id, segment_index,
-           start_ms, end_ms, text, language_code, speaker_label, confidence,
-           provider_segment_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           workspace_id=excluded.workspace_id,
-           session_id=excluded.session_id,
-           transcript_version_id=excluded.transcript_version_id,
-           segment_index=excluded.segment_index,
-           start_ms=excluded.start_ms,
-           end_ms=excluded.end_ms,
-           text=excluded.text,
-           language_code=excluded.language_code,
-           speaker_label=excluded.speaker_label,
-           confidence=excluded.confidence,
-           provider_segment_id=excluded.provider_segment_id,
-           created_at=excluded.created_at,
-           updated_at=excluded.updated_at`,
-        [
-          segment.id,
-          segment.workspace_id,
-          segment.session_id,
-          segment.transcript_version_id,
-          segment.segment_index,
-          segment.start_ms,
-          segment.end_ms,
-          segment.text,
-          segment.language_code,
-          segment.speaker_label,
-          segment.confidence,
-          segment.provider_segment_id,
-          segment.created_at,
-          segment.updated_at,
-        ],
+        "DELETE FROM local_sync_state WHERE key = ?",
+        [row.key],
       );
     }
-
-    await updateResultRequestOnDb(db, {
-      queueId: input.queueId,
-      queueStatus: "submitted",
-      nextRetryAt: null,
-      attemptCountSql: "reset",
-      errorCode: null,
-      safeError: null,
-    });
-  });
+    if (rows.length < RESULT_RECEIPT_CLEANUP_BATCH) return;
+  }
 };
 
 const upsertGenericTranscriptVersionOnDb = async (
@@ -5651,8 +5925,13 @@ const hardDeleteLocalSessionDataWithReadsPaused = async (
 ): Promise<void> => {
   const db = await openLocalDb();
   if (!db) return;
+  const receiptSessionId = sessionId.toLowerCase();
 
   await runSerializedLocalTransaction(db, async () => {
+    await deleteResultReceiptsOnDb(
+      db,
+      (identity) => identity.sessionId === receiptSessionId,
+    );
     await db.runAsync(
       `DELETE FROM local_metadata_sync_queue
         WHERE (entity_type = 'session' AND entity_id = ?)
@@ -5896,8 +6175,22 @@ export const deleteLocalAccountData = async (input: {
   const sessionIds = uniqueStrings(input.sessionIds);
   const workspaceClause = sqlInClause(workspaceIds);
   const sessionClause = sqlInClause(sessionIds);
+  const receiptUserId = input.userId.toLowerCase();
+  const receiptWorkspaceIds = new Set(
+    workspaceIds.map((id) => id.toLowerCase()),
+  );
+  const receiptSessionIds = new Set(
+    sessionIds.map((id) => id.toLowerCase()),
+  );
 
   await runSerializedLocalTransaction(db, async () => {
+    await deleteResultReceiptsOnDb(
+      db,
+      (identity) =>
+        identity.userId === receiptUserId ||
+        receiptWorkspaceIds.has(identity.workspaceId) ||
+        receiptSessionIds.has(identity.sessionId),
+    );
     await db.runAsync(
       `DELETE FROM local_transcript_segments
         WHERE workspace_id IN ${workspaceClause.sql}
