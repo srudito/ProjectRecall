@@ -7,6 +7,9 @@ import {
 } from "@/src/services/sqlite/repository";
 import { useAuthStore } from "@/src/stores/auth-store";
 
+import { cacheTranscriptHistoryVersion } from "./history-cache-service";
+import type { HistoryCacheResult } from "./history-cache-types";
+import { captureHistoryCloudVersion } from "./history-cloud-types";
 import {
   normalizeTranscriptHistoryError,
   normalizeTranscriptHistoryPageRequest,
@@ -20,6 +23,20 @@ import {
   type TranscriptHistoryVersionRequest,
 } from "./history-types";
 
+export interface TranscriptHistoryHydrationRequest
+  extends TranscriptHistoryVersionRequest {
+  /** Applies only to the remote cache-fill phase; a local hit needs no network. */
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+export interface TranscriptHistoryHydrationResult {
+  /** Exact local result after zero or one cache attempt. */
+  detail: LocalTranscriptHistoryVersion;
+  /** null means the selected Full Text was already available locally. */
+  cacheResult: HistoryCacheResult | null;
+}
+
 export interface TranscriptHistoryReaderDependencies {
   platform: string;
   getAuth: () => { initialized: boolean; userId: string | null };
@@ -29,7 +46,11 @@ export interface TranscriptHistoryReaderDependencies {
   listPage: typeof listLocalTranscriptHistoryPage;
   loadVersion: typeof loadLocalTranscriptHistoryVersion;
 }
-const defaults: TranscriptHistoryReaderDependencies = {
+export interface TranscriptHistoryHydrationDependencies {
+  cacheVersion: typeof cacheTranscriptHistoryVersion;
+}
+const defaults: TranscriptHistoryReaderDependencies &
+  TranscriptHistoryHydrationDependencies = {
   platform: Platform.OS,
   getAuth: () => {
     const auth = useAuthStore.getState();
@@ -40,18 +61,22 @@ const defaults: TranscriptHistoryReaderDependencies = {
   isContextActive: () => true,
   listPage: listLocalTranscriptHistoryPage,
   loadVersion: loadLocalTranscriptHistoryVersion,
+  cacheVersion: cacheTranscriptHistoryVersion,
 };
 
 /**
- * Read-only, scope-owned reader. Call dispose() when its future viewer closes.
- * No network/connectivity checks, polling, editor registry or persistence writes.
+ * Scope-owned reader. Call dispose() when its future viewer closes. Page and
+ * loadVersion remain local-only; hydrateVersion is an explicit read-through
+ * cache fill and never runs from construction, paging, polling, or coordinator.
  * Page and detail reads each use latest-request-wins independently. A cursor
  * fixes an upper version bound, not a database snapshot across separate calls;
  * cache backfills/cleanup may change local availability. Cloud coverage is unknown.
  */
 export const createLocalTranscriptHistoryReader = (
   scopeInput: Readonly<TranscriptHistoryScope>,
-  overrides: Partial<TranscriptHistoryReaderDependencies> = {},
+  overrides: Partial<
+    TranscriptHistoryReaderDependencies & TranscriptHistoryHydrationDependencies
+  > = {},
 ) => {
   const scope = Object.freeze(normalizeTranscriptHistoryScope(scopeInput));
   const deps = { ...defaults, ...overrides };
@@ -93,6 +118,27 @@ export const createLocalTranscriptHistoryReader = (
     throw normalizeTranscriptHistoryError(error);
   }
 
+  const detailGuard = (generation: number): (() => void) => () => {
+    assertActive();
+    if (generation !== detailGeneration) {
+      throw new TranscriptHistoryError("HISTORY_REQUEST_SUPERSEDED");
+    }
+  };
+  const cloneDetail = (
+    result: LocalTranscriptHistoryVersion,
+  ): LocalTranscriptHistoryVersion =>
+    result.kind === "ready"
+      ? { ...result, scope: { ...result.scope }, version: { ...result.version } }
+      : { ...result, scope: { ...result.scope } };
+  const readDetail = async (
+    captured: TranscriptHistoryVersionRequest,
+    guard: () => void,
+  ): Promise<LocalTranscriptHistoryVersion> => {
+    const result = await deps.loadVersion({ scope, assertActive: guard, ...captured });
+    guard();
+    return cloneDetail(result);
+  };
+
   return {
     scope,
     dispose,
@@ -118,15 +164,69 @@ export const createLocalTranscriptHistoryReader = (
         assertActive();
         const captured = normalizeTranscriptHistoryVersionRequest(input);
         const generation = ++detailGeneration;
-        const guard = (): void => {
-          assertActive();
-          if (generation !== detailGeneration) throw new TranscriptHistoryError("HISTORY_REQUEST_SUPERSEDED");
-        };
-        const result = await deps.loadVersion({ scope, assertActive: guard, ...captured });
+        return await readDetail(captured, detailGuard(generation));
+      } catch (error) {
+        throw normalizeTranscriptHistoryError(error);
+      }
+    },
+    hydrateVersion: async (
+      input: TranscriptHistoryHydrationRequest,
+    ): Promise<TranscriptHistoryHydrationResult> => {
+      try {
+        assertActive();
+        const captured = normalizeTranscriptHistoryVersionRequest(input);
+        let cloudRequest: ReturnType<typeof captureHistoryCloudVersion>;
+        try {
+          cloudRequest = captureHistoryCloudVersion({
+            scope,
+            ...captured,
+            signal: input.signal,
+            timeoutMs: input.timeoutMs,
+          });
+        } catch {
+          throw new TranscriptHistoryError("HISTORY_INPUT_INVALID");
+        }
+
+        const generation = ++detailGeneration;
+        const guard = detailGuard(generation);
+        const local = await readDetail(captured, guard);
+        if (local.kind === "ready") {
+          return { detail: local, cacheResult: null };
+        }
+
+        const cacheResult = await deps.cacheVersion({
+          scope: cloudRequest.scope,
+          versionId: cloudRequest.versionId,
+          expectedVersion: cloudRequest.expectedVersion,
+          signal: cloudRequest.signal,
+          timeoutMs: cloudRequest.timeoutMs,
+          isContextActive: () => {
+            try {
+              guard();
+              return true;
+            } catch {
+              return false;
+            }
+          },
+          assertActive: guard,
+        });
         guard();
-        return result.kind === "ready"
-          ? { ...result, scope: { ...result.scope }, version: { ...result.version } }
-          : { ...result, scope: { ...result.scope } };
+
+        // One exact re-read observes either this acknowledged cache commit or a
+        // concurrent result/current-version writer. There is no automatic retry.
+        const refreshed = await readDetail(captured, guard);
+        let deliveredCacheResult: HistoryCacheResult = { ...cacheResult };
+        if (
+          refreshed.kind === "not_cached" &&
+          (cacheResult.kind === "committed" || cacheResult.kind === "unchanged")
+        ) {
+          deliveredCacheResult = {
+            ...cacheResult,
+            kind: "indeterminate",
+            code: "HISTORY_CACHE_COMMIT_UNCONFIRMED",
+          };
+        }
+        return { detail: refreshed, cacheResult: deliveredCacheResult };
       } catch (error) {
         throw normalizeTranscriptHistoryError(error);
       }
