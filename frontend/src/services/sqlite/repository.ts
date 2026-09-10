@@ -49,6 +49,14 @@ import {
 } from "@/src/services/transcription/editor-types";
 
 import {
+  captureTranscriptHistoryRestoreDraftCommand,
+  normalizeTranscriptHistoryRestoreFailure,
+  TranscriptHistoryRestoreError,
+  type TranscriptHistoryRestoreDraftCommand,
+  type TranscriptHistoryRestoreDraftResult,
+} from "@/src/services/transcription/history-restore-types";
+
+import {
   MAX_CACHE_MERGE_SEGMENTS,
   TranscriptCacheMergeError,
   planTranscriptCacheSegments,
@@ -2665,6 +2673,107 @@ export const saveGuardedTranscriptEditDraft = async (
     if (!state.draft) requireEditorCurrentBase(state, baseId);
     return writeEditorDraftOnDb(db, scope, baseId, text, state.draft);
   });
+};
+
+export const prepareGuardedTranscriptHistoryRestoreDraft = async (
+  input: TranscriptEditorContext & TranscriptHistoryRestoreDraftCommand,
+): Promise<TranscriptHistoryRestoreDraftResult> => {
+  try {
+    if (
+      !input ||
+      typeof input !== "object" ||
+      typeof input.assertActive !== "function"
+    ) {
+      throw new TranscriptHistoryRestoreError("HISTORY_RESTORE_INPUT_INVALID");
+    }
+    const scope = normalizeTranscriptEditorScope(input.scope);
+    const captured = captureTranscriptHistoryRestoreDraftCommand(input);
+    return await withTranscriptEditorDb(
+      { scope, assertActive: input.assertActive },
+      async (db) => {
+        const state = await readTranscriptEditorStateOnDb(db, scope);
+        if (!state.currentVersion) {
+          throw new TranscriptHistoryRestoreError(
+            "HISTORY_RESTORE_CURRENT_UNAVAILABLE",
+          );
+        }
+        if (state.draft) {
+          throw new TranscriptHistoryRestoreError("HISTORY_RESTORE_DRAFT_EXISTS");
+        }
+        requireNoUnresolvedEditorSave(state);
+        requireEditorCurrentBase(state, state.currentVersion.id);
+
+        const source = await readEditorVersionOnDb(
+          db,
+          scope,
+          captured.sourceVersionId,
+        );
+        if (!source) {
+          throw new TranscriptHistoryRestoreError(
+            "HISTORY_RESTORE_SOURCE_UNAVAILABLE",
+          );
+        }
+        try {
+          if (source.parent_version_id !== null) {
+            transcriptEditorUuid(source.parent_version_id);
+          }
+        } catch {
+          throw new TranscriptHistoryRestoreError(
+            "HISTORY_RESTORE_SOURCE_CHANGED",
+          );
+        }
+        if (
+          source.parent_version_id === source.id ||
+          (source.version_origin === "user_edit" &&
+            (source.parent_version_id === null ||
+              source.content_checksum_sha256 === null)) ||
+          typeof source.created_at !== "string" ||
+          !Number.isFinite(Date.parse(source.created_at)) ||
+          (source.content_checksum_sha256 !== null &&
+            (typeof source.content_checksum_sha256 !== "string" ||
+              !/^[0-9a-f]{64}$/i.test(source.content_checksum_sha256)))
+        ) {
+          throw new TranscriptHistoryRestoreError(
+            "HISTORY_RESTORE_SOURCE_CHANGED",
+          );
+        }
+        const sourceChecksum = source.content_checksum_sha256 === null
+          ? null
+          : source.content_checksum_sha256.toLowerCase();
+        if (
+          source.version !== captured.sourceVersionNumber ||
+          source.plain_text !== captured.sourcePlainText ||
+          sourceChecksum !== captured.sourceContentChecksumSha256
+        ) {
+          throw new TranscriptHistoryRestoreError(
+            "HISTORY_RESTORE_SOURCE_CHANGED",
+          );
+        }
+        if (
+          source.id === state.currentVersion.id ||
+          source.plain_text === state.currentVersion.plain_text
+        ) {
+          throw new TranscriptHistoryRestoreError("HISTORY_RESTORE_UNCHANGED");
+        }
+
+        const draft = await writeEditorDraftOnDb(
+          db,
+          scope,
+          state.currentVersion.id,
+          source.plain_text,
+          null,
+        );
+        return {
+          kind: "draft_created",
+          sourceVersionId: source.id,
+          baseVersionId: state.currentVersion.id,
+          draft: { ...draft },
+        };
+      },
+    );
+  } catch (failure) {
+    throw normalizeTranscriptHistoryRestoreFailure(failure);
+  }
 };
 
 export const enqueueGuardedTranscriptEditSnapshot = async (
