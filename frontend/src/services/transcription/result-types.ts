@@ -151,6 +151,8 @@ export type CurrentTranscriptVersionSnapshot =
       kind: "ready";
       currentVersion: SyncedTranscriptVersion;
       currentSegments: SyncedTranscriptSegment[];
+      /** Independent exact count from the authenticated server read. */
+      currentExpectedSegmentCount: number;
       /**
        * Non-provider parents in immediate-parent-first order. Excludes current
        * and evidenceVersion; together they form the complete validated path.
@@ -159,6 +161,8 @@ export type CurrentTranscriptVersionSnapshot =
       intermediateVersions: SyncedTranscriptVersionRecord[];
       evidenceVersion: SyncedTranscriptVersionRecord | null;
       evidenceSegments: SyncedTranscriptSegment[];
+      /** Null when no provider evidence version belongs to this lineage. */
+      evidenceExpectedSegmentCount: number | null;
     };
 
 export type TranscriptionResultSnapshot =

@@ -45,9 +45,11 @@ const readySnapshot: Extract<
     updated_at: NOW,
   },
   currentSegments: [],
+  currentExpectedSegmentCount: 0,
   intermediateVersions: [],
   evidenceVersion: null,
   evidenceSegments: [],
+  evidenceExpectedSegmentCount: null,
 };
 
 const connectedState = (): NetInfoState => ({

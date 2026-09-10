@@ -15,7 +15,7 @@ describe("C2B.1 mobile transcript result reconciliation boundary", () => {
     "// C2B.1 immutable result evidence",
   );
   const resultEnd = repository.indexOf(
-    "const upsertGenericTranscriptVersionOnDb",
+    "const currentTranscriptMergeConflict",
     resultStart,
   );
   const resultPersistence = repository.slice(resultStart, resultEnd);

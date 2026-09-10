@@ -114,42 +114,62 @@ const requireSession = async (
   }
 };
 
+interface ExactSegmentSnapshot {
+  segments: SyncedTranscriptSegment[];
+  expectedSegmentCount: number;
+}
+
 const readSegments = async (
   client: SupabaseClient,
   version: SyncedTranscriptVersionRecord,
-): Promise<SyncedTranscriptSegment[]> => {
+): Promise<ExactSegmentSnapshot> => {
   const segments: SyncedTranscriptSegment[] = [];
-  for (let offset = 0; offset < MAX_SEGMENTS; offset += SEGMENT_PAGE_SIZE) {
+  let expectedSegmentCount: number | null = null;
+  for (let offset = 0; offset <= MAX_SEGMENTS; offset += SEGMENT_PAGE_SIZE) {
     const response = await client
       .from("transcript_segments")
-      .select(SEGMENT_SELECT)
+      .select(SEGMENT_SELECT, { count: "exact" })
       .eq("transcript_version_id", version.id)
       .order("segment_index", { ascending: true })
       .range(offset, offset + SEGMENT_PAGE_SIZE - 1);
     if (response.error) {
       throw normalizeCurrentTranscriptVersionClientError(response.error);
     }
+    if (
+      !Number.isSafeInteger(response.count) ||
+      (response.count as number) < 0 ||
+      (response.count as number) > MAX_SEGMENTS ||
+      (expectedSegmentCount !== null && response.count !== expectedSegmentCount)
+    ) {
+      throw invalid(new Error("TRANSCRIPT_CURRENT_SEGMENT_COUNT_INVALID"));
+    }
+    expectedSegmentCount = response.count as number;
+
     let page: SyncedTranscriptSegment[];
     try {
       page = (response.data ?? []).map(parseSyncedTranscriptSegment);
     } catch (error) {
       throw invalid(error);
     }
+    if (page.length > SEGMENT_PAGE_SIZE) throw invalid();
     for (const segment of page) {
       if (
         segment.workspace_id !== version.workspace_id ||
         segment.session_id !== version.session_id ||
-        segment.transcript_version_id !== version.id
+        segment.transcript_version_id !== version.id ||
+        segment.segment_index !== segments.length
       ) {
-        throw invalid();
-      }
-      const previous = segments.at(-1);
-      if (previous && segment.segment_index <= previous.segment_index) {
         throw invalid();
       }
       segments.push(segment);
     }
-    if (page.length < SEGMENT_PAGE_SIZE) return segments;
+    if (segments.length > expectedSegmentCount) throw invalid();
+    if (segments.length === expectedSegmentCount) {
+      return { segments, expectedSegmentCount };
+    }
+    if (page.length < SEGMENT_PAGE_SIZE) {
+      throw invalid(new Error("TRANSCRIPT_CURRENT_SEGMENT_COUNT_MISMATCH"));
+    }
   }
   throw invalid(new Error("TRANSCRIPT_CURRENT_SEGMENT_LIMIT_EXCEEDED"));
 };
@@ -199,22 +219,39 @@ export const fetchCurrentTranscriptVersionSnapshot = async (
   if (
     currentVersion.workspace_id !== workspaceId ||
     currentVersion.session_id !== sessionId ||
-    currentVersion.version_status !== "final"
+    currentVersion.version_status !== "final" ||
+    (currentVersion.version_origin === "user_edit" &&
+      currentVersion.parent_version_id === null) ||
+    (currentVersion.version_origin !== "user_edit" &&
+      currentVersion.parent_version_id !== null)
   ) {
     throw invalid();
   }
 
-  const currentSegments = await readSegments(client, currentVersion);
+  const currentSegmentSnapshot = await readSegments(client, currentVersion);
+  const {
+    segments: currentSegments,
+    expectedSegmentCount: currentExpectedSegmentCount,
+  } = currentSegmentSnapshot;
   if (
-    currentVersion.version_origin === "user_edit" &&
-    currentSegments.length > 0
+    (currentVersion.version_origin === "user_edit" &&
+      currentExpectedSegmentCount !== 0) ||
+    (currentVersion.version_origin === "provider" &&
+      currentExpectedSegmentCount < 1)
   ) {
-    throw invalid(new Error("TRANSCRIPT_USER_EDIT_SEGMENTS_FORBIDDEN"));
+    throw invalid(
+      new Error(
+        currentVersion.version_origin === "provider"
+          ? "TRANSCRIPT_PROVIDER_CURRENT_EMPTY"
+          : "TRANSCRIPT_USER_EDIT_SEGMENTS_FORBIDDEN",
+      ),
+    );
   }
 
   const intermediateVersions: SyncedTranscriptVersionRecord[] = [];
   let evidenceVersion: SyncedTranscriptVersionRecord | null = null;
   let evidenceSegments: SyncedTranscriptSegment[] = [];
+  let evidenceExpectedSegmentCount: number | null = null;
 
   if (currentVersion.version_origin === "user_edit") {
     const visitedVersionIds = new Set<string>([currentVersion.id]);
@@ -263,7 +300,16 @@ export const fetchCurrentTranscriptVersionSnapshot = async (
 
       if (parentVersion.version_origin === "provider") {
         evidenceVersion = parentVersion;
-        evidenceSegments = await readSegments(client, parentVersion);
+        const evidenceSegmentSnapshot = await readSegments(
+          client,
+          parentVersion,
+        );
+        evidenceSegments = evidenceSegmentSnapshot.segments;
+        evidenceExpectedSegmentCount =
+          evidenceSegmentSnapshot.expectedSegmentCount;
+        if (evidenceExpectedSegmentCount < 1) {
+          throw invalid(new Error("TRANSCRIPT_PROVIDER_EVIDENCE_EMPTY"));
+        }
         break;
       }
 
@@ -277,8 +323,10 @@ export const fetchCurrentTranscriptVersionSnapshot = async (
     kind: "ready",
     currentVersion,
     currentSegments,
+    currentExpectedSegmentCount,
     intermediateVersions,
     evidenceVersion,
     evidenceSegments,
+    evidenceExpectedSegmentCount,
   };
 };

@@ -90,15 +90,35 @@ const readySnapshot = (
   overrides: Partial<
     Extract<CurrentTranscriptVersionSnapshot, { kind: "ready" }>
   > = {},
-): Extract<CurrentTranscriptVersionSnapshot, { kind: "ready" }> => ({
-  kind: "ready",
-  currentVersion,
-  currentSegments: [],
-  intermediateVersions: [],
-  evidenceVersion,
-  evidenceSegments: [evidenceSegment],
-  ...overrides,
-});
+): Extract<CurrentTranscriptVersionSnapshot, { kind: "ready" }> => {
+  const snapshot: Extract<
+    CurrentTranscriptVersionSnapshot,
+    { kind: "ready" }
+  > = {
+    kind: "ready",
+    currentVersion,
+    currentSegments: [],
+    currentExpectedSegmentCount: 0,
+    intermediateVersions: [],
+    evidenceVersion,
+    evidenceSegments: [evidenceSegment],
+    evidenceExpectedSegmentCount: 1,
+    ...overrides,
+  };
+  return {
+    ...snapshot,
+    currentExpectedSegmentCount:
+      overrides.currentExpectedSegmentCount ?? snapshot.currentSegments.length,
+    evidenceExpectedSegmentCount: Object.prototype.hasOwnProperty.call(
+      overrides,
+      "evidenceExpectedSegmentCount",
+    )
+      ? (overrides.evidenceExpectedSegmentCount ?? null)
+      : snapshot.evidenceVersion
+        ? snapshot.evidenceSegments.length
+        : null,
+  };
+};
 
 describe("generic current transcript SQLite persistence", () => {
   beforeEach(() => jest.clearAllMocks());
@@ -124,6 +144,7 @@ describe("generic current transcript SQLite persistence", () => {
     const calls: { sql: string; params: unknown }[] = [];
     const db = {
       getFirstAsync: jest.fn(async () => null),
+      getAllAsync: jest.fn(async () => []),
       runAsync: jest.fn(async (sql: string, params?: unknown) => {
         calls.push({ sql, params });
         return { changes: 1 };
@@ -136,9 +157,11 @@ describe("generic current transcript SQLite persistence", () => {
     expect(mockedTransaction).toHaveBeenCalledWith(db, expect.any(Function));
     const sql = calls.map((call) => call.sql).join("\n");
     expect(sql).toContain("INSERT INTO local_transcript_versions");
-    expect(sql).toContain("SET is_current = 0");
+    expect(sql).toContain("SET is_current = 1");
+    expect(sql).not.toContain("SET is_current = 0");
     expect(sql).toContain("INSERT INTO local_transcript_segments");
-    expect(sql).not.toContain("DELETE FROM local_transcript_versions");
+    expect(sql).not.toContain("DELETE FROM local_transcript_segments");
+    expect(sql).not.toContain("ON CONFLICT");
 
     const versionInserts = calls.filter((call) =>
       call.sql.includes("INSERT INTO local_transcript_versions"),
@@ -148,19 +171,104 @@ describe("generic current transcript SQLite persistence", () => {
       expect.arrayContaining([PROVIDER_VERSION_ID, 0]),
     );
     expect(versionInserts[1].params).toEqual(
-      expect.arrayContaining([EDIT_VERSION_ID, 1]),
+      expect.arrayContaining([EDIT_VERSION_ID, 0]),
     );
 
-    const segmentDeletes = calls.filter((call) =>
-      call.sql.includes(
-        "DELETE FROM local_transcript_segments WHERE transcript_version_id",
-      ),
+    const segmentInserts = calls.filter((call) =>
+      call.sql.includes("INSERT INTO local_transcript_segments"),
     );
-    expect(segmentDeletes).toHaveLength(2);
-    expect(segmentDeletes.map((call) => call.params)).toEqual([
-      [PROVIDER_VERSION_ID],
-      [EDIT_VERSION_ID],
-    ]);
+    expect(segmentInserts).toHaveLength(1);
+    expect(segmentInserts[0].params).toEqual(
+      expect.arrayContaining([SEGMENT_ID, PROVIDER_VERSION_ID]),
+    );
+  });
+
+  it("appends only missing provider segments on an exact replay", async () => {
+    const secondSegment: SyncedTranscriptSegment = {
+      ...evidenceSegment,
+      id: "99999999-9999-4999-8999-999999999999",
+      segment_index: 1,
+      start_ms: 1_001,
+      end_ms: 2_000,
+      text: "continued",
+    };
+    const stored = (version: SyncedTranscriptVersionRecord) => ({
+      ...version,
+      language_summary: JSON.stringify(version.language_summary),
+      is_current: version.is_current ? 1 : 0,
+    });
+    const calls: { sql: string; params: unknown[] }[] = [];
+    const db = {
+      getFirstAsync: jest.fn(async () => ({
+        id: EDIT_VERSION_ID,
+        workspace_id: WORKSPACE_ID,
+        version: currentVersion.version,
+      })),
+      getAllAsync: jest.fn(async (sql: string, params: unknown[] = []) => {
+        if (sql.includes("WHERE id IN")) return [];
+        if (sql.includes("FROM local_transcript_versions")) {
+          if (params[0] === PROVIDER_VERSION_ID) return [stored(evidenceVersion)];
+          if (params[0] === EDIT_VERSION_ID) return [stored(currentVersion)];
+        }
+        if (sql.includes("FROM local_transcript_segments")) {
+          return params[0] === PROVIDER_VERSION_ID ? [evidenceSegment] : [];
+        }
+        return [];
+      }),
+      runAsync: jest.fn(async (sql: string, params: unknown[] = []) => {
+        calls.push({ sql, params });
+        return { changes: 1 };
+      }),
+    };
+    mockedOpen.mockResolvedValue(db as never);
+
+    await persistCurrentTranscriptVersionSnapshot(
+      readySnapshot({ evidenceSegments: [evidenceSegment, secondSegment] }),
+    );
+
+    const segmentInserts = calls.filter((call) =>
+      call.sql.includes("INSERT INTO local_transcript_segments"),
+    );
+    expect(segmentInserts).toHaveLength(1);
+    expect(segmentInserts[0].params[0]).toBe(secondSegment.id);
+    expect(calls.some((call) => call.sql.includes("ON CONFLICT"))).toBe(false);
+    expect(calls.some((call) => call.sql.includes("DELETE FROM"))).toBe(false);
+  });
+
+  it("rejects changed immutable provider evidence before any write", async () => {
+    const runAsync = jest.fn();
+    const db = {
+      getFirstAsync: jest.fn(async () => ({
+        id: EDIT_VERSION_ID,
+        workspace_id: WORKSPACE_ID,
+        version: currentVersion.version,
+      })),
+      getAllAsync: jest.fn(async (sql: string, params: unknown[] = []) => {
+        if (
+          sql.includes("FROM local_transcript_versions") &&
+          params[0] === PROVIDER_VERSION_ID
+        ) {
+          return [
+            {
+              ...evidenceVersion,
+              plain_text: "changed evidence",
+              language_summary: JSON.stringify(
+                evidenceVersion.language_summary,
+              ),
+              is_current: 0,
+            },
+          ];
+        }
+        return [];
+      }),
+      runAsync,
+    };
+    mockedOpen.mockResolvedValue(db as never);
+
+    await expect(
+      persistCurrentTranscriptVersionSnapshot(readySnapshot()),
+    ).rejects.toThrow("The current transcript conflicts with local history.");
+    expect(runAsync).not.toHaveBeenCalled();
   });
 
   it("does not downgrade a newer local immutable current version", async () => {
@@ -169,6 +277,7 @@ describe("generic current transcript SQLite persistence", () => {
     }));
     const getFirstAsync = jest.fn(async () => ({
       id: "88888888-8888-4888-8888-888888888888",
+      workspace_id: WORKSPACE_ID,
       version: 3,
     }));
     const db = { runAsync, getFirstAsync };
@@ -186,6 +295,7 @@ describe("generic current transcript SQLite persistence", () => {
     }));
     const getFirstAsync = jest.fn(async () => ({
       id: "88888888-8888-4888-8888-888888888888",
+      workspace_id: WORKSPACE_ID,
       version: currentVersion.version,
     }));
     const db = { runAsync, getFirstAsync };
@@ -249,6 +359,7 @@ describe("generic current transcript SQLite persistence", () => {
     const calls: string[] = [];
     const db = {
       getFirstAsync: jest.fn(async () => null),
+      getAllAsync: jest.fn(async () => []),
       runAsync: jest.fn(async (sql: string) => {
         calls.push(sql);
         return { changes: 1 };
@@ -262,6 +373,7 @@ describe("generic current transcript SQLite persistence", () => {
           ...currentVersion,
           transcription_run_id: null,
           version_origin: "import",
+          parent_version_id: null,
         },
         evidenceVersion: null,
         evidenceSegments: [],
@@ -295,6 +407,7 @@ describe("3D.1 complete local transcript ancestry", () => {
     const calls: { sql: string; params: unknown[] }[] = [];
     const db = {
       getFirstAsync: jest.fn(async (_sql: string, _params?: unknown[]) => null),
+      getAllAsync: jest.fn(async () => []),
       runAsync: jest.fn(async (sql: string, params: unknown[] = []) => {
         calls.push({ sql, params });
         return { changes: 1 };
@@ -308,7 +421,7 @@ describe("3D.1 complete local transcript ancestry", () => {
     expect(mockedTransaction).toHaveBeenCalledWith(db, expect.any(Function));
     const inserts = calls.filter((call) => call.sql.includes("INSERT INTO local_transcript_versions"));
     expect(inserts.map((call) => [call.params[0], call.params[12]])).toEqual([
-      [PROVIDER_VERSION_ID, 0], [EDIT_VERSION_ID, 0], [EDIT3_ID, 1],
+      [PROVIDER_VERSION_ID, 0], [EDIT_VERSION_ID, 0], [EDIT3_ID, 0],
     ]);
     expect(inserts[1].params[8]).toBe(PROVIDER_VERSION_ID);
     expect(snapshot.intermediateVersions).toEqual([intermediate]);
@@ -321,6 +434,7 @@ describe("3D.1 complete local transcript ancestry", () => {
     const statements: { sql: string; params: unknown[] }[] = [];
     mockedOpen.mockResolvedValue({
       getFirstAsync: jest.fn(async () => null),
+      getAllAsync: jest.fn(async () => []),
       runAsync: jest.fn(async (sql: string, params: unknown[] = []) => {
         statements.push({ sql, params });
         return { changes: 1 };
@@ -329,18 +443,24 @@ describe("3D.1 complete local transcript ancestry", () => {
     await persistCurrentTranscriptVersionSnapshot({
       ...chain(), intermediateVersions: [{ ...intermediate, version_origin: "import" }],
     });
-    const deletes = statements.filter((call) => call.sql.includes("DELETE FROM local_transcript_segments"));
-    expect(deletes.map((call) => call.params)).toEqual([[PROVIDER_VERSION_ID], [EDIT3_ID]]);
+    const sql = statements.map((call) => call.sql).join("\n");
+    expect(sql).not.toContain("DELETE FROM local_transcript_segments");
+    expect(sql).not.toContain("ON CONFLICT");
   });
 
   it("accepts a complete terminal-import path without provider evidence", async () => {
     const runAsync = jest.fn(async (_sql: string, _params?: unknown[]) => ({ changes: 1 }));
-    mockedOpen.mockResolvedValue({ getFirstAsync: jest.fn(async () => null), runAsync } as never);
+    mockedOpen.mockResolvedValue({
+      getFirstAsync: jest.fn(async () => null),
+      getAllAsync: jest.fn(async () => []),
+      runAsync,
+    } as never);
     await expect(persistCurrentTranscriptVersionSnapshot({
       ...chain(),
       intermediateVersions: [{ ...intermediate, version_origin: "import", parent_version_id: null }],
       evidenceVersion: null,
       evidenceSegments: [],
+      evidenceExpectedSegmentCount: null,
     })).resolves.toBeUndefined();
     expect(runAsync).toHaveBeenCalled();
   });
@@ -374,6 +494,7 @@ describe("3D.1 complete local transcript ancestry", () => {
   it("rejects a truncated no-evidence snapshot and a repeated ancestor", async () => {
     await expect(persistCurrentTranscriptVersionSnapshot({
       ...chain(), evidenceVersion: null, evidenceSegments: [],
+      evidenceExpectedSegmentCount: null,
     })).rejects.toThrow("The transcript ancestry snapshot is invalid.");
     await expect(persistCurrentTranscriptVersionSnapshot({
       ...chain(), intermediateVersions: [intermediate, intermediate],
@@ -397,11 +518,28 @@ describe("3D.1 complete local transcript ancestry", () => {
   });
 
   it("backfills intermediate parents when the same current version is already cached", async () => {
+    const snapshot = chain();
     const runAsync = jest.fn(async (_sql: string, _params?: unknown[]) => ({ changes: 1 }));
+    const getAllAsync = jest.fn(async (sql: string, params: unknown[] = []) => {
+      if (sql.includes("FROM local_transcript_versions") && params[0] === EDIT3_ID) {
+        return [{
+          ...snapshot.currentVersion,
+          language_summary: JSON.stringify(snapshot.currentVersion.language_summary),
+          is_current: 1,
+        }];
+      }
+      return [];
+    });
     mockedOpen.mockResolvedValue({
-      getFirstAsync: jest.fn(async () => ({ id: EDIT3_ID, version: 3 })), runAsync,
+      getFirstAsync: jest.fn(async () => ({
+        id: EDIT3_ID,
+        workspace_id: WORKSPACE_ID,
+        version: 3,
+      })),
+      getAllAsync,
+      runAsync,
     } as never);
-    await persistCurrentTranscriptVersionSnapshot(chain());
+    await persistCurrentTranscriptVersionSnapshot(snapshot);
     const parentInsert = runAsync.mock.calls.find(([sql, params]) =>
       sql.includes("INSERT INTO local_transcript_versions") && params?.[0] === EDIT_VERSION_ID,
     );
@@ -412,7 +550,12 @@ describe("3D.1 complete local transcript ancestry", () => {
   it("preserves the stale-snapshot guard before all ancestor writes", async () => {
     const runAsync = jest.fn();
     mockedOpen.mockResolvedValue({
-      getFirstAsync: jest.fn(async () => ({ id: SEGMENT_ID, version: 4 })), runAsync,
+      getFirstAsync: jest.fn(async () => ({
+        id: SEGMENT_ID,
+        workspace_id: WORKSPACE_ID,
+        version: 4,
+      })),
+      runAsync,
     } as never);
     await persistCurrentTranscriptVersionSnapshot(chain());
     expect(runAsync).not.toHaveBeenCalled();

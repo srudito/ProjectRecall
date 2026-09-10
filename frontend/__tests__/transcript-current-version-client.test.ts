@@ -63,6 +63,7 @@ const sourceSegment = {
 interface QueryResponse {
   data: unknown;
   error: unknown;
+  count?: number | null;
 }
 
 const makeQuery = (
@@ -71,8 +72,9 @@ const makeQuery = (
   table: string,
 ) => {
   const query: Record<string, jest.Mock> = {
-    select: jest.fn((selection: string) => {
+    select: jest.fn((selection: string, options?: { count?: string }) => {
       calls.push(`${table}.select:${selection}`);
+      if (options?.count) calls.push(`${table}.count:${options.count}`);
       return query;
     }),
     eq: jest.fn((field: string, value: unknown) => {
@@ -93,7 +95,13 @@ const makeQuery = (
     }),
     range: jest.fn(async (start: number, end: number) => {
       calls.push(`${table}.range:${start}-${end}`);
-      return response;
+      const count =
+        response.count === undefined
+          ? Array.isArray(response.data)
+            ? response.data.length
+            : null
+          : response.count;
+      return { ...response, count };
     }),
     maybeSingle: jest.fn(async () => {
       calls.push(`${table}.maybeSingle`);
@@ -159,9 +167,11 @@ describe("generic current transcript version client", () => {
         id: PROVIDER_VERSION_ID,
         version_origin: "provider",
       },
+      currentExpectedSegmentCount: 1,
       intermediateVersions: [],
       evidenceVersion: null,
       evidenceSegments: [],
+      evidenceExpectedSegmentCount: null,
     });
     if (snapshot.kind === "ready") {
       expect(snapshot.currentSegments).toHaveLength(1);
@@ -169,6 +179,62 @@ describe("generic current transcript version client", () => {
     expect(
       calls.filter((call) => call === "from:transcript_versions"),
     ).toHaveLength(1);
+    expect(calls).toContain("transcript_segments.count:exact");
+  });
+
+  it.each([
+    ["missing exact count", null, [sourceSegment]],
+    ["count mismatch", 2, [sourceSegment]],
+    [
+      "sparse segment indices",
+      1,
+      [{ ...sourceSegment, segment_index: 1 }],
+    ],
+    ["empty provider transcript", 0, []],
+  ])("rejects %s", async (_label, count, segments) => {
+    const client = authenticatedClient(
+      {
+        transcript_versions: [{ data: providerVersion, error: null }],
+        transcript_segments: [{ data: segments, error: null, count }],
+      },
+      [],
+    );
+
+    await expect(
+      fetchCurrentTranscriptVersionSnapshot(
+        {
+          sessionId: SESSION_ID,
+          expectedWorkspaceId: WORKSPACE_ID,
+          expectedUserId: USER_ID,
+        },
+        client,
+      ),
+    ).rejects.toMatchObject({ code: "TRANSCRIPT_CURRENT_INVALID" });
+  });
+
+  it("rejects an untraversed parent on a non-edit current row", async () => {
+    const client = authenticatedClient(
+      {
+        transcript_versions: [
+          {
+            data: { ...providerVersion, parent_version_id: EDIT_VERSION_ID },
+            error: null,
+          },
+        ],
+      },
+      [],
+    );
+
+    await expect(
+      fetchCurrentTranscriptVersionSnapshot(
+        {
+          sessionId: SESSION_ID,
+          expectedWorkspaceId: WORKSPACE_ID,
+          expectedUserId: USER_ID,
+        },
+        client,
+      ),
+    ).rejects.toMatchObject({ code: "TRANSCRIPT_CURRENT_INVALID" });
   });
 
   it("keeps user-edited Full Text separate from provider timestamp evidence", async () => {
@@ -206,12 +272,14 @@ describe("generic current transcript version client", () => {
         plain_text: "corrected transcript",
       },
       currentSegments: [],
+      currentExpectedSegmentCount: 0,
       intermediateVersions: [],
       evidenceVersion: {
         id: PROVIDER_VERSION_ID,
         version_origin: "provider",
         is_current: false,
       },
+      evidenceExpectedSegmentCount: 1,
     });
     if (snapshot.kind === "ready") {
       expect(snapshot.evidenceSegments).toHaveLength(1);
