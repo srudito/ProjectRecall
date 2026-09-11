@@ -7,6 +7,8 @@ const path = require("node:path");
 const root = path.resolve(__dirname, "..");
 const readJson = (relativePath) =>
   JSON.parse(fs.readFileSync(path.join(root, relativePath), "utf8"));
+const readText = (relativePath) =>
+  fs.readFileSync(path.join(root, relativePath), "utf8");
 
 const app = readJson("app.json");
 const {
@@ -16,6 +18,7 @@ const {
 const eas = readJson("eas.json");
 const pkg = readJson("package.json");
 const nvmrc = fs.readFileSync(path.join(root, ".nvmrc"), "utf8").trim();
+const transcriptionRelease = readText("src/config/transcription-release.ts");
 const errors = [];
 
 const fail = (message) => errors.push(message);
@@ -44,6 +47,40 @@ const requiredPermissions = [
   "android.permission.RECORD_AUDIO",
   "android.permission.CAMERA",
 ];
+
+const productionMutationApproval =
+  /export const TRANSCRIPTION_PRODUCTION_MUTATIONS_APPROVED\s*=\s*false\s*;/;
+if (!productionMutationApproval.test(transcriptionRelease)) {
+  fail(
+    "Production transcription mutations must remain source-locked until the separate live rollout gate is approved.",
+  );
+}
+
+for (const relativePath of [
+  "src/services/transcription/feature-availability.ts",
+  "src/services/transcription/service.ts",
+  "src/services/sync/transcription-request-worker.ts",
+  "src/services/sync/transcript-edit-worker.ts",
+  "src/services/sync/ProjectSyncCoordinator.tsx",
+  "app/session/[id].tsx",
+]) {
+  const source = readText(relativePath);
+  if (!source.includes("isTranscriptionMutationReleased")) {
+    fail(
+      `${relativePath} must enforce the production transcription mutation lock.`,
+    );
+  }
+}
+
+if (
+  !transcriptionRelease.includes('normalized === "development"') ||
+  !transcriptionRelease.includes('normalized === "preview"') ||
+  !transcriptionRelease.includes('normalized === "production"')
+) {
+  fail(
+    "The transcription mutation release gate must explicitly allow development/preview and fail closed for production.",
+  );
+}
 
 if (app.expo?.android?.allowBackup !== false) {
   fail("expo.android.allowBackup must be false.");

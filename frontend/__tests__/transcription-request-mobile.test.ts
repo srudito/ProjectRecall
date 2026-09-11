@@ -129,6 +129,7 @@ const makeDependencies = (
   let returned = false;
   return {
     platform: "android",
+    isMutationReleased: jest.fn(() => true),
     getConnectionState: jest.fn(async () => connectedState()),
     getAuthenticatedUserId: jest.fn(async () => USER_ID),
     resetSubmitting: jest.fn(async () => 0),

@@ -2,6 +2,7 @@ import * as Crypto from "expo-crypto";
 import { Platform } from "react-native";
 
 import { UploadStatus } from "@/src/domain/enums";
+import { isTranscriptionMutationReleased } from "@/src/config/transcription-release";
 import { recordingSchema, sessionSchema } from "@/src/domain/models";
 import {
   getTranscriptionRequestByIdempotencyKey,
@@ -19,11 +20,16 @@ import {
   type TranscriptionRequestErrorCode,
 } from "./contracts";
 
+export type LocalTranscriptionRequestErrorCode =
+  | TranscriptionRequestErrorCode
+  | "TRANSCRIPTION_LOCAL_STATE_INVALID"
+  | "TRANSCRIPTION_PRODUCTION_RELEASE_LOCKED";
+
 export class LocalTranscriptionRequestError extends Error {
-  readonly code: TranscriptionRequestErrorCode | "TRANSCRIPTION_LOCAL_STATE_INVALID";
+  readonly code: LocalTranscriptionRequestErrorCode;
 
   constructor(
-    code: TranscriptionRequestErrorCode | "TRANSCRIPTION_LOCAL_STATE_INVALID",
+    code: LocalTranscriptionRequestErrorCode,
     message: string,
   ) {
     super(message);
@@ -120,6 +126,13 @@ export const queueRecordingTranscription = async (input: {
   recording: RecordingRecord;
   userId: string;
 }): Promise<TranscriptionRequestQueueRow> => {
+  if (!isTranscriptionMutationReleased()) {
+    throw new LocalTranscriptionRequestError(
+      "TRANSCRIPTION_PRODUCTION_RELEASE_LOCKED",
+      "Transcription requests are not released for this production build.",
+    );
+  }
+
   if (Platform.OS === "web") {
     throw new LocalTranscriptionRequestError(
       "TRANSCRIPTION_LOCAL_STATE_INVALID",

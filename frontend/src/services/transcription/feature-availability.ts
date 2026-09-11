@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { env } from "@/src/config/env";
+import { isTranscriptionMutationReleased } from "@/src/config/transcription-release";
 import { getSupabase } from "@/src/services/supabase/client";
 import { storage } from "@/src/utils/storage";
 
@@ -21,6 +22,10 @@ const readCached = async (): Promise<boolean> => {
 export const resolveTranscriptionFeatureEnabled = async (
   clientOverride?: SupabaseClient,
 ): Promise<boolean> => {
+  // A stale cached server flag cannot unlock an unapproved production binary.
+  // The server flag remains the authoritative second gate once released.
+  if (!isTranscriptionMutationReleased()) return false;
+
   const now = Date.now();
   if (memoryValue !== null && now - memoryUpdatedAt < memoryTtlMs) {
     return memoryValue;

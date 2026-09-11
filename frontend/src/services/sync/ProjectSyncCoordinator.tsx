@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { AppState, Platform } from "react-native";
 
 import { isAccountDeletionLocallyPending } from "@/src/services/account-deletion/state";
+import { isTranscriptionMutationReleased } from "@/src/config/transcription-release";
 import { useAuthStore } from "@/src/stores/auth-store";
 import { startTranscriptEditorLifecycle } from "@/src/services/transcription/editor-lifecycle";
 
@@ -26,7 +27,9 @@ const requestAllSync = (): void => {
   requestMetadataSync();
   requestRecordingUploadSync();
   requestMediaUploadSync();
-  requestTranscriptionRequestSync();
+  if (isTranscriptionMutationReleased()) {
+    requestTranscriptionRequestSync();
+  }
   requestTranscriptionResultSync();
   requestTranscriptCurrentVersionSync();
 };
@@ -38,7 +41,10 @@ const requestAllSync = (): void => {
  * deferred same-user operation without replacing its UUID or retry metadata.
  */
 export const startTranscriptEditSyncLifecycle = (): (() => void) => {
-  if (Platform.OS === "web") return () => {};
+  if (Platform.OS === "web" || !isTranscriptionMutationReleased()) {
+    return () => {};
+  }
+
   let disposed = false;
   let active = AppState.currentState === "active";
   let online = true; // Unknown connectivity is checked by the worker itself.
@@ -90,8 +96,18 @@ export const startTranscriptEditSyncLifecycle = (): (() => void) => {
  * directly to Supabase and therefore do not use the local SQLite queues.
  */
 export function ProjectSyncCoordinator() {
-  useEffect(() => startTranscriptEditSyncLifecycle(), []);
-  useEffect(() => startTranscriptEditorLifecycle(), []);
+  useEffect(
+    () => isTranscriptionMutationReleased()
+      ? startTranscriptEditSyncLifecycle()
+      : undefined,
+    [],
+  );
+  useEffect(
+    () => isTranscriptionMutationReleased()
+      ? startTranscriptEditorLifecycle()
+      : undefined,
+    [],
+  );
   const initialized = useAuthStore((state) => state.initialized);
   const userId = useAuthStore((state) => state.user?.id ?? null);
 
@@ -144,7 +160,9 @@ export function ProjectSyncCoordinator() {
       if (useAuthStore.getState().user?.id) {
         requestRecordingUploadSync();
         requestMediaUploadSync();
-        requestTranscriptionRequestSync();
+        if (isTranscriptionMutationReleased()) {
+          requestTranscriptionRequestSync();
+        }
         requestTranscriptCurrentVersionSync();
       }
     });

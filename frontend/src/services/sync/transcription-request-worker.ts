@@ -2,6 +2,7 @@ import NetInfo, { type NetInfoState } from "@react-native-community/netinfo";
 import { Platform } from "react-native";
 
 import { isAccountDeletionLocallyPending } from "@/src/services/account-deletion/state";
+import { isTranscriptionMutationReleased } from "@/src/config/transcription-release";
 import { recordingSchema, sessionSchema } from "@/src/domain/models";
 import {
   claimTranscriptionRequest,
@@ -42,6 +43,7 @@ export interface TranscriptionRequestSyncRunResult {
     | "completed"
     | "offline"
     | "authentication_required"
+    | "release_locked"
     | "web_skipped";
   processed: number;
   submitted: number;
@@ -53,6 +55,7 @@ export interface TranscriptionRequestSyncRunResult {
 
 export interface TranscriptionRequestWorkerDependencies {
   platform: string;
+  isMutationReleased: () => boolean;
   getConnectionState: () => Promise<NetInfoState>;
   getAuthenticatedUserId: () => Promise<string | null>;
   resetSubmitting: (userId: string) => Promise<number>;
@@ -102,6 +105,7 @@ export interface TranscriptionRequestWorkerDependencies {
 
 const defaultDependencies: TranscriptionRequestWorkerDependencies = {
   platform: Platform.OS,
+  isMutationReleased: isTranscriptionMutationReleased,
   getConnectionState: () => NetInfo.fetch(),
   getAuthenticatedUserId: async () => {
     const storeUser = useAuthStore.getState().user?.id;
@@ -177,12 +181,16 @@ export const createTranscriptionRequestWorker = (
   let activeRun: Promise<TranscriptionRequestSyncRunResult> | null = null;
 
   const execute = async (): Promise<TranscriptionRequestSyncRunResult> => {
-    if (isAccountDeletionLocallyPending()) {
-      return emptyResult("completed");
-    }
-
     if (dependencies.platform === "web") {
       return emptyResult("web_skipped");
+    }
+
+    if (!dependencies.isMutationReleased()) {
+      return emptyResult("release_locked");
+    }
+
+    if (isAccountDeletionLocallyPending()) {
+      return emptyResult("completed");
     }
 
     const connection = await dependencies.getConnectionState();

@@ -9,6 +9,7 @@ import { SessionRecordingPanel } from "@/src/components/SessionRecordingPanel";
 import { SessionTranscriptPanel } from "@/src/components/SessionTranscriptPanel";
 import { TranscriptEditorModal } from "@/src/components/TranscriptEditorModal";
 import type { TranscriptEditorScope } from "@/src/services/transcription/editor-types";
+import { isTranscriptionMutationReleased } from "@/src/config/transcription-release";
 import { useI18n } from "@/src/i18n/I18nProvider";
 import { TimelineEventType } from "@/src/domain/enums";
 import { sortTimeline } from "@/src/services/timeline/ordering";
@@ -95,6 +96,7 @@ export default function SessionDetail() {
   const network = useNetInfo();
   const { t } = useI18n();
   const { colors, spacing, typography } = useTheme();
+  const transcriptionMutationsReleased = isTranscriptionMutationReleased();
   const userId = useAuthStore((state) => state.user?.id ?? null);
   const [session, setSession] = useState<SessionRecord | null>(null);
   const [project, setProject] = useState<ProjectRecord | null>(null);
@@ -113,12 +115,17 @@ export default function SessionDetail() {
   const [editorScope, setEditorScope] = useState<TranscriptEditorScope | null>(null);
 
   useEffect(() => {
-    setEditorScope((current) => current && (current.userId !== userId || current.sessionId !== String(id))
+    setEditorScope((current) => current && (
+      !transcriptionMutationsReleased ||
+      current.userId !== userId ||
+      current.sessionId !== String(id)
+    )
       ? null : current);
-  }, [id, userId]);
+  }, [id, transcriptionMutationsReleased, userId]);
 
   const openEditor = () => {
-    if (Platform.OS === "web" || !session || !userId || deleting ||
+    if (!transcriptionMutationsReleased || Platform.OS === "web" ||
+        !session || !userId || deleting ||
         session.deleted_at != null || session.id !== String(id)) return;
     setEditorScope((current) => current ?? {
       userId, workspaceId: session.workspace_id, sessionId: session.id,
@@ -438,7 +445,8 @@ const onOpenProject = () => {
 
       {tab === "transcript" ? (
         <SessionTranscriptPanel sessionId={session.id} workspaceId={session.workspace_id}
-          onEdit={openEditor} editDisabled={!userId || deleting || editorScope !== null} />
+          onEdit={transcriptionMutationsReleased ? openEditor : undefined}
+          editDisabled={!userId || deleting || editorScope !== null} />
       ) : null}
 
       {tab === "timeline" ? (
@@ -510,7 +518,8 @@ const onOpenProject = () => {
         </Card>
       ) : null}
 
-      {Platform.OS !== "web" && editorScope && editorScope.userId === userId &&
+      {transcriptionMutationsReleased && Platform.OS !== "web" &&
+        editorScope && editorScope.userId === userId &&
         editorScope.sessionId === session.id && session.id === String(id) &&
         editorScope.workspaceId === session.workspace_id && session.deleted_at == null && !deleting ? (
         <TranscriptEditorModal

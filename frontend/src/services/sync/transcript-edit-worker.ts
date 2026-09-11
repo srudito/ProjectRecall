@@ -2,6 +2,7 @@ import NetInfo, { type NetInfoState } from "@react-native-community/netinfo";
 import { AppState, Platform } from "react-native";
 
 import { isAccountDeletionLocallyPending } from "@/src/services/account-deletion/state";
+import { isTranscriptionMutationReleased } from "@/src/config/transcription-release";
 import {
   canSubmitTranscriptEditQueue,
   claimTranscriptEditQueue,
@@ -37,6 +38,7 @@ export interface TranscriptEditSyncRunResult {
     | "paused"
     | "offline"
     | "authentication_required"
+    | "release_locked"
     | "web_skipped";
   processed: number;
   succeeded: number;
@@ -49,6 +51,7 @@ export interface TranscriptEditSyncRunResult {
 
 export interface TranscriptEditWorkerDependencies {
   platform: string;
+  isMutationReleased: () => boolean;
   getConnectionState: () => Promise<NetInfoState>;
   getAuthenticatedUserId: () => Promise<string | null>;
   isDeletionPending: () => boolean;
@@ -87,6 +90,7 @@ export interface TranscriptEditWorkerDependencies {
 
 const defaultDependencies: TranscriptEditWorkerDependencies = {
   platform: Platform.OS,
+  isMutationReleased: isTranscriptionMutationReleased,
   getConnectionState: () => NetInfo.fetch(),
   getAuthenticatedUserId: async () => {
     const storeUser = useAuthStore.getState().user?.id;
@@ -193,6 +197,7 @@ export const createTranscriptEditWorker = (
   const currentUserId = () => dependencies.getCurrentUserId()?.toLowerCase() ?? null;
   const blockedState = (): TranscriptEditSyncRunResult["state"] | null => {
     if (dependencies.platform !== "android" && dependencies.platform !== "ios") return "web_skipped";
+    if (!dependencies.isMutationReleased()) return "release_locked";
     if (paused || disposed || dependencies.isDeletionPending() || !dependencies.isAppActive()) return "paused";
     if (!currentUserId()) return "authentication_required";
     return null;
