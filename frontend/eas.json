@@ -27,6 +27,16 @@
       "node": "20.19.4",
       "yarn": "1.22.22",
       "autoIncrement": true
+    },
+    "production-canary": {
+      "distribution": "internal",
+      "environment": "production",
+      "android": {
+        "buildType": "apk"
+      },
+      "node": "20.19.4",
+      "yarn": "1.22.22",
+      "autoIncrement": true
     }
   }
 }

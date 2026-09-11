@@ -22,12 +22,26 @@ interface AppConfig {
   };
 }
 
+type EasBuildProfileName =
+  | "development"
+  | "preview"
+  | "production"
+  | "production-canary";
+
+interface EasBuildProfile {
+  node: string;
+  yarn: string;
+  autoIncrement?: boolean;
+  distribution?: "internal" | "store";
+  environment?: "development" | "preview" | "production";
+  developmentClient?: boolean;
+  android?: { buildType?: "apk" | "app-bundle" };
+}
+
 interface EasConfig {
   cli: { appVersionSource: string };
-  build: Record<
-    "development" | "preview" | "production",
-    { node: string; yarn: string; autoIncrement?: boolean }
-  >;
+  build: Record<EasBuildProfileName, EasBuildProfile>;
+  submit?: Partial<Record<EasBuildProfileName, unknown>>;
 }
 
 interface PackageConfig {
@@ -68,8 +82,15 @@ const runProductionCheck = (overrides: Record<string, string> = {}) =>
     },
   );
 
+const appEnvironmentForEasProfile = (
+  profile: EasBuildProfileName,
+): "development" | "preview" | "production" =>
+  profile === "production" || profile === "production-canary"
+    ? "production"
+    : profile;
+
 const runEasCheck = (
-  profile: "development" | "preview" | "production",
+  profile: EasBuildProfileName,
   overrides: Record<string, string> = {},
 ) =>
   spawnSync(
@@ -81,6 +102,7 @@ const runEasCheck = (
         ...process.env,
         ...validProductionEnv,
         EAS_BUILD_PROFILE: profile,
+        EXPO_PUBLIC_APP_ENV: appEnvironmentForEasProfile(profile),
         ...overrides,
       },
       encoding: "utf8",
@@ -88,7 +110,7 @@ const runEasCheck = (
   );
 
 const readResolvedBlockedPermissions = (
-  profile: "development" | "preview" | "production",
+  profile: EasBuildProfileName,
 ): string[] => {
   const result = spawnSync(
     process.execPath,
@@ -106,7 +128,7 @@ const readResolvedBlockedPermissions = (
       env: {
         ...process.env,
         EAS_BUILD_PROFILE: profile,
-        EXPO_PUBLIC_APP_ENV: profile,
+        EXPO_PUBLIC_APP_ENV: appEnvironmentForEasProfile(profile),
       },
       encoding: "utf8",
     },
@@ -156,6 +178,9 @@ describe("Milestone 1 release readiness configuration", () => {
     );
     expect(readResolvedBlockedPermissions("preview")).not.toContain(permission);
     expect(readResolvedBlockedPermissions("production")).toContain(permission);
+    expect(readResolvedBlockedPermissions("production-canary")).toContain(
+      permission,
+    );
   });
 
   it("uses scoped pickers without broad Android media-library permissions", () => {
@@ -199,15 +224,32 @@ describe("Milestone 1 release readiness configuration", () => {
     );
   });
 
-  it("pins EAS build tools and auto-increments production builds", () => {
-    for (const profileName of ["development", "preview", "production"] as const) {
+  it("pins EAS tools and defines an internal production-canary APK", () => {
+    for (const profileName of [
+      "development",
+      "preview",
+      "production",
+      "production-canary",
+    ] as const) {
       expect(eas.build[profileName]).toMatchObject({
         node: "20.19.4",
         yarn: "1.22.22",
       });
     }
     expect(eas.cli.appVersionSource).toBe("remote");
-    expect(eas.build.production.autoIncrement).toBe(true);
+    expect(eas.build.production).toMatchObject({
+      environment: "production",
+      autoIncrement: true,
+    });
+    expect(eas.build["production-canary"]).toEqual({
+      distribution: "internal",
+      environment: "production",
+      android: { buildType: "apk" },
+      node: "20.19.4",
+      yarn: "1.22.22",
+      autoIncrement: true,
+    });
+    expect(eas.submit?.["production-canary"]).toBeUndefined();
   });
 
   it("pins local package-manager requirements", () => {
@@ -253,6 +295,62 @@ describe("Milestone 1 release readiness configuration", () => {
     expect(result.stdout).toContain(
       "Production release configuration is valid",
     );
+  });
+
+  it("accepts a complete production-canary EAS configuration", () => {
+    const result = runEasCheck("production-canary");
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(
+      "Production release configuration is valid",
+    );
+  });
+
+  it("treats the production-canary profile as production before public values resolve", () => {
+    const result = runEasCheck("production-canary", {
+      EXPO_PUBLIC_APP_ENV: "",
+      EXPO_PUBLIC_SUPPORT_EMAIL: "",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      'EXPO_PUBLIC_APP_ENV must equal "production".',
+    );
+    expect(result.stderr).toContain(
+      "EXPO_PUBLIC_SUPPORT_EMAIL is required for a production build.",
+    );
+  });
+
+  it("treats any EAS build with a production public app environment as production", () => {
+    const result = runEasCheck("preview", {
+      EXPO_PUBLIC_APP_ENV: "production",
+      EXPO_PUBLIC_PRIVACY_POLICY_URL: "",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      "EXPO_PUBLIC_PRIVACY_POLICY_URL is required for a production build.",
+    );
+  });
+
+  it("rejects mismatched or privileged production-canary values", () => {
+    const mismatched = runEasCheck("production-canary", {
+      EXPO_PUBLIC_APP_ENV: "preview",
+    });
+    expect(mismatched.status).not.toBe(0);
+    expect(mismatched.stderr).toContain(
+      'EXPO_PUBLIC_APP_ENV must equal "production".',
+    );
+
+    const key = "sb_secret_test_privileged_key";
+    const privileged = runEasCheck("production-canary", {
+      EXPO_PUBLIC_SUPABASE_ANON_KEY: key,
+    });
+    expect(privileged.status).not.toBe(0);
+    expect(privileged.stderr).toContain(
+      "secret and privileged keys are forbidden",
+    );
+    expect(privileged.stderr).not.toContain(key);
   });
 
   it("accepts a legacy Supabase anon-role JWT", () => {

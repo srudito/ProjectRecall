@@ -23,9 +23,25 @@ const errors = [];
 
 const fail = (message) => errors.push(message);
 const easCheck = process.argv.includes("--eas");
+const easBuildProfile =
+  typeof process.env.EAS_BUILD_PROFILE === "string"
+    ? process.env.EAS_BUILD_PROFILE.trim()
+    : "";
+const publicAppEnvironment =
+  typeof process.env.EXPO_PUBLIC_APP_ENV === "string"
+    ? process.env.EXPO_PUBLIC_APP_ENV.trim().toLowerCase()
+    : "";
+const configuredEasEnvironment =
+  easBuildProfile &&
+  typeof eas.build?.[easBuildProfile]?.environment === "string"
+    ? eas.build[easBuildProfile].environment.trim().toLowerCase()
+    : "";
 const production =
   process.argv.includes("--production") ||
-  (easCheck && process.env.EAS_BUILD_PROFILE === "production");
+  (easCheck &&
+    (easBuildProfile === "production" ||
+      configuredEasEnvironment === "production" ||
+      publicAppEnvironment === "production"));
 
 const expectedNode = "20.19.4";
 const expectedYarn = "1.22.22";
@@ -141,7 +157,12 @@ for (const permission of requiredPermissions) {
   }
 }
 
-for (const profileName of ["development", "preview", "production"]) {
+for (const profileName of [
+  "development",
+  "preview",
+  "production",
+  "production-canary",
+]) {
   const profile = eas.build?.[profileName];
   if (profile?.node !== expectedNode) {
     fail(`EAS profile ${profileName} must pin Node ${expectedNode}.`);
@@ -155,8 +176,36 @@ if (eas.cli?.appVersionSource !== "remote") {
   fail('eas.cli.appVersionSource must be "remote".');
 }
 
+if (eas.build?.production?.environment !== "production") {
+  fail('Production EAS builds must use the "production" environment.');
+}
+
 if (eas.build?.production?.autoIncrement !== true) {
   fail("Production EAS builds must enable autoIncrement.");
+}
+
+const productionCanaryProfile = eas.build?.["production-canary"];
+if (productionCanaryProfile?.distribution !== "internal") {
+  fail('The production-canary EAS profile must use internal distribution.');
+}
+if (productionCanaryProfile?.environment !== "production") {
+  fail('The production-canary EAS profile must use the "production" environment.');
+}
+if (productionCanaryProfile?.android?.buildType !== "apk") {
+  fail("The production-canary EAS profile must build an Android APK.");
+}
+if (productionCanaryProfile?.autoIncrement !== true) {
+  fail("The production-canary EAS profile must enable autoIncrement.");
+}
+if (productionCanaryProfile?.developmentClient === true) {
+  fail(
+    "The production-canary EAS profile must not create a development client.",
+  );
+}
+if (eas.submit?.["production-canary"] !== undefined) {
+  fail(
+    "The production-canary gate must not define a matching submit profile.",
+  );
 }
 
 if (pkg.engines?.node !== ">=20.19.4") {
