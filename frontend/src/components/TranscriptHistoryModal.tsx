@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Modal, ScrollView, Text, TouchableOpacity, View } from "react-native";
+import { Alert, Modal, ScrollView, Text, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { useI18n } from "@/src/i18n/I18nProvider";
@@ -12,6 +12,14 @@ import {
   createLocalTranscriptHistoryReader,
   type TranscriptHistoryHydrationResult,
 } from "@/src/services/transcription/history-read-model";
+import {
+  prepareTranscriptHistoryRestoreDraft,
+} from "@/src/services/transcription/history-restore-service";
+import {
+  normalizeTranscriptHistoryRestoreFailure,
+  type TranscriptHistoryRestoreDraftResult,
+  type TranscriptHistoryRestoreErrorCode,
+} from "@/src/services/transcription/history-restore-types";
 import type { HistoryCacheResult } from "@/src/services/transcription/history-cache-types";
 import type {
   LocalTranscriptHistoryVersion,
@@ -137,27 +145,69 @@ export const historyCacheMessageKey = (
   }
 };
 
+const historyRestoreErrorKeys: Record<
+  TranscriptHistoryRestoreErrorCode,
+  string
+> = {
+  HISTORY_RESTORE_INPUT_INVALID: "history.restore.errors.invalid",
+  HISTORY_RESTORE_NATIVE_ONLY: "history.restore.errors.nativeOnly",
+  HISTORY_RESTORE_AUTH_REQUIRED: "history.restore.errors.auth",
+  HISTORY_RESTORE_CONTEXT_INACTIVE: "history.restore.errors.inactive",
+  HISTORY_RESTORE_DELETION_PENDING: "history.restore.errors.deletion",
+  HISTORY_RESTORE_STORAGE_UNAVAILABLE: "history.restore.errors.storage",
+  HISTORY_RESTORE_SESSION_UNAVAILABLE: "history.restore.errors.session",
+  HISTORY_RESTORE_CACHE_INVALID: "history.restore.errors.cache",
+  HISTORY_RESTORE_SOURCE_INVALID: "history.restore.errors.source",
+  HISTORY_RESTORE_SOURCE_UNAVAILABLE: "history.restore.errors.sourceUnavailable",
+  HISTORY_RESTORE_SOURCE_CHANGED: "history.restore.errors.sourceChanged",
+  HISTORY_RESTORE_CHECKSUM_MISMATCH: "history.restore.errors.checksum",
+  HISTORY_RESTORE_HASH_UNAVAILABLE: "history.restore.errors.hash",
+  HISTORY_RESTORE_CURRENT_UNAVAILABLE: "history.restore.errors.current",
+  HISTORY_RESTORE_DRAFT_EXISTS: "history.restore.errors.draftExists",
+  HISTORY_RESTORE_OPERATION_PENDING: "history.restore.errors.pending",
+  HISTORY_RESTORE_OUTCOME_UNCONFIRMED: "history.restore.errors.unconfirmed",
+  HISTORY_RESTORE_REFRESH_REQUIRED: "history.restore.errors.refresh",
+  HISTORY_RESTORE_UNCHANGED: "history.restore.errors.unchanged",
+  HISTORY_RESTORE_WRITE_FAILED: "history.restore.errors.writeFailed",
+};
+
+export const historyRestoreErrorKey = (code: unknown): string =>
+  typeof code === "string" &&
+  Object.prototype.hasOwnProperty.call(historyRestoreErrorKeys, code)
+    ? historyRestoreErrorKeys[code as TranscriptHistoryRestoreErrorCode]
+    : "history.restore.errors.unknown";
+
 interface Props {
   scope: Readonly<TranscriptHistoryScope>;
   onClosed: () => void;
+  onRestoreDraftPrepared?: (result: TranscriptHistoryRestoreDraftResult) => void;
 }
 
 type HistoryReader = ReturnType<typeof createLocalTranscriptHistoryReader>;
 
 /**
- * Explicit, read-only history browser. Opening the modal loads metadata; Full
- * Text hydration happens only after selecting one version. No restore, current
- * promotion, polling, background retry, or coordinator registration occurs here.
+ * Explicit history browser. Historical rows remain read-only. After a separate
+ * confirmation, restore copies one exact historical Full Text into a guarded
+ * local draft; it never promotes a version, queues Save, polls, or registers a
+ * background coordinator.
  */
-export function TranscriptHistoryModal({ scope, onClosed }: Props) {
+export function TranscriptHistoryModal({
+  scope,
+  onClosed,
+  onRestoreDraftPrepared,
+}: Props) {
   const { t } = useI18n();
   const { colors, spacing, radii, typography, layout } = useTheme();
   const onClosedRef = useRef(onClosed);
+  const onRestoreDraftPreparedRef = useRef(onRestoreDraftPrepared);
   const lifetime = useRef({ active: false, generation: 0, closed: false });
   const readerRef = useRef<HistoryReader | null>(null);
   const cloudAbortRef = useRef<AbortController | null>(null);
   const detailAbortRef = useRef<AbortController | null>(null);
   const detailRequestRef = useRef(0);
+  const restoreRequestRef = useRef(0);
+  const restorePendingRef = useRef(false);
+  const restoreDialogRef = useRef({ open: false, token: 0 });
   const loadingMoreRef = useRef(false);
   const itemsRef = useRef<TranscriptHistoryListItem[]>([]);
   const localCursorRef = useRef<TranscriptHistoryCursor | null>(null);
@@ -183,10 +233,16 @@ export function TranscriptHistoryModal({ scope, onClosed }: Props) {
   const [cacheResult, setCacheResult] = useState<HistoryCacheResult | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState(false);
+  const [restoreLoading, setRestoreLoading] = useState(false);
+  const [restoreErrorCode, setRestoreErrorCode] =
+    useState<TranscriptHistoryRestoreErrorCode | null>(null);
 
   useEffect(() => {
     onClosedRef.current = onClosed;
   }, [onClosed]);
+  useEffect(() => {
+    onRestoreDraftPreparedRef.current = onRestoreDraftPrepared;
+  }, [onRestoreDraftPrepared]);
 
   const isActive = useCallback((generation: number): boolean => {
     const current = lifetime.current;
@@ -261,6 +317,10 @@ export function TranscriptHistoryModal({ scope, onClosed }: Props) {
     cloudFailedRef.current = false;
     loadingMoreRef.current = false;
     detailRequestRef.current += 1;
+    restoreRequestRef.current += 1;
+    restorePendingRef.current = false;
+    restoreDialogRef.current.open = false;
+    restoreDialogRef.current.token += 1;
     setItems([]);
     setLocalCursor(null);
     setCloudCursor(null);
@@ -275,6 +335,8 @@ export function TranscriptHistoryModal({ scope, onClosed }: Props) {
     setCacheResult(null);
     setDetailLoading(false);
     setDetailError(false);
+    setRestoreLoading(false);
+    setRestoreErrorCode(null);
 
     let reader: HistoryReader;
     try {
@@ -315,12 +377,17 @@ export function TranscriptHistoryModal({ scope, onClosed }: Props) {
       }
     })();
 
+    const restoreDialog = restoreDialogRef.current;
     return () => {
       const current = lifetime.current;
       if (current.generation === generation) {
         current.active = false;
         current.generation += 1;
       }
+      detailRequestRef.current += 1;
+      restoreRequestRef.current += 1;
+      restoreDialog.open = false;
+      restoreDialog.token += 1;
       cloudAbortRef.current?.abort();
       detailAbortRef.current?.abort();
       if (readerRef.current === reader) {
@@ -330,22 +397,34 @@ export function TranscriptHistoryModal({ scope, onClosed }: Props) {
     };
   }, [isActive, loadCloudPage, loadLocalPage, scope]);
 
-  const close = useCallback((): void => {
+  const retire = useCallback((): boolean => {
     const current = lifetime.current;
-    if (!current.active || current.closed) return;
+    if (!current.active || current.closed) return false;
     current.closed = true;
     current.active = false;
     current.generation += 1;
     detailRequestRef.current += 1;
+    restoreRequestRef.current += 1;
+    restorePendingRef.current = false;
+    restoreDialogRef.current.open = false;
+    restoreDialogRef.current.token += 1;
     cloudAbortRef.current?.abort();
     detailAbortRef.current?.abort();
     readerRef.current?.dispose();
     readerRef.current = null;
-    onClosedRef.current();
+    return true;
   }, []);
+
+  const close = useCallback((): void => {
+    if (retire()) onClosedRef.current();
+  }, [retire]);
 
   const backToList = useCallback((): void => {
     detailRequestRef.current += 1;
+    restoreRequestRef.current += 1;
+    restorePendingRef.current = false;
+    restoreDialogRef.current.open = false;
+    restoreDialogRef.current.token += 1;
     detailAbortRef.current?.abort();
     detailAbortRef.current = null;
     setSelected(null);
@@ -353,6 +432,8 @@ export function TranscriptHistoryModal({ scope, onClosed }: Props) {
     setCacheResult(null);
     setDetailLoading(false);
     setDetailError(false);
+    setRestoreLoading(false);
+    setRestoreErrorCode(null);
   }, []);
 
   const openVersion = useCallback(async (
@@ -363,6 +444,10 @@ export function TranscriptHistoryModal({ scope, onClosed }: Props) {
     if (!reader || !isActive(generation)) return;
     const requestId = detailRequestRef.current + 1;
     detailRequestRef.current = requestId;
+    restoreRequestRef.current += 1;
+    restorePendingRef.current = false;
+    restoreDialogRef.current.open = false;
+    restoreDialogRef.current.token += 1;
     detailAbortRef.current?.abort();
     const controller = new AbortController();
     detailAbortRef.current = controller;
@@ -371,6 +456,8 @@ export function TranscriptHistoryModal({ scope, onClosed }: Props) {
     setCacheResult(null);
     setDetailError(false);
     setDetailLoading(true);
+    setRestoreLoading(false);
+    setRestoreErrorCode(null);
     try {
       const result: TranscriptHistoryHydrationResult = await reader.hydrateVersion({
         versionId: item.id,
@@ -406,6 +493,128 @@ export function TranscriptHistoryModal({ scope, onClosed }: Props) {
       }
     }
   }, [isActive]);
+
+  const prepareRestoreDraft = useCallback(async (
+    source: Extract<LocalTranscriptHistoryVersion, { kind: "ready" }>,
+    generation: number,
+  ): Promise<void> => {
+    if (
+      source.version.is_current ||
+      restorePendingRef.current ||
+      !onRestoreDraftPreparedRef.current ||
+      !isActive(generation)
+    ) return;
+
+    const requestId = restoreRequestRef.current + 1;
+    restoreRequestRef.current = requestId;
+    restorePendingRef.current = true;
+    setRestoreErrorCode(null);
+    setRestoreLoading(true);
+    const assertActive = (): void => {
+      if (!isActive(generation) || restoreRequestRef.current !== requestId) {
+        throw new Error("history restore context inactive");
+      }
+    };
+
+    try {
+      const result = await prepareTranscriptHistoryRestoreDraft({
+        scope,
+        sourceVersionId: source.version.id,
+        sourceVersionNumber: source.version.version,
+        sourcePlainText: source.rawPlainText,
+        sourceContentChecksumSha256:
+          source.version.content_checksum_sha256,
+        assertActive,
+      });
+      assertActive();
+      const callback = onRestoreDraftPreparedRef.current;
+      if (!callback) {
+        if (retire()) onClosedRef.current();
+        return;
+      }
+      if (!retire()) return;
+      // The service has acknowledged the durable draft. A parent callback
+      // failure cannot honestly turn that commit into a restore failure.
+      try {
+        callback(result);
+      } catch {
+        try {
+          onClosedRef.current();
+        } catch {
+          // The durable draft remains discoverable by the next editor owner.
+        }
+      }
+    } catch (failure) {
+      if (isActive(generation) && restoreRequestRef.current === requestId) {
+        setRestoreErrorCode(
+          normalizeTranscriptHistoryRestoreFailure(failure).code,
+        );
+      }
+    } finally {
+      if (restoreRequestRef.current === requestId) {
+        restorePendingRef.current = false;
+      }
+      if (isActive(generation) && restoreRequestRef.current === requestId) {
+        setRestoreLoading(false);
+      }
+    }
+  }, [isActive, retire, scope]);
+
+  const requestRestore = useCallback((): void => {
+    if (
+      detail?.kind !== "ready" ||
+      detail.version.is_current ||
+      restoreLoading ||
+      restorePendingRef.current ||
+      restoreDialogRef.current.open ||
+      !onRestoreDraftPreparedRef.current
+    ) return;
+    const generation = lifetime.current.generation;
+    if (!isActive(generation)) return;
+    const source: Extract<LocalTranscriptHistoryVersion, { kind: "ready" }> = {
+      ...detail,
+      scope: { ...detail.scope },
+      version: { ...detail.version },
+    };
+    restoreDialogRef.current.open = true;
+    const dialogToken = restoreDialogRef.current.token + 1;
+    restoreDialogRef.current.token = dialogToken;
+    const valid = (): boolean =>
+      isActive(generation) &&
+      restoreDialogRef.current.open &&
+      restoreDialogRef.current.token === dialogToken;
+    const dismiss = (): void => {
+      if (valid()) restoreDialogRef.current.open = false;
+    };
+
+    try {
+      Alert.alert(
+        t("session", "history.restore.confirmTitle", {
+          version: source.version.version,
+        }),
+        t("session", "history.restore.confirmBody"),
+        [
+          {
+            text: t("common", "actions.cancel"),
+            style: "cancel",
+            onPress: dismiss,
+          },
+          {
+            text: t("session", "history.restore.confirmAction"),
+            onPress: () => {
+              if (!valid()) return;
+              restoreDialogRef.current.open = false;
+              void prepareRestoreDraft(source, generation);
+            },
+          },
+        ],
+        { cancelable: true, onDismiss: dismiss },
+      );
+    } catch {
+      restoreDialogRef.current.open = false;
+      setRestoreErrorCode("HISTORY_RESTORE_WRITE_FAILED");
+    }
+  }, [detail, isActive, prepareRestoreDraft, restoreLoading, t]);
 
   const loadMorePages = useCallback(async (): Promise<void> => {
     const reader = readerRef.current;
@@ -588,6 +797,42 @@ export function TranscriptHistoryModal({ scope, onClosed }: Props) {
                 }}
               />
             ) : null}
+            {restoreErrorCode ? (
+              <Text
+                testID="transcript-history-restore-error"
+                accessibilityRole="alert"
+                style={[typography.body, { color: colors.recording }]}
+              >
+                {t("session", historyRestoreErrorKey(restoreErrorCode))}
+              </Text>
+            ) : null}
+            {
+              detail?.kind === "ready" &&
+              detail.rawPlainText.trim().length > 0 &&
+              !detail.version.is_current &&
+              onRestoreDraftPrepared
+                ? (
+                    <View style={{ gap: spacing.xs }}>
+                      <Text
+                        style={[
+                          typography.caption,
+                          { color: colors.textSecondary },
+                        ]}
+                      >
+                        {t("session", "history.restore.hint")}
+                      </Text>
+                      <Button
+                        testID="transcript-history-restore-draft"
+                        label={t("session", "history.restore.action")}
+                        variant="secondary"
+                        loading={restoreLoading}
+                        disabled={restoreLoading}
+                        onPress={requestRestore}
+                      />
+                    </View>
+                  )
+                : null
+            }
           </ScrollView>
         ) : (
           <ScrollView

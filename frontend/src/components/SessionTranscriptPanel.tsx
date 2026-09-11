@@ -3,6 +3,7 @@ import { Platform, Text, TouchableOpacity, View } from "react-native";
 
 import { useI18n } from "@/src/i18n/I18nProvider";
 import { subscribeTranscriptionSyncChanges } from "@/src/services/sync/transcription-sync-events";
+import type { TranscriptHistoryRestoreDraftResult } from "@/src/services/transcription/history-restore-types";
 import type { TranscriptHistoryScope } from "@/src/services/transcription/history-types";
 import {
   loadLocalTranscriptReadModelWithEvidence,
@@ -119,6 +120,32 @@ export function SessionTranscriptPanel({ sessionId, workspaceId, onEdit, editDis
     ) return;
     setHistoryScope({ userId, workspaceId, sessionId });
   };
+
+  const openPreparedRestoreDraft = useCallback((
+    result: TranscriptHistoryRestoreDraftResult,
+  ): void => {
+    const activeScope = historyScope;
+    setHistoryScope(null);
+    if (
+      !activeScope ||
+      !onEdit ||
+      editDisabled ||
+      !userId ||
+      !workspaceId ||
+      activeScope.userId !== userId ||
+      activeScope.workspaceId !== workspaceId ||
+      activeScope.sessionId !== sessionId ||
+      result.kind !== "draft_created" ||
+      result.sourceVersionId === result.baseVersionId ||
+      result.draft.user_id !== activeScope.userId ||
+      result.draft.workspace_id !== activeScope.workspaceId ||
+      result.draft.session_id !== activeScope.sessionId ||
+      result.draft.base_version_id !== result.baseVersionId
+    ) {
+      return;
+    }
+    onEdit();
+  }, [editDisabled, historyScope, onEdit, sessionId, userId, workspaceId]);
 
   const renderViewModeButton = (
     mode: TranscriptViewMode,
@@ -403,6 +430,7 @@ export function SessionTranscriptPanel({ sessionId, workspaceId, onEdit, editDis
       {historyScope ? <TranscriptHistoryModal
         key={`${historyScope.userId}:${historyScope.workspaceId}:${historyScope.sessionId}`}
         scope={historyScope}
+        onRestoreDraftPrepared={onEdit ? openPreparedRestoreDraft : undefined}
         onClosed={() => setHistoryScope((current) => current === historyScope ? null : current)}
       /> : null}
     </Card>

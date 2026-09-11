@@ -1,9 +1,11 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import React, { act } from "react";
+import { Alert } from "react-native";
 
 import {
   TranscriptHistoryModal,
+  historyRestoreErrorKey,
   mergeTranscriptHistoryItems,
 } from "@/src/components/TranscriptHistoryModal";
 import { fetchTranscriptHistoryPage } from "@/src/services/transcription/history-client";
@@ -12,6 +14,11 @@ import type {
   TranscriptHistoryCloudSummary,
 } from "@/src/services/transcription/history-cloud-types";
 import { createLocalTranscriptHistoryReader } from "@/src/services/transcription/history-read-model";
+import { prepareTranscriptHistoryRestoreDraft } from "@/src/services/transcription/history-restore-service";
+import {
+  TranscriptHistoryRestoreError,
+  type TranscriptHistoryRestoreDraftResult,
+} from "@/src/services/transcription/history-restore-types";
 import { historyCacheResult } from "@/src/services/transcription/history-cache-types";
 import type {
   LocalTranscriptHistoryPage,
@@ -38,6 +45,7 @@ jest.mock("expo-crypto", () => ({
   digestStringAsync: jest.fn(),
 }));
 jest.mock("react-native", () => ({
+  Alert: { alert: jest.fn() },
   Modal: "Modal",
   ScrollView: "ScrollView",
   Text: "Text",
@@ -77,6 +85,9 @@ jest.mock("@/src/services/transcription/history-client", () => ({
 }));
 jest.mock("@/src/services/transcription/history-read-model", () => ({
   createLocalTranscriptHistoryReader: jest.fn(),
+}));
+jest.mock("@/src/services/transcription/history-restore-service", () => ({
+  prepareTranscriptHistoryRestoreDraft: jest.fn(),
 }));
 
 const USER_ID = "11111111-1111-4111-8111-111111111111";
@@ -154,6 +165,20 @@ const missing = (version = 2): LocalTranscriptHistoryVersion => ({
   scope: { ...scope },
   versionId: idFor(version),
 });
+const restoreResult = (): TranscriptHistoryRestoreDraftResult => ({
+  kind: "draft_created",
+  sourceVersionId: VERSION_2,
+  baseVersionId: VERSION_3,
+  draft: {
+    user_id: USER_ID,
+    workspace_id: WORKSPACE_ID,
+    session_id: SESSION_ID,
+    base_version_id: VERSION_3,
+    plain_text: "  exact historical text  ",
+    created_at: "2026-09-10T00:00:02.000Z",
+    updated_at: "2026-09-10T00:00:02.000Z",
+  },
+});
 const flush = async (): Promise<void> => {
   for (let index = 0; index < 16; index += 1) await Promise.resolve();
 };
@@ -171,15 +196,26 @@ const cloud = fetchTranscriptHistoryPage as jest.MockedFunction<
 const createReader = createLocalTranscriptHistoryReader as jest.MockedFunction<
   typeof createLocalTranscriptHistoryReader
 >;
+const prepareRestore = prepareTranscriptHistoryRestoreDraft as jest.MockedFunction<
+  typeof prepareTranscriptHistoryRestoreDraft
+>;
+const nativeAlert = Alert.alert as jest.MockedFunction<typeof Alert.alert>;
 let listPage: jest.Mock;
 let hydrateVersion: jest.Mock;
 let dispose: jest.Mock;
 let tree: Tree | null = null;
 let closed: jest.Mock;
+let restored: jest.Mock;
 
-const mount = async (): Promise<void> => {
+const mount = async (restoreEnabled = true): Promise<void> => {
   await act(async () => {
-    tree = create(<TranscriptHistoryModal scope={scope} onClosed={closed} />);
+    tree = create(
+      <TranscriptHistoryModal
+        scope={scope}
+        onClosed={closed}
+        onRestoreDraftPrepared={restoreEnabled ? restored : undefined}
+      />,
+    );
     await flush();
   });
 };
@@ -192,11 +228,21 @@ const press = async (testID: string): Promise<void> => {
     await flush();
   });
 };
+const confirmRestore = async (): Promise<void> => {
+  const buttons = nativeAlert.mock.calls.at(-1)?.[2];
+  const confirm = Array.isArray(buttons) ? buttons[1] : undefined;
+  if (!confirm?.onPress) throw new Error("Missing restore confirmation action");
+  await act(async () => {
+    confirm.onPress?.();
+    await flush();
+  });
+};
 
 beforeEach(() => {
   jest.clearAllMocks();
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   closed = jest.fn();
+  restored = jest.fn();
   dispose = jest.fn();
   listPage = jest.fn(async () => localPage([localSummary(2)]));
   hydrateVersion = jest.fn(async () => ({ detail: ready(2), cacheResult: null }));
@@ -208,6 +254,7 @@ beforeEach(() => {
     hydrateVersion,
   } as never);
   cloud.mockResolvedValue(cloudPage([cloudSummary(3), cloudSummary(2)]));
+  prepareRestore.mockResolvedValue(restoreResult());
 });
 afterEach(async () => {
   await act(async () => {
@@ -217,7 +264,7 @@ afterEach(async () => {
   });
 });
 
-describe("C2E explicit transcript history viewer", () => {
+describe("C2E/C2F.2 explicit transcript history viewer", () => {
   it("prefers the local current observation and rejects conflicting version identities", () => {
     const cloudItems = mergeTranscriptHistoryItems(
       [],
@@ -269,7 +316,119 @@ describe("C2E explicit transcript history viewer", () => {
     expect(node("transcript-history-detail-text").props.children)
       .toBe("  exact historical text  ");
     expect(node("transcript-history-detail-text").props.selectable).toBe(true);
-    expect(has("transcript-history-restore")).toBe(false);
+    expect(has("transcript-history-restore-draft")).toBe(true);
+  });
+
+  it("prepares one exact restore draft only after confirmation", async () => {
+    const expected = restoreResult();
+    prepareRestore.mockResolvedValueOnce(expected);
+    await mount();
+    await press(`transcript-history-version-${VERSION_2}`);
+
+    await press("transcript-history-restore-draft");
+    expect(prepareRestore).not.toHaveBeenCalled();
+    expect(nativeAlert).toHaveBeenCalledTimes(1);
+
+    await confirmRestore();
+
+    expect(prepareRestore).toHaveBeenCalledTimes(1);
+    expect(prepareRestore).toHaveBeenCalledWith(expect.objectContaining({
+      scope,
+      sourceVersionId: VERSION_2,
+      sourceVersionNumber: 2,
+      sourcePlainText: "  exact historical text  ",
+      sourceContentChecksumSha256: "a".repeat(64),
+      assertActive: expect.any(Function),
+    }));
+    const guard = prepareRestore.mock.calls[0][0].assertActive;
+    expect(restored).toHaveBeenCalledWith(expected);
+    expect(closed).not.toHaveBeenCalled();
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(() => guard()).toThrow();
+  });
+
+  it("never offers restore for the current version or without an editor handoff", async () => {
+    hydrateVersion.mockResolvedValueOnce({
+      detail: ready(3),
+      cacheResult: null,
+    });
+    await mount();
+    await press(`transcript-history-version-${VERSION_3}`);
+    expect(has("transcript-history-restore-draft")).toBe(false);
+
+    await act(async () => {
+      tree?.unmount();
+      tree = null;
+      await flush();
+    });
+    hydrateVersion.mockResolvedValueOnce({ detail: ready(2), cacheResult: null });
+    await mount(false);
+    await press(`transcript-history-version-${VERSION_2}`);
+    expect(has("transcript-history-restore-draft")).toBe(false);
+  });
+
+  it("ignores a confirmation callback after the modal closes", async () => {
+    await mount();
+    await press(`transcript-history-version-${VERSION_2}`);
+    await press("transcript-history-restore-draft");
+    const buttons = nativeAlert.mock.calls.at(-1)?.[2];
+    const confirm = Array.isArray(buttons) ? buttons[1] : undefined;
+    if (!confirm?.onPress) throw new Error("Missing restore confirmation action");
+
+    await press("transcript-history-close");
+    await act(async () => {
+      confirm.onPress?.();
+      await flush();
+    });
+
+    expect(prepareRestore).not.toHaveBeenCalled();
+    expect(restored).not.toHaveBeenCalled();
+    expect(closed).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows only a localized safe restore error and never retries automatically", async () => {
+    prepareRestore.mockRejectedValueOnce(
+      new TranscriptHistoryRestoreError("HISTORY_RESTORE_DRAFT_EXISTS"),
+    );
+    await mount();
+    await press(`transcript-history-version-${VERSION_2}`);
+    await press("transcript-history-restore-draft");
+    await confirmRestore();
+
+    expect(node("transcript-history-restore-error").props.children)
+      .toBe("history.restore.errors.draftExists");
+    expect(String(node("transcript-history-restore-error").props.children))
+      .not.toContain("draft already exists");
+    expect(prepareRestore).toHaveBeenCalledTimes(1);
+    expect(restored).not.toHaveBeenCalled();
+    expect(closed).not.toHaveBeenCalled();
+    expect(historyRestoreErrorKey("PRIVATE_CODE"))
+      .toBe("history.restore.errors.unknown");
+  });
+
+  it("invalidates an in-flight restore when the modal closes", async () => {
+    const gate = deferred<TranscriptHistoryRestoreDraftResult>();
+    prepareRestore.mockImplementationOnce(async (input) => {
+      input.assertActive();
+      const value = await gate.promise;
+      input.assertActive();
+      return value;
+    });
+    await mount();
+    await press(`transcript-history-version-${VERSION_2}`);
+    await press("transcript-history-restore-draft");
+    await confirmRestore();
+    expect(prepareRestore).toHaveBeenCalledTimes(1);
+
+    await press("transcript-history-close");
+    gate.resolve(restoreResult());
+    await act(async () => {
+      await flush();
+    });
+
+    expect(closed).toHaveBeenCalledTimes(1);
+    expect(restored).not.toHaveBeenCalled();
+    expect(dispose).toHaveBeenCalledTimes(1);
   });
 
   it("shows one retryable miss and retries only after an explicit button press", async () => {
@@ -351,7 +510,7 @@ describe("C2E explicit transcript history viewer", () => {
     expect(closed).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps activation explicit and leaves coordinator, restore, and current ownership untouched", () => {
+  it("keeps restore explicit and leaves coordinator and current ownership untouched", () => {
     const component = readFileSync(
       resolve(process.cwd(), "src/components/TranscriptHistoryModal.tsx"),
       "utf8",
@@ -368,9 +527,12 @@ describe("C2E explicit transcript history viewer", () => {
     expect(panel).toContain('testID="session-transcript-history"');
     expect(panel).toContain("<TranscriptHistoryModal");
     expect(component).toContain("reader.hydrateVersion(");
+    expect(component).toContain("prepareTranscriptHistoryRestoreDraft({");
+    expect(component).not.toContain("prepareGuardedTranscriptHistoryRestoreDraft");
     expect(component).not.toContain("persistPreparedTranscriptHistoryCache");
     expect(component).not.toContain("is_current = 1");
     expect(component).not.toContain("requestAllSync");
+    expect(component).not.toContain("requestTranscriptEditSync");
     expect(coordinator).not.toContain("TranscriptHistoryModal");
     expect(coordinator).not.toContain("hydrateVersion");
   });

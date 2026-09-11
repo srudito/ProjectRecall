@@ -1,9 +1,11 @@
 import React, { act } from "react";
 import { SessionTranscriptPanel } from "@/src/components/SessionTranscriptPanel";
 import { loadLocalTranscriptReadModelWithEvidence, type LocalTranscriptReadModelWithEvidence } from "@/src/services/transcription/read-model";
+import type { TranscriptHistoryRestoreDraftResult } from "@/src/services/transcription/history-restore-types";
 
 type TestNode = {
-  props: { [key: string]: unknown; onPress: () => void; onClosed: () => void };
+  props: { [key: string]: unknown; onPress: () => void; onClosed: () => void;
+    onRestoreDraftPrepared: (result: TranscriptHistoryRestoreDraftResult) => void };
   findByProps: (props: object) => TestNode;
   findAllByProps: (props: object) => TestNode[];
 };
@@ -115,6 +117,31 @@ describe("3D.3 rendered evidence-aware transcript reader", () => {
     await act(async () => { node("transcript-history-modal-stub").props.onClosed(); });
     expect(has("transcript-history-modal-stub")).toBe(false);
     expect(edit).not.toHaveBeenCalled();
+  });
+  it("hands a prepared restore draft to the existing editor and closes history", async () => {
+    loader.mockResolvedValue({ kind: "empty" }); const edit = jest.fn(); await mount(edit);
+    await press("session-transcript-history");
+    const result: TranscriptHistoryRestoreDraftResult = {
+      kind: "draft_created",
+      sourceVersionId: "44444444-4444-4444-8444-444444444444",
+      baseVersionId: "55555555-5555-4555-8555-555555555555",
+      draft: {
+        user_id: "user",
+        workspace_id: "workspace",
+        session_id: "session",
+        base_version_id: "55555555-5555-4555-8555-555555555555",
+        plain_text: "Historical text",
+        created_at: "2026-09-11T00:00:00.000Z",
+        updated_at: "2026-09-11T00:00:00.000Z",
+      },
+    };
+
+    await act(async () => {
+      node("transcript-history-modal-stub").props.onRestoreDraftPrepared(result);
+    });
+
+    expect(has("transcript-history-modal-stub")).toBe(false);
+    expect(edit).toHaveBeenCalledTimes(1);
   });
   it("retains cached text on refresh failure", async () => {
     await mount(); loader.mockRejectedValue(new Error("Private database diagnostic")); await event();
