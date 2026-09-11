@@ -2,7 +2,10 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import {
+  TRANSCRIPTION_PRODUCTION_BACKEND_DEPLOYMENT_GATE_ID,
+  TRANSCRIPTION_PRODUCTION_BACKEND_METADATA_FINGERPRINT,
   TRANSCRIPTION_PRODUCTION_MUTATIONS_APPROVED,
+  TRANSCRIPTION_PRODUCTION_ROLLOUT_APPROVAL_ID,
   isTranscriptionMutationReleasedForEnvironment,
 } from "@/src/config/transcription-release";
 import { createTranscriptEditWorker } from "@/src/services/sync/transcript-edit-worker";
@@ -11,15 +14,26 @@ import { createTranscriptionRequestWorker } from "@/src/services/sync/transcript
 const read = (relativePath: string): string =>
   readFileSync(resolve(process.cwd(), relativePath), "utf8");
 
-describe("C2G.1 production transcription mutation release lock", () => {
-  it("keeps production source-locked while preserving development and preview", () => {
-    expect(TRANSCRIPTION_PRODUCTION_MUTATIONS_APPROVED).toBe(false);
+describe("C2G.3 Gate C production transcription mutation source approval", () => {
+  it("approves the reviewed backend provenance and fails closed for unknown environments", () => {
+    expect(TRANSCRIPTION_PRODUCTION_MUTATIONS_APPROVED).toBe(true);
+    expect(TRANSCRIPTION_PRODUCTION_ROLLOUT_APPROVAL_ID).toBe(
+      "C2G3_GATE_C_SOURCE_APPROVAL_V1",
+    );
+    expect(TRANSCRIPTION_PRODUCTION_BACKEND_DEPLOYMENT_GATE_ID).toBe(
+      "C2G3_GATE_B_BACKEND_DEPLOYMENT_PROVENANCE",
+    );
+    expect(TRANSCRIPTION_PRODUCTION_BACKEND_METADATA_FINGERPRINT).toBe(
+      "ef25db51bd709f5be586e67ce775490cd29a48b3a37f90c441ea1e44b110500f",
+    );
     expect(isTranscriptionMutationReleasedForEnvironment("development")).toBe(true);
     expect(isTranscriptionMutationReleasedForEnvironment(" preview ")).toBe(true);
     expect(isTranscriptionMutationReleasedForEnvironment("test")).toBe(true);
-    expect(isTranscriptionMutationReleasedForEnvironment("production")).toBe(false);
+    expect(isTranscriptionMutationReleasedForEnvironment(" production ")).toBe(true);
     expect(isTranscriptionMutationReleasedForEnvironment("prod")).toBe(false);
+    expect(isTranscriptionMutationReleasedForEnvironment("staging")).toBe(false);
     expect(isTranscriptionMutationReleasedForEnvironment("")).toBe(false);
+    expect(isTranscriptionMutationReleasedForEnvironment(null)).toBe(false);
   });
 
   it("does not inspect connectivity, auth, SQLite, or remote request state while locked", async () => {
@@ -109,13 +123,27 @@ describe("C2G.1 production transcription mutation release lock", () => {
     expect(coordinator).toContain("requestTranscriptCurrentVersionSync();");
   });
 
-  it("makes the production release validator enforce the source lock", () => {
+  it("makes the production release validator enforce the exact Gate C approval shape", () => {
     const validator = read("scripts/validate-release-readiness.js");
     expect(validator).toContain(
       "TRANSCRIPTION_PRODUCTION_MUTATIONS_APPROVED",
     );
     expect(validator).toContain(
-      "Production transcription mutations must remain source-locked",
+      "TRANSCRIPTION_PRODUCTION_ROLLOUT_APPROVAL_ID",
+    );
+    expect(validator).toContain(
+      "TRANSCRIPTION_PRODUCTION_BACKEND_DEPLOYMENT_GATE_ID",
+    );
+    expect(validator).toContain(
+      "TRANSCRIPTION_PRODUCTION_BACKEND_METADATA_FINGERPRINT",
+    );
+    expect(validator).toContain("C2G3_GATE_C_SOURCE_APPROVAL_V1");
+    expect(validator).toContain("C2G3_GATE_B_BACKEND_DEPLOYMENT_PROVENANCE");
+    expect(validator).toContain(
+      "ef25db51bd709f5be586e67ce775490cd29a48b3a37f90c441ea1e44b110500f",
+    );
+    expect(validator).toContain(
+      "must match the reviewed C2G.3 Gate C approval shape exactly",
     );
     expect(validator).toContain("app/session/[id].tsx");
   });

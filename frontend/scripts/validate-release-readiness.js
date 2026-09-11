@@ -64,12 +64,35 @@ const requiredPermissions = [
   "android.permission.CAMERA",
 ];
 
-const productionMutationApproval =
-  /export const TRANSCRIPTION_PRODUCTION_MUTATIONS_APPROVED\s*=\s*false\s*;/;
-if (!productionMutationApproval.test(transcriptionRelease)) {
-  fail(
-    "Production transcription mutations must remain source-locked until the separate live rollout gate is approved.",
-  );
+const productionMutationApprovalShape = [
+  {
+    pattern:
+      /^export const TRANSCRIPTION_PRODUCTION_MUTATIONS_APPROVED\s*=\s*true\s*;$/gm,
+    label: "production mutation approval",
+  },
+  {
+    pattern:
+      /^export const TRANSCRIPTION_PRODUCTION_ROLLOUT_APPROVAL_ID\s*=\s*"C2G3_GATE_C_SOURCE_APPROVAL_V1"\s*;$/gm,
+    label: "rollout approval identifier",
+  },
+  {
+    pattern:
+      /^export const TRANSCRIPTION_PRODUCTION_BACKEND_DEPLOYMENT_GATE_ID\s*=\s*"C2G3_GATE_B_BACKEND_DEPLOYMENT_PROVENANCE"\s*;$/gm,
+    label: "backend deployment gate identifier",
+  },
+  {
+    pattern:
+      /^export const TRANSCRIPTION_PRODUCTION_BACKEND_METADATA_FINGERPRINT\s*=\s*"ef25db51bd709f5be586e67ce775490cd29a48b3a37f90c441ea1e44b110500f"\s*;$/gm,
+    label: "backend metadata fingerprint",
+  },
+];
+for (const { pattern, label } of productionMutationApprovalShape) {
+  const matches = transcriptionRelease.match(pattern) ?? [];
+  if (matches.length !== 1) {
+    fail(
+      `Production transcription ${label} must match the reviewed C2G.3 Gate C approval shape exactly.`,
+    );
+  }
 }
 
 for (const relativePath of [
@@ -91,10 +114,11 @@ for (const relativePath of [
 if (
   !transcriptionRelease.includes('normalized === "development"') ||
   !transcriptionRelease.includes('normalized === "preview"') ||
+  !transcriptionRelease.includes('normalized === "test"') ||
   !transcriptionRelease.includes('normalized === "production"')
 ) {
   fail(
-    "The transcription mutation release gate must explicitly allow development/preview and fail closed for production.",
+    "The transcription mutation release gate must explicitly handle development/preview/test/production and fail closed for unknown environments.",
   );
 }
 
