@@ -44,6 +44,16 @@ login role `project_recall_transcription_worker` with:
   Function;
 - no explicit table, sequence, operator-helper, or role-membership privileges.
 
+On Supabase PostgreSQL 17, `CREATE ROLE` executed by the dashboard `postgres`
+role may add one platform-generated inbound creator-admin membership:
+`project_recall_transcription_worker` is granted to `postgres` by
+`supabase_admin` with `ADMIN OPTION`, while `INHERIT` and `SET` remain false.
+This administrative edge does not make the worker a member of another role and
+does not expand the worker login's runtime privileges. The disposable behavior
+test accepts either no inbound creator grant or exactly this one grant, rejects
+all outbound memberships, and rejects every additional or privilege-bearing
+membership.
+
 The function bodies, owners, signatures, RLS policies, tables, triggers, data,
 feature flags, and Cron configuration are not changed.
 

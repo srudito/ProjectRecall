@@ -43,6 +43,8 @@ After migration `0017` is applied to a disposable project,
 
 ```text
 TRANSCRIPTION_WORKER_DATABASE_ROLE_ATTRIBUTES=PASS
+TRANSCRIPTION_WORKER_DATABASE_ROLE_OUTBOUND_MEMBERSHIPS=PASS
+TRANSCRIPTION_WORKER_DATABASE_ROLE_CREATOR_ADMIN_MEMBERSHIP=PASS
 TRANSCRIPTION_WORKER_DATABASE_ROLE_MEMBERSHIPS=PASS
 TRANSCRIPTION_WORKER_DATABASE_ROLE_SCHEMA_PRIVILEGES=PASS
 TRANSCRIPTION_WORKER_DATABASE_ROLE_DIRECT_RELATION_ACL=PASS
@@ -50,6 +52,13 @@ TRANSCRIPTION_WORKER_DATABASE_ROLE_WORKER_FUNCTIONS=PASS
 TRANSCRIPTION_WORKER_DATABASE_ROLE_OPERATOR_FUNCTIONS=PASS
 PROJECT_RECALL_TRANSCRIPTION_WORKER_DIRECT_DATABASE_ROLE=PASS
 ```
+
+The membership contract requires zero outbound memberships for the worker role.
+It accepts zero inbound memberships or one PostgreSQL 17/Supabase-generated
+creator-admin row where the worker role is granted to `postgres` by
+`supabase_admin` with `ADMIN OPTION`, `INHERIT=false`, and `SET=false`. Any
+additional membership, any worker membership in another role, or any inbound
+membership with broader privilege fails closed.
 
 The behavior script is read-only and ends with `ROLLBACK`.
 

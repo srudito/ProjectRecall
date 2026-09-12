@@ -9,7 +9,9 @@ declare
   worker_role constant text := 'project_recall_transcription_worker';
   worker_role_oid oid;
   worker_role_record record;
-  membership_count integer;
+  outbound_membership_count integer;
+  inbound_membership_count integer;
+  invalid_inbound_membership_count integer;
   direct_table_acl_count integer;
   direct_sequence_acl_count integer;
   direct_function_acl_count integer;
@@ -58,16 +60,55 @@ begin
   raise notice 'TRANSCRIPTION_WORKER_DATABASE_ROLE_ATTRIBUTES=PASS';
 
   select count(*)::integer
-    into membership_count
+    into outbound_membership_count
   from pg_catalog.pg_auth_members membership
-  where membership.member = worker_role_oid
-     or membership.roleid = worker_role_oid;
+  where membership.member = worker_role_oid;
 
-  if membership_count <> 0 then
+  if outbound_membership_count <> 0 then
     raise exception using
       errcode = 'P0001',
-      message = 'TRANSCRIPTION_WORKER_DATABASE_ROLE_MEMBERSHIP_CHECK_FAILED';
+      message =
+        'TRANSCRIPTION_WORKER_DATABASE_ROLE_OUTBOUND_MEMBERSHIP_CHECK_FAILED';
   end if;
+  raise notice
+    'TRANSCRIPTION_WORKER_DATABASE_ROLE_OUTBOUND_MEMBERSHIPS=PASS';
+
+  select count(*)::integer
+    into inbound_membership_count
+  from pg_catalog.pg_auth_members membership
+  where membership.roleid = worker_role_oid;
+
+  if inbound_membership_count > 1 then
+    raise exception using
+      errcode = 'P0001',
+      message =
+        'TRANSCRIPTION_WORKER_DATABASE_ROLE_CREATOR_ADMIN_CHECK_FAILED';
+  end if;
+
+  select count(*)::integer
+    into invalid_inbound_membership_count
+  from pg_catalog.pg_auth_members membership
+  join pg_catalog.pg_roles member_role
+    on member_role.oid = membership.member
+  join pg_catalog.pg_roles grantor_role
+    on grantor_role.oid = membership.grantor
+  where membership.roleid = worker_role_oid
+    and (
+      member_role.rolname <> 'postgres'
+      or grantor_role.rolname <> 'supabase_admin'
+      or not membership.admin_option
+      or membership.inherit_option
+      or membership.set_option
+    );
+
+  if invalid_inbound_membership_count <> 0 then
+    raise exception using
+      errcode = 'P0001',
+      message =
+        'TRANSCRIPTION_WORKER_DATABASE_ROLE_CREATOR_ADMIN_CHECK_FAILED';
+  end if;
+  raise notice
+    'TRANSCRIPTION_WORKER_DATABASE_ROLE_CREATOR_ADMIN_MEMBERSHIP=PASS';
   raise notice 'TRANSCRIPTION_WORKER_DATABASE_ROLE_MEMBERSHIPS=PASS';
 
   if not pg_catalog.has_database_privilege(

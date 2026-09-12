@@ -91,6 +91,8 @@ describe("Milestone 2B.1B transcription request/worker migration", () => {
 
     for (const marker of [
       "transcription_worker_database_role_attributes=pass",
+      "transcription_worker_database_role_outbound_memberships=pass",
+      "transcription_worker_database_role_creator_admin_membership=pass",
       "transcription_worker_database_role_memberships=pass",
       "transcription_worker_database_role_schema_privileges=pass",
       "transcription_worker_database_role_direct_relation_acl=pass",
@@ -99,6 +101,18 @@ describe("Milestone 2B.1B transcription request/worker migration", () => {
       "project_recall_transcription_worker_direct_database_role=pass",
     ]) {
       expect(normalizedDirectDatabaseRoleBehavior).toContain(marker);
+    }
+    for (const membershipContract of [
+      "membership.member = worker_role_oid",
+      "membership.roleid = worker_role_oid",
+      "inbound_membership_count > 1",
+      "member_role.rolname <> 'postgres'",
+      "grantor_role.rolname <> 'supabase_admin'",
+      "not membership.admin_option",
+      "membership.inherit_option",
+      "membership.set_option",
+    ]) {
+      expect(normalizedDirectDatabaseRoleBehavior).toContain(membershipContract);
     }
     expect(normalizedDirectDatabaseRoleBehavior).toContain(
       "begin transaction read only;",
