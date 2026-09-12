@@ -20,6 +20,12 @@ describe("Milestone 2B.1B transcription request/worker migration", () => {
   const nullablePrimaryBehavior = readRepositoryFile(
     "supabase/tests/0015_transcription_nullable_primary_en_id_behavior.sql",
   );
+  const directDatabaseRoleMigration = readRepositoryFile(
+    "supabase/migrations/0017_transcription_worker_direct_database_role_v1.sql",
+  );
+  const directDatabaseRoleBehavior = readRepositoryFile(
+    "supabase/tests/0017_transcription_worker_direct_database_role_behavior.sql",
+  );
   const config = readRepositoryFile("supabase/config.toml");
   const normalized = normalizeSql(migration);
   const normalizedBehavior = normalizeSql(behavior);
@@ -29,6 +35,12 @@ describe("Milestone 2B.1B transcription request/worker migration", () => {
   const normalizedNullablePrimaryBehavior = normalizeSql(
     nullablePrimaryBehavior,
   );
+  const normalizedDirectDatabaseRoleMigration = normalizeSql(
+    directDatabaseRoleMigration,
+  );
+  const normalizedDirectDatabaseRoleBehavior = normalizeSql(
+    directDatabaseRoleBehavior,
+  );
 
   it("is append-only after migration 0013", () => {
     const files = readdirSync(
@@ -37,12 +49,61 @@ describe("Milestone 2B.1B transcription request/worker migration", () => {
       .filter((file) => file.endsWith(".sql"))
       .sort();
 
-    expect(files.slice(-4)).toEqual([
+    expect(files.slice(-5)).toEqual([
       "0013_transcription_foundation_v1.sql",
       "0014_transcription_request_worker_v1.sql",
       "0015_transcription_nullable_primary_en_id.sql",
       "0016_transcript_user_edit_versioning_v1.sql",
+      "0017_transcription_worker_direct_database_role_v1.sql",
     ]);
+  });
+
+  it("adds a password-free least-privilege direct database role", () => {
+    expect(normalizedDirectDatabaseRoleMigration).toContain(
+      "project_recall_transcription_worker",
+    );
+    expect(normalizedDirectDatabaseRoleMigration).toContain(
+      "login noinherit nosuperuser nocreatedb nocreaterole noreplication nobypassrls password null",
+    );
+    expect(normalizedDirectDatabaseRoleMigration).toContain(
+      "revoke execute on all functions in schema public",
+    );
+    expect(normalizedDirectDatabaseRoleMigration).toContain(
+      "grant usage on schema public",
+    );
+    expect(
+      directDatabaseRoleMigration.match(/grant execute on function/g),
+    ).toHaveLength(11);
+    expect(normalizedDirectDatabaseRoleMigration).not.toContain(
+      "grant execute on function public.confirm_transcription_provider_absence",
+    );
+    expect(normalizedDirectDatabaseRoleMigration).not.toContain(
+      "grant execute on function public.prune_transcription_job_after_membership_loss",
+    );
+    expect(directDatabaseRoleMigration).not.toMatch(/^\s*alter\s+table\b/im);
+    expect(directDatabaseRoleMigration).not.toMatch(/^\s*create\s+table\b/im);
+    expect(normalizedDirectDatabaseRoleMigration).not.toContain(
+      "update public.feature_flags",
+    );
+    expect(directDatabaseRoleMigration).not.toContain(
+      "PROJECT_RECALL_TRANSCRIPTION_WORKER_DATABASE_URL",
+    );
+
+    for (const marker of [
+      "transcription_worker_database_role_attributes=pass",
+      "transcription_worker_database_role_memberships=pass",
+      "transcription_worker_database_role_schema_privileges=pass",
+      "transcription_worker_database_role_direct_relation_acl=pass",
+      "transcription_worker_database_role_worker_functions=pass",
+      "transcription_worker_database_role_operator_functions=pass",
+      "project_recall_transcription_worker_direct_database_role=pass",
+    ]) {
+      expect(normalizedDirectDatabaseRoleBehavior).toContain(marker);
+    }
+    expect(normalizedDirectDatabaseRoleBehavior).toContain(
+      "begin transaction read only;",
+    );
+    expect(normalizedDirectDatabaseRoleBehavior).toContain("rollback;");
   });
 
   it("adds nullable primary support through an append-only narrow migration", () => {
@@ -370,7 +431,7 @@ describe("Milestone 2B.1B transcription request/worker migration", () => {
     const requestSource = readRepositoryFile(
       "supabase/functions/transcription-request/index.ts",
     );
-    const combined = `${migration}\n${behavior}\n${nullablePrimaryMigration}\n${nullablePrimaryBehavior}\n${workerSource}\n${requestSource}`;
+    const combined = `${migration}\n${behavior}\n${nullablePrimaryMigration}\n${nullablePrimaryBehavior}\n${directDatabaseRoleMigration}\n${directDatabaseRoleBehavior}\n${workerSource}\n${requestSource}`;
     expect(combined).not.toMatch(/sb_secret_[A-Za-z0-9_-]{16,}/);
     expect(combined).not.toMatch(/assemblyai[_-]?api[_-]?key\s*[:=]\s*["'][^"']+/i);
     expect(combined).not.toContain("SUPABASE_SERVICE_ROLE_KEY=");

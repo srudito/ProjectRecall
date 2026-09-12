@@ -4,14 +4,21 @@ import {
   AssemblyAITranscriptionProvider,
   type AssemblyAIRegion,
 } from "../_shared/transcription/assemblyai.ts";
-import type { FetchLike, TranscriptionProvider } from "../_shared/transcription/provider.ts";
+import type {
+  FetchLike,
+  TranscriptionProvider,
+} from "../_shared/transcription/provider.ts";
 import {
   constantTimeTokenMatches,
   resolvePrivilegedApiKey,
   requireServerEnvironment,
 } from "../_shared/supabase/server.ts";
 import { createTranscriptionWorker } from "./core.ts";
-import { createTranscriptionWorkerDatabase } from "./database.ts";
+import {
+  createTranscriptionWorkerDatabase,
+  TranscriptionWorkerDatabaseError,
+} from "./database.ts";
+import { createTranscriptionWorkerPostgresExecutor } from "./postgres.ts";
 
 const SESSION_ASSETS_BUCKET = "session-assets";
 const PROVIDER_TIMEOUT_MS = 12_000;
@@ -32,9 +39,16 @@ const timeoutFetch = (timeoutMs: number): FetchLike =>
     const existingSignal = init.signal;
     const abortFromExisting = () => controller.abort(existingSignal?.reason);
     if (existingSignal?.aborted) abortFromExisting();
-    else existingSignal?.addEventListener("abort", abortFromExisting, { once: true });
+    else {
+      existingSignal?.addEventListener("abort", abortFromExisting, {
+        once: true,
+      });
+    }
 
-    const timer = setTimeout(() => controller.abort("provider_timeout"), timeoutMs);
+    const timer = setTimeout(
+      () => controller.abort("provider_timeout"),
+      timeoutMs,
+    );
     try {
       return await fetch(input, { ...init, signal: controller.signal });
     } finally {
@@ -112,7 +126,8 @@ const providerFactory = (): ((input: {
 };
 
 const verifyWorkerToken = async (request: Request): Promise<boolean> => {
-  const expected = Deno.env.get("PROJECT_RECALL_TRANSCRIPTION_WORKER_TOKEN") ?? "";
+  const expected =
+    Deno.env.get("PROJECT_RECALL_TRANSCRIPTION_WORKER_TOKEN") ?? "";
   const supplied = request.headers.get(WORKER_TOKEN_HEADER) ?? "";
   if (
     expected.length < 32 ||
@@ -130,25 +145,31 @@ const verifyWorkerToken = async (request: Request): Promise<boolean> => {
 Deno.serve(async (request: Request): Promise<Response> => {
   const requestId = crypto.randomUUID();
   if (request.method !== "POST") {
-    return jsonResponse({
-      error: {
-        code: "METHOD_NOT_ALLOWED",
-        message: "Use POST to run the transcription worker.",
-        retryable: false,
-        requestId,
+    return jsonResponse(
+      {
+        error: {
+          code: "METHOD_NOT_ALLOWED",
+          message: "Use POST to run the transcription worker.",
+          retryable: false,
+          requestId,
+        },
       },
-    }, 405);
+      405,
+    );
   }
 
   if (!(await verifyWorkerToken(request))) {
-    return jsonResponse({
-      error: {
-        code: "TRANSCRIPTION_WORKER_UNAUTHORIZED",
-        message: "The worker request is not authorized.",
-        retryable: false,
-        requestId,
+    return jsonResponse(
+      {
+        error: {
+          code: "TRANSCRIPTION_WORKER_UNAUTHORIZED",
+          message: "The worker request is not authorized.",
+          retryable: false,
+          requestId,
+        },
       },
-    }, 401);
+      401,
+    );
   }
 
   const contentLength = request.headers.get("Content-Length");
@@ -156,26 +177,32 @@ Deno.serve(async (request: Request): Promise<Response> => {
     contentLength !== null &&
     (!/^\d+$/.test(contentLength) || Number(contentLength) > 1024)
   ) {
-    return jsonResponse({
-      error: {
-        code: "TRANSCRIPTION_WORKER_REQUEST_INVALID",
-        message: "The worker request body is invalid.",
-        retryable: false,
-        requestId,
+    return jsonResponse(
+      {
+        error: {
+          code: "TRANSCRIPTION_WORKER_REQUEST_INVALID",
+          message: "The worker request body is invalid.",
+          retryable: false,
+          requestId,
+        },
       },
-    }, 400);
+      400,
+    );
   }
 
   const rawBody = await request.text();
   if (new TextEncoder().encode(rawBody).byteLength > 1024) {
-    return jsonResponse({
-      error: {
-        code: "TRANSCRIPTION_WORKER_REQUEST_INVALID",
-        message: "The worker request body is invalid.",
-        retryable: false,
-        requestId,
+    return jsonResponse(
+      {
+        error: {
+          code: "TRANSCRIPTION_WORKER_REQUEST_INVALID",
+          message: "The worker request body is invalid.",
+          retryable: false,
+          requestId,
+        },
       },
-    }, 400);
+      400,
+    );
   }
   if (rawBody.trim()) {
     try {
@@ -189,22 +216,27 @@ Deno.serve(async (request: Request): Promise<Response> => {
         throw new Error("invalid");
       }
     } catch {
-      return jsonResponse({
-        error: {
-          code: "TRANSCRIPTION_WORKER_REQUEST_INVALID",
-          message: "The worker request body is invalid.",
-          retryable: false,
-          requestId,
+      return jsonResponse(
+        {
+          error: {
+            code: "TRANSCRIPTION_WORKER_REQUEST_INVALID",
+            message: "The worker request body is invalid.",
+            retryable: false,
+            requestId,
+          },
         },
-      }, 400);
+        400,
+      );
     }
   }
 
   try {
     const adminClient = createAdminClient();
     const worker = createTranscriptionWorker({
-      database: createTranscriptionWorkerDatabase(adminClient),
-      createSignedAudioUrl: (path, expiresInSeconds) =>
+      database: createTranscriptionWorkerDatabase(
+        createTranscriptionWorkerPostgresExecutor(),
+      ),
+      createSignedAudioUrl: (path: string, expiresInSeconds: number) =>
         createSignedAudioUrl(adminClient, path, expiresInSeconds),
       getProvider: providerFactory(),
       checksumSha256: sha256,
@@ -212,15 +244,26 @@ Deno.serve(async (request: Request): Promise<Response> => {
     });
     const result = await worker.run();
     return jsonResponse({ ...result, requestId });
-  } catch {
-    console.error("[transcription-worker] safe failure", { requestId });
-    return jsonResponse({
-      error: {
-        code: "TRANSCRIPTION_WORKER_FAILED",
-        message: "The transcription worker could not finish this run.",
-        retryable: true,
+  } catch (error) {
+    if (error instanceof TranscriptionWorkerDatabaseError) {
+      console.error("[transcription-worker] safe database failure", {
         requestId,
+        code: error.message,
+        operation: error.operation,
+      });
+    } else {
+      console.error("[transcription-worker] safe failure", { requestId });
+    }
+    return jsonResponse(
+      {
+        error: {
+          code: "TRANSCRIPTION_WORKER_FAILED",
+          message: "The transcription worker could not finish this run.",
+          retryable: true,
+          requestId,
+        },
       },
-    }, 500);
+      500,
+    );
   }
 });

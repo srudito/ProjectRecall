@@ -1,4 +1,6 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type {
+  NormalizedTranscriptLanguageSummary,
+} from "../_shared/transcription/provider.ts";
 
 import {
   parseCleanupClaim,
@@ -15,23 +17,152 @@ import {
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+export type WorkerDatabaseRequest =
+  | {
+      operation: "recoverExpired";
+      parameters: { limit: number };
+    }
+  | {
+      operation: "claimJobs";
+      parameters: {
+        workerId: string;
+        limit: number;
+        leaseSeconds: number;
+      };
+    }
+  | {
+      operation: "beginSubmission";
+      parameters: {
+        jobId: string;
+        runId: string;
+        workerId: string;
+      };
+    }
+  | {
+      operation: "markSubmitted";
+      parameters: {
+        jobId: string;
+        runId: string;
+        workerId: string;
+        providerJobId: string;
+        providerMetadata: Readonly<Record<string, unknown>>;
+        pollAfterSeconds: number;
+        processingTimeoutSeconds: number;
+      };
+    }
+  | {
+      operation: "recordSubmissionFailure";
+      parameters: {
+        jobId: string;
+        runId: string;
+        workerId: string;
+        errorCode: string;
+        safeError: string;
+        retryable: boolean;
+        providerJobId: string | null;
+        retryAfterSeconds: number;
+      };
+    }
+  | {
+      operation: "recordPollResult";
+      parameters: {
+        jobId: string;
+        runId: string;
+        workerId: string;
+        providerMetadata: Readonly<Record<string, unknown>>;
+        pollAfterSeconds: number;
+      };
+    }
+  | {
+      operation: "recordPollFailure";
+      parameters: {
+        jobId: string;
+        runId: string;
+        workerId: string;
+        errorCode: string;
+        safeError: string;
+        retryable: boolean;
+        providerTerminal: boolean;
+        retryAfterSeconds: number;
+      };
+    }
+  | {
+      operation: "completeJob";
+      parameters: {
+        jobId: string;
+        runId: string;
+        workerId: string;
+        providerJobId: string;
+        plainText: string;
+        languageSummary: NormalizedTranscriptLanguageSummary;
+        segments: readonly unknown[];
+        providerMetadata: Readonly<Record<string, unknown>>;
+        checksumSha256: string;
+      };
+    }
+  | {
+      operation: "claimCleanup";
+      parameters: {
+        workerId: string;
+        limit: number;
+        leaseSeconds: number;
+      };
+    }
+  | {
+      operation: "completeCleanup";
+      parameters: {
+        runId: string;
+        workerId: string;
+        providerJobId: string;
+      };
+    }
+  | {
+      operation: "failCleanup";
+      parameters: {
+        runId: string;
+        workerId: string;
+        errorCode: string;
+        safeError: string;
+        retryable: boolean;
+        retryAfterSeconds: number;
+      };
+    };
+
+export type WorkerDatabaseOperation = WorkerDatabaseRequest["operation"];
+
+export interface WorkerDatabaseExecutor {
+  execute(request: WorkerDatabaseRequest): Promise<readonly unknown[]>;
+}
+
+export class TranscriptionWorkerDatabaseError extends Error {
+  readonly operation: WorkerDatabaseOperation;
+
+  constructor(operation: WorkerDatabaseOperation) {
+    super("TRANSCRIPTION_DATABASE_CALL_FAILED");
+    this.name = "TranscriptionWorkerDatabaseError";
+    this.operation = operation;
+  }
+}
+
 const rpcError = (name: string): Error =>
   new Error(`TRANSCRIPTION_DATABASE_RPC_FAILED:${name}`);
 
-const requireNoError = <T>(
-  name: string,
-  response: { data: T | null; error: unknown },
-): T | null => {
-  if (response.error) throw rpcError(name);
-  return response.data;
+const requireRows = (name: string, value: unknown): readonly unknown[] => {
+  if (!Array.isArray(value)) throw rpcError(name);
+  return value;
+};
+
+const requireSingleRow = (name: string, value: unknown): unknown => {
+  const rows = requireRows(name, value);
+  if (rows.length !== 1) throw rpcError(name);
+  return rows[0];
 };
 
 const parseRecovery = (value: unknown): RecoveryResult => {
-  const row = Array.isArray(value) ? value[0] : value;
-  if (!row || typeof row !== "object" || Array.isArray(row)) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw rpcError("recover_expired_transcription_work");
   }
-  const candidate = row as Record<string, unknown>;
+  const candidate = value as Record<string, unknown>;
   const expectedKeys = [
     "ambiguous_jobs",
     "cleanup_requeued_runs",
@@ -81,168 +212,209 @@ const requireState = <T extends string>(
   return value as T;
 };
 
+const parseDatabaseTranscriptionClaim = (
+  value: unknown,
+): TranscriptionClaim => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw rpcError("claim_transcription_jobs");
+  }
+
+  const durationMs = (value as Record<string, unknown>).duration_ms;
+  if (
+    typeof durationMs !== "number" ||
+    !Number.isSafeInteger(durationMs) ||
+    durationMs <= 0
+  ) {
+    throw rpcError("claim_transcription_jobs");
+  }
+
+  return parseTranscriptionClaim(value);
+};
+
+const callDatabase = async <T>(
+  executor: WorkerDatabaseExecutor,
+  request: WorkerDatabaseRequest,
+  parse: (rows: readonly unknown[]) => T,
+): Promise<T> => {
+  try {
+    const rows = await executor.execute(request);
+    return parse(requireRows(request.operation, rows));
+  } catch {
+    throw new TranscriptionWorkerDatabaseError(request.operation);
+  }
+};
+
 export const createTranscriptionWorkerDatabase = (
-  client: SupabaseClient,
+  executor: WorkerDatabaseExecutor,
 ): TranscriptionWorkerDatabase => ({
-  recoverExpired: async (limit) => {
-    const response = await client.rpc("recover_expired_transcription_work", {
-      p_limit: limit,
-    });
-    return parseRecovery(
-      requireNoError("recover_expired_transcription_work", response),
-    );
-  },
+  recoverExpired: (limit) =>
+    callDatabase(
+      executor,
+      {
+        operation: "recoverExpired",
+        parameters: { limit },
+      },
+      (rows) =>
+        parseRecovery(
+          requireSingleRow("recover_expired_transcription_work", rows),
+        ),
+    ),
 
-  claimJobs: async (input): Promise<TranscriptionClaim[]> => {
-    const response = await client.rpc("claim_transcription_jobs", {
-      p_worker_id: input.workerId,
-      p_limit: input.limit,
-      p_lease_seconds: input.leaseSeconds,
-    });
-    const data = requireNoError("claim_transcription_jobs", response);
-    if (data === null) return [];
-    if (!Array.isArray(data)) throw rpcError("claim_transcription_jobs");
-    return data.map(parseTranscriptionClaim);
-  },
+  claimJobs: (input): Promise<TranscriptionClaim[]> =>
+    callDatabase(
+      executor,
+      {
+        operation: "claimJobs",
+        parameters: input,
+      },
+      (rows) => {
+        if (rows.length > input.limit) throw rpcError("claim_transcription_jobs");
+        return rows.map(parseDatabaseTranscriptionClaim);
+      },
+    ),
 
-  beginSubmission: async (input) => {
-    const response = await client.rpc("begin_transcription_submission", {
-      p_job_id: input.jobId,
-      p_run_id: input.runId,
-      p_worker_id: input.workerId,
-    });
-    return requireBoolean(
-      "begin_transcription_submission",
-      requireNoError("begin_transcription_submission", response),
-    );
-  },
+  beginSubmission: (input) =>
+    callDatabase(
+      executor,
+      {
+        operation: "beginSubmission",
+        parameters: input,
+      },
+      (rows) =>
+        requireBoolean(
+          "begin_transcription_submission",
+          requireSingleRow("begin_transcription_submission", rows),
+        ),
+    ),
 
-  markSubmitted: async (input) => {
-    const response = await client.rpc("mark_transcription_job_submitted", {
-      p_job_id: input.jobId,
-      p_run_id: input.runId,
-      p_worker_id: input.workerId,
-      p_provider_job_id: input.providerJobId,
-      p_provider_metadata: input.providerMetadata,
-      p_poll_after_seconds: input.pollAfterSeconds,
-      p_processing_timeout_seconds: input.processingTimeoutSeconds,
-    });
-    return requireBoolean(
-      "mark_transcription_job_submitted",
-      requireNoError("mark_transcription_job_submitted", response),
-    );
-  },
+  markSubmitted: (input) =>
+    callDatabase(
+      executor,
+      {
+        operation: "markSubmitted",
+        parameters: input,
+      },
+      (rows) =>
+        requireBoolean(
+          "mark_transcription_job_submitted",
+          requireSingleRow("mark_transcription_job_submitted", rows),
+        ),
+    ),
 
-  recordSubmissionFailure: async (input) => {
-    const response = await client.rpc("record_transcription_submission_failure", {
-      p_job_id: input.jobId,
-      p_run_id: input.runId,
-      p_worker_id: input.workerId,
-      p_error_code: input.errorCode,
-      p_safe_error: input.safeError,
-      p_retryable: input.retryable,
-      p_provider_job_id: input.providerJobId,
-      p_retry_after_seconds: input.retryAfterSeconds,
-    });
-    return requireState<SubmissionFailureState>(
-      "record_transcription_submission_failure",
-      requireNoError("record_transcription_submission_failure", response),
-      [
-        "already_submitted",
-        "reconcile_provider_job",
-        "retry_submission",
-        "failed",
-      ],
-    );
-  },
+  recordSubmissionFailure: (input) =>
+    callDatabase(
+      executor,
+      {
+        operation: "recordSubmissionFailure",
+        parameters: input,
+      },
+      (rows) =>
+        requireState<SubmissionFailureState>(
+          "record_transcription_submission_failure",
+          requireSingleRow("record_transcription_submission_failure", rows),
+          [
+            "already_submitted",
+            "reconcile_provider_job",
+            "retry_submission",
+            "failed",
+          ],
+        ),
+    ),
 
-  recordPollResult: async (input) => {
-    const response = await client.rpc("record_transcription_poll_result", {
-      p_job_id: input.jobId,
-      p_run_id: input.runId,
-      p_worker_id: input.workerId,
-      p_provider_metadata: input.providerMetadata,
-      p_poll_after_seconds: input.pollAfterSeconds,
-    });
-    return requireBoolean(
-      "record_transcription_poll_result",
-      requireNoError("record_transcription_poll_result", response),
-    );
-  },
+  recordPollResult: (input) =>
+    callDatabase(
+      executor,
+      {
+        operation: "recordPollResult",
+        parameters: input,
+      },
+      (rows) =>
+        requireBoolean(
+          "record_transcription_poll_result",
+          requireSingleRow("record_transcription_poll_result", rows),
+        ),
+    ),
 
-  recordPollFailure: async (input) => {
-    const response = await client.rpc("record_transcription_poll_failure", {
-      p_job_id: input.jobId,
-      p_run_id: input.runId,
-      p_worker_id: input.workerId,
-      p_error_code: input.errorCode,
-      p_safe_error: input.safeError,
-      p_retryable: input.retryable,
-      p_provider_terminal: input.providerTerminal,
-      p_retry_after_seconds: input.retryAfterSeconds,
-    });
-    return requireState<PollFailureState>(
-      "record_transcription_poll_failure",
-      requireNoError("record_transcription_poll_failure", response),
-      ["retry_poll", "retry_new_run", "failed"],
-    );
-  },
+  recordPollFailure: (input) =>
+    callDatabase(
+      executor,
+      {
+        operation: "recordPollFailure",
+        parameters: input,
+      },
+      (rows) =>
+        requireState<PollFailureState>(
+          "record_transcription_poll_failure",
+          requireSingleRow("record_transcription_poll_failure", rows),
+          ["retry_poll", "retry_new_run", "failed"],
+        ),
+    ),
 
-  completeJob: async (input) => {
-    const response = await client.rpc("complete_transcription_job", {
-      p_job_id: input.jobId,
-      p_run_id: input.runId,
-      p_worker_id: input.workerId,
-      p_provider_job_id: input.providerJobId,
-      p_plain_text: input.transcript.plainText,
-      p_language_summary: input.transcript.languageSummary,
-      p_segments: input.transcript.segments,
-      p_provider_metadata: input.transcript.providerMetadata,
-      p_checksum_sha256: input.checksumSha256,
-    });
-    return requireUuid(
-      "complete_transcription_job",
-      requireNoError("complete_transcription_job", response),
-    );
-  },
+  completeJob: (input) =>
+    callDatabase(
+      executor,
+      {
+        operation: "completeJob",
+        parameters: {
+          jobId: input.jobId,
+          runId: input.runId,
+          workerId: input.workerId,
+          providerJobId: input.providerJobId,
+          plainText: input.transcript.plainText,
+          languageSummary: input.transcript.languageSummary,
+          segments: input.transcript.segments,
+          providerMetadata: input.transcript.providerMetadata,
+          checksumSha256: input.checksumSha256,
+        },
+      },
+      (rows) =>
+        requireUuid(
+          "complete_transcription_job",
+          requireSingleRow("complete_transcription_job", rows),
+        ),
+    ),
 
-  claimCleanup: async (input): Promise<CleanupClaim[]> => {
-    const response = await client.rpc("claim_transcription_cleanup", {
-      p_worker_id: input.workerId,
-      p_limit: input.limit,
-      p_lease_seconds: input.leaseSeconds,
-    });
-    const data = requireNoError("claim_transcription_cleanup", response);
-    if (data === null) return [];
-    if (!Array.isArray(data)) throw rpcError("claim_transcription_cleanup");
-    return data.map(parseCleanupClaim);
-  },
+  claimCleanup: (input): Promise<CleanupClaim[]> =>
+    callDatabase(
+      executor,
+      {
+        operation: "claimCleanup",
+        parameters: input,
+      },
+      (rows) => {
+        if (rows.length > input.limit) {
+          throw rpcError("claim_transcription_cleanup");
+        }
+        return rows.map(parseCleanupClaim);
+      },
+    ),
 
-  completeCleanup: async (input) => {
-    const response = await client.rpc("complete_transcription_cleanup", {
-      p_run_id: input.runId,
-      p_worker_id: input.workerId,
-      p_provider_job_id: input.providerJobId,
-    });
-    return requireBoolean(
-      "complete_transcription_cleanup",
-      requireNoError("complete_transcription_cleanup", response),
-    );
-  },
+  completeCleanup: (input) =>
+    callDatabase(
+      executor,
+      {
+        operation: "completeCleanup",
+        parameters: input,
+      },
+      (rows) =>
+        requireBoolean(
+          "complete_transcription_cleanup",
+          requireSingleRow("complete_transcription_cleanup", rows),
+        ),
+    ),
 
-  failCleanup: async (input) => {
-    const response = await client.rpc("fail_transcription_cleanup", {
-      p_run_id: input.runId,
-      p_worker_id: input.workerId,
-      p_error_code: input.errorCode,
-      p_safe_error: input.safeError,
-      p_retryable: input.retryable,
-      p_retry_after_seconds: input.retryAfterSeconds,
-    });
-    return requireState<CleanupFailureState>(
-      "fail_transcription_cleanup",
-      requireNoError("fail_transcription_cleanup", response),
-      ["retry_cleanup", "manual_review"],
-    );
-  },
+  failCleanup: (input) =>
+    callDatabase(
+      executor,
+      {
+        operation: "failCleanup",
+        parameters: input,
+      },
+      (rows) =>
+        requireState<CleanupFailureState>(
+          "fail_transcription_cleanup",
+          requireSingleRow("fail_transcription_cleanup", rows),
+          ["retry_cleanup", "manual_review"],
+        ),
+    ),
 });

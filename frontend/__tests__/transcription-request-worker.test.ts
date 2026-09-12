@@ -899,6 +899,13 @@ describe("server-only source boundary", () => {
       resolve(process.cwd(), "../supabase/functions/transcription-worker/index.ts"),
       "utf8",
     );
+    const workerPostgres = readFileSync(
+      resolve(
+        process.cwd(),
+        "../supabase/functions/transcription-worker/postgres.ts",
+      ),
+      "utf8",
+    );
     const requestIndex = readFileSync(
       resolve(process.cwd(), "../supabase/functions/transcription-request/index.ts"),
       "utf8",
@@ -906,10 +913,17 @@ describe("server-only source boundary", () => {
     const mobileSource = files.join("\n");
     expect(mobileSource).not.toContain("ASSEMBLYAI_API_KEY");
     expect(mobileSource).not.toContain("PROJECT_RECALL_TRANSCRIPTION_WORKER_TOKEN");
+    expect(mobileSource).not.toContain(
+      "PROJECT_RECALL_TRANSCRIPTION_WORKER_DATABASE_URL",
+    );
     expect(mobileSource).not.toContain("SUPABASE_SERVICE_ROLE_KEY");
     expect(mobileSource).not.toContain("sb_secret_");
     expect(workerIndex).toContain("PROJECT_RECALL_TRANSCRIPTION_WORKER_TOKEN");
     expect(workerIndex).toContain("ASSEMBLYAI_API_KEY");
+    expect(workerIndex).toContain("createTranscriptionWorkerPostgresExecutor");
+    expect(workerPostgres).toContain(
+      "PROJECT_RECALL_TRANSCRIPTION_WORKER_DATABASE_URL",
+    );
     expect(workerIndex).toContain("TRANSCRIPTION_WORKER_REQUEST_INVALID");
     expect(workerIndex).toContain("Object.keys(body).length !== 0");
     expect(requestIndex).toContain("SUPABASE_PUBLISHABLE_KEYS");
